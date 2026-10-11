@@ -1,0 +1,11 @@
+# Dependencias y salidas locales (el repo no tiene dependencias ni build)
+node_modules/
+build/
+coverage/
+*.zip
+*.log
+
+# Herramientas locales de Claude y del grafo de codigo
+.code-review-graph/
+agents/
+.claude/settings.local.json
