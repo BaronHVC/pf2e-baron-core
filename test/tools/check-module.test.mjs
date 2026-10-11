@@ -37,6 +37,18 @@ test("the fixture's traps do not fire: comments, strings and regexes are not imp
   assert.ok(res.out.includes("PASS   [g] imports: 2 import(s) checked"), res.out);
 });
 
+test("a relative import of the module's own modules/ subfolder stays inside the module", (t) => {
+  const dir = materialize(t, {
+    write: {
+      "scripts/modules/helper.js": "export const helper = 1;\n",
+      "scripts/lib/uses-helper.js": 'import { helper } from "../modules/helper.js";\nimport "./util.js";\n\nexport const twice = helper * 2;\n',
+    },
+  });
+  const res = checkModule([dir]);
+  assert.equal(res.status, 0, res.out);
+  assert.ok(res.out.includes("PASS   [g] imports: 4 import(s) checked"), res.out);
+});
+
 for (const { name, spec } of negativeCases()) {
   test(`negative fixture ${name}: ${spec.description}`, (t) => {
     const dir = materialize(t, spec);

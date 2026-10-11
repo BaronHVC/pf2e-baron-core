@@ -10,10 +10,12 @@ export const MODULE_ID = "baron-fixture";
 
 // Own template through an interpolated module path: must exist on disk.
 const TEMPLATE = `modules/${MODULE_ID}/templates/panel.hbs`;
-// Another module's or the system's templates are not ours to check.
+// Another module's, the system's or Foundry's own templates (a bare
+// "templates/..." path resolves against Foundry's root) are not ours to check.
 const FOREIGN_TEMPLATES = [
   "modules/someone-else/templates/not-ours.hbs",
   "systems/pf2e/templates/items/weapon-sheet.hbs",
+  "templates/generic/form-footer.hbs",
 ];
 
 export const i18n = (key) => game.i18n.localize(`${MODULE_ID}.${key}`);
@@ -47,4 +49,12 @@ export function renderPanel(data) {
 
 export function lateLoad() {
   return import("./lib/util.js");
+}
+
+// Hook, query and setting ids share the "<id>." namespace with lang keys but
+// are not keys: none of these may be reported as missing from en.json.
+export function announce() {
+  Hooks.callAll("baron-fixture.ready");
+  CONFIG.queries["baron-fixture.ping"] = () => true;
+  return game.settings.settings.get("baron-fixture.gmOnly");
 }

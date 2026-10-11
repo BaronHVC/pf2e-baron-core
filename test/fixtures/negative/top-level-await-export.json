@@ -1,0 +1,8 @@
+{
+  "description": "an exported declaration awaits at module top level, the usual ESM form",
+  "fails": "g",
+  "message": "top-level await",
+  "write": {
+    "scripts/lib/tla-export.js": "export const DATA = await Promise.resolve(1);\n"
+  }
+}

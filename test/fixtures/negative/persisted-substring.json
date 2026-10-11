@@ -1,0 +1,6 @@
+{
+  "description": "a persisted identifier survives only inside a longer literal (\"bfx-fla\" in \"bfx-flag\"), as after a rename that extends it",
+  "fails": "i",
+  "message": "\"bfx-fla\" no longer appears in scripts/ as a whole string literal",
+  "merge": { "baron.json": { "persisted": ["baron-fixture", "bfx-flag", "bfx-fla"] } }
+}

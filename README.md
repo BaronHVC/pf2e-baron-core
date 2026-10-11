@@ -66,7 +66,10 @@ Sin `baron.json`, `check-module` usa `{"mode":"public","devChannel":true,"i18nPr
 ## Comandos
 
 Desde la carpeta del módulo, con este repo clonado al lado
-(`GitHub/personal/pf2e-baron-core`):
+(`GitHub/personal/pf2e-baron-core`). Para clonarlo:
+`git clone git@github-baron:BaronHVC/pf2e-baron-core.git` (alias SSH de la
+cuenta BaronHVC) o `git clone https://github.com/BaronHVC/pf2e-baron-core.git`;
+un clon normal trae las etiquetas que necesita `--online`.
 
 ```sh
 # Vendorizar una versión publicada (etiqueta) o un commit concreto
@@ -99,15 +102,15 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 
 | id  | revisión                                                                                                         |
 |-----|------------------------------------------------------------------------------------------------------------------|
-| a   | existen los archivos de `module.json` (`esmodules`, `scripts`, `styles`, `languages`) y toda `templates/*.hbs` propia citada en `scripts/` (con mayúsculas exactas: los servidores Linux no perdonan) |
+| a   | existen los archivos de `module.json` (`esmodules`, `scripts`, `styles`, `languages`) y toda plantilla propia citada en `scripts/` (`modules/<id>/templates/….hbs` o con raíz interpolada, `` `${ROOT}/templates/….hbs` ``), con mayúsculas exactas: los servidores Linux no perdonan. Una ruta que empieza con `templates/` es de Foundry (`templates/generic/form-footer.hbs`) y no se revisa |
 | b   | cada `scripts/**/*.js` pasa `node --check` como módulo ES                                                        |
 | c   | `module.json`, `lang/*.json`, `baron.json` y el lock son JSON válido; `baron.json` tiene valores válidos         |
 | d   | todos los idiomas tienen las mismas claves (FAIL o WARN según `--parity` / `langParity`)                          |
 | e   | la copia del core coincide con el lock (sha256 en LF, `CORE_VERSION`) y el lock no es `dev`                     |
 | f   | `--online`: la etiqueta `v<version>` apunta a `lock.commit`, ese commit tiene el mismo sha256 y todos los pins de los workflows son `lock.commit` |
-| g   | ningún import absoluto (`/…`), hacia `/modules/…` ni relativo que salga del módulo; sin top-level await         |
-| h   | toda clave estática (`i18n("X")`, `"<prefijo>.X"`, `{{localize "<prefijo>.X"}}`) existe en `lang/en.json`; las claves armadas en tiempo de ejecución se saltan y las no usadas se cuentan en un aviso |
-| i   | cada texto de `persisted` sigue apareciendo en `scripts/` (sin contar comentarios)                               |
+| g   | ningún import absoluto (`/…`), hacia `modules/…` de otro módulo, relativo que salga del módulo ni sin ruta (`import "lodash"`: Foundry no define un import map y el navegador no lo resuelve); sin top-level await (heurística de columna 0, también `export const X = await …`) |
+| h   | toda clave estática (`i18n("X")`, `"<prefijo>.X"`, `{{localize "<prefijo>.X"}}`) existe en `lang/en.json`; las claves armadas en tiempo de ejecución se saltan y las no usadas se cuentan en un aviso. Los nombres de hooks (`Hooks.callAll("<id>.x")`), de queries (`CONFIG.queries["<id>.x"]`, `user.query("<id>.x")`) y de settings (`game.settings.settings.get("<id>.x")`) no son claves |
+| i   | cada texto de `persisted` sigue apareciendo en `scripts/` como literal completo, o como el texto antes del primer `${}` de una plantilla (`` `swe-p-${i}` `` cuenta para `swe-p-`); sin contar comentarios. Una subcadena no basta: el id también vive dentro de `"<id>.SettingGmOnly"` |
 | j   | `module.json` sin clave `protected`, sin `requires` a pf2e-baron-core; aviso si `esmodules` lista la copia del core |
 | k   | sin placeholders `__ALGO__` sobrantes del template                                                              |
 
@@ -140,6 +143,16 @@ jobs:
   bajo un módulo. Recibir un arreglo del pipeline = resincronizar el core.
 - Ambos workflows hacen checkout de este repo **en el commit del lock** (con
   etiquetas) y corren `check-module --online` antes de cualquier otra cosa.
+- Por eso **solo sirven a un módulo que ya vendoriza el core**: sin
+  `baron-core.lock.json` fallan de inmediato, aunque `check-module` local pase
+  (sin copia ni lock, [e] y [f] se saltan). Un módulo existente que todavía no
+  usa el core, como pf2e-simple-weapon-editor v0.12.0, adopta estos workflows en
+  el mismo commit de su primer `sync-core --ref`; hasta entonces conserva su
+  propio `release.yml`.
+- Un repo recién creado con *Use this template* corre la CI en su primer push,
+  antes de `init-module`: `module-check` lo detecta (`module.json` con id
+  `__MODULE_ID__`), lo avisa y se salta el check. `module-release` no se salta
+  nada: una plantilla sin inicializar nunca publica.
 - **`module-release`** reproduce el `release.yml` de pf2e-simple-weapon-editor
   v0.12.0: versión desde la etiqueta; `vX.Y.Z` es estable (manifest en
   `releases/latest`), cualquier otra (`v1.2.0-rc.1`) es prerelease con manifest

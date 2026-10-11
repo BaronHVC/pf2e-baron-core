@@ -14,14 +14,17 @@ tiempo no pueden usar el mismo. Esta tabla es la fuente de verdad.
 
 ## Reglas
 
-- **Antes de escribir código** de un módulo nuevo, se elige su fila y se agrega
-  aquí. `tools/init-module.mjs` del template imprime la fila lista para pegar.
+- **Antes de escribir código** de un módulo nuevo gratuito, se elige su fila y
+  se agrega aquí. `tools/init-module.mjs` del template imprime la fila lista
+  para pegar y, si encuentra este repo al lado (`../pf2e-baron-core`), rechaza un
+  id o un prefijo que ya estén en la tabla.
 - **Una fila publicada no cambia.** Esos textos están guardados en mundos de
   usuarios; renombrarlos deja datos huérfanos. Los que el código escribe tal cual
   van además en `persisted` de su `baron.json`, y `check-module` falla si dejan de
   aparecer en `scripts/`.
 - **Módulos de pago:** se registran al publicarse, no antes, porque este
-  repositorio es público.
+  repositorio es público. Mientras tanto, revisa a mano que su prefijo no choque
+  con uno de pago aún sin registrar.
 - `id` = carpeta del módulo = `scope` de sus flags (`doc.flags[id]`). Nunca se
   hace `getFlag`/`setFlag` sobre el scope de otro módulo: se lee
   `doc.flags?.[scope]?.[clave]`.

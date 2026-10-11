@@ -8,7 +8,8 @@ name: Module check
 #
 # <sha> es el mismo commit que baron-core.lock.json: sync-core reescribe el pin
 # y check-module --online falla si difieren. Por eso las herramientas que corren
-# aqui son las del commit fijado, nunca las de main.
+# aqui son las del commit fijado, nunca las de main, y por eso solo sirve a
+# modulos que ya vendorizan el core: sin lock no hay commit que usar.
 #
 # El contexto `github` es el del modulo que llama: el checkout sin `repository`
 # trae el modulo, no este repo.
@@ -29,8 +30,22 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
+            const out = (line) => fs.appendFileSync(process.env.GITHUB_OUTPUT, line + "\n");
+            // Un repo recien creado con "Use this template" corre la CI en su
+            // primer push, antes de init-module: con los placeholders el check
+            // solo puede fallar. Se avisa y se salta; module-release no hace
+            // esto, asi que una plantilla sin inicializar nunca publica.
+            let id = null;
+            try { id = JSON.parse(fs.readFileSync("module.json", "utf8")).id; } catch {}
+            if (id === "__MODULE_ID__") {
+              console.log("::notice file=module.json::plantilla sin inicializar: corre node tools/init-module.mjs, haz commit y la CI revisara el modulo desde ese push");
+              out("run=false");
+              process.exit(0);
+            }
+            // Los workflows compartidos necesitan la copia vendorizada: el lock
+            // dice en que commit del core estan las herramientas.
             if (!fs.existsSync("baron-core.lock.json")) {
-              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe");
+              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: los workflows compartidos de pf2e-baron-core solo sirven a modulos que vendorizan el core. Corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe (scripts/baron-core.js, el lock y los pins de .github/workflows) junto con este workflow");
               process.exit(1);
             }
             const lock = JSON.parse(fs.readFileSync("baron-core.lock.json", "utf8"));
@@ -40,11 +55,13 @@ jobs:
               console.log("::error file=baron-core.lock.json::lock.commit no es un sha de 40 caracteres (" + JSON.stringify(lock.commit) + "): si dice dev, la copia viene de sync-core --watch; corre sync-core --ref <etiqueta>");
               process.exit(1);
             }
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "commit=" + lock.commit + "\n");
+            out("run=true");
+            out("commit=" + lock.commit);
             console.log("baron-core " + lock.version + " @ " + lock.commit);
           '
 
       - name: Checkout de pf2e-baron-core en el commit del lock
+        if: steps.lock.outputs.run == 'true'
         uses: actions/checkout@v4
         with:
           repository: BaronHVC/pf2e-baron-core
@@ -55,9 +72,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - if: steps.lock.outputs.run == 'true'
+        uses: actions/setup-node@v4
         with:
           node-version: 22
 
       - name: check-module --online
+        if: steps.lock.outputs.run == 'true'
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online

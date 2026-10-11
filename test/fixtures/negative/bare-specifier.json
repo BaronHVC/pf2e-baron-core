@@ -1,0 +1,8 @@
+{
+  "description": "a script imports a bare specifier, which a browser without an import map cannot resolve",
+  "fails": "g",
+  "message": "import \"lodash\" is a bare specifier",
+  "write": {
+    "scripts/lib/bare.js": "import \"lodash\";\n\nexport const ready = true;\n"
+  }
+}

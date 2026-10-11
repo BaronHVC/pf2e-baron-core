@@ -268,14 +268,19 @@ function checkDeclaredFiles(ctx, c) {
     entries.push({ p: l?.path ?? null, loc: { file: "module.json" }, from: "languages" });
   }
   // Templates the scripts load by path: a missing one only breaks when the
-  // editor opens, long after the module loaded fine.
+  // editor opens, long after the module loaded fine. Only paths rooted in this
+  // module count: "modules/<id>/templates/..." or an interpolated root such as
+  // `modules/${MODULE_ID}/templates/...` or `${ROOT}/templates/...`. A path
+  // that starts with "templates/" is resolved by Foundry against its own root
+  // (core templates like templates/generic/form-footer.hbs), and a system's or
+  // another module's templates are not this module's files.
   for (const rel of ctx.scripts) {
     const { code, lineOf } = ctx.scan(rel);
     for (const t of code.matchAll(/templates\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+\.hbs/g)) {
       const before = code.slice(Math.max(0, t.index - 80), t.index);
       if (/systems\/[^/\s'"`]+\/$/.test(before)) continue; // a system's template
-      const other = /modules\/([A-Za-z0-9_-]+)\/$/.exec(before);
-      if (other && other[1] !== m.id) continue; // another module's template
+      const owner = /modules\/([A-Za-z0-9_-]+)\/$/.exec(before);
+      if (owner ? owner[1] !== m.id : !before.endsWith("}/")) continue; // another module's, or Foundry's
       entries.push({ p: t[0], loc: { file: rel, line: lineOf(t.index) }, from: "template" });
     }
   }
@@ -292,6 +297,7 @@ function checkDeclaredFiles(ctx, c) {
     if (r.ok) present++;
     else if (r.invalid) c.fail(`"${p}" must be a path relative to the module folder`, loc);
     else if (r.actual) c.fail(`"${p}" exists only as "${r.actual}": paths are case-sensitive on Linux hosts`, loc);
+    else if (from === "template") c.fail(`"${p}" does not exist: the sheet or dialog that renders it fails when it opens`, loc);
     else c.fail(`"${p}" does not exist (a missing esmodule makes Foundry drop the whole module)`, loc);
   }
   c.detail(`${present} declared or referenced file(s) present`);
@@ -462,7 +468,14 @@ const IMPORT_RES = [
   // import("y") with a literal argument; a template literal is checked by its static text
   /(?<![\w$.])import\s*\(\s*(["'`])([^"'`\n]*)\1/g,
 ];
-const TLA_RE = /^(?:await[\s(]|for\s+await\b|(?:const|let|var)\s+(?:[\w$]+|\{[^}\n]*\}|\[[^\]\n]*\])\s*=\s*await\b)/gm;
+// Top-level await, by the column-0 heuristic: a statement that starts a line
+// with await, for await or a declaration initialized by await, optionally
+// exported (`export const DATA = await ...` is the usual ESM form). It cannot
+// see an await indented inside a top-level block; formatters indent function
+// bodies, so a column-0 await inside a function does not happen in practice.
+const TLA_RE = /^(?:export\s+(?:default\s+)?)?(?:await[\s(]|for\s+await\b|(?:const|let|var)\s+(?:[\w$]+|\{[^}\n]*\}|\[[^\]\n]*\])\s*=\s*await\b)/gm;
+// Browsers resolve only these without an import map, and Foundry defines none.
+const URL_SPEC_RE = /^(?:https?|data|blob):/i;
 
 function checkImports(ctx, c) {
   let count = 0;
@@ -478,11 +491,14 @@ function checkImports(ctx, c) {
         const spec = m[2];
         const loc = { file: rel, line: lineOf(m.index) };
         count++;
+        const dynamic = spec.includes("${");
         if (spec.startsWith("/")) {
           c.fail(`import "${spec}" is absolute: Foundry may serve the module under a route prefix or a versioned path (The Forge); use a ./ path inside the module`, loc);
-        } else if (spec.includes("/modules/") || spec.startsWith("modules/")) {
-          c.fail(`import "${spec}" reaches into another module's folder: modules never import each other`, loc);
-        } else if (spec.startsWith(".") && !spec.includes("${")) {
+        } else if (spec.startsWith("./") || spec.startsWith("../")) {
+          // Resolved against the module root, so a relative path is judged by
+          // where it lands: the module's own scripts/modules/ folder is fine,
+          // ../../other-module/ is not.
+          if (dynamic) continue;
           const target = path.resolve(path.dirname(path.join(ctx.root, rel)), spec);
           const inside = path.relative(ctx.root, target);
           if (inside.startsWith("..") || path.isAbsolute(inside)) {
@@ -491,6 +507,10 @@ function checkImports(ctx, c) {
             const r = existsExact(ctx.root, inside.split(path.sep).join("/"));
             if (!r.ok) c.fail(`import "${spec}" ${r.actual ? `matches only "${r.actual}" (case)` : "does not exist"}: the module would fail to load`, loc);
           }
+        } else if (spec.includes("/modules/") || spec.startsWith("modules/")) {
+          c.fail(`import "${spec}" reaches into another module's folder: modules never import each other`, loc);
+        } else if (!URL_SPEC_RE.test(spec) && !dynamic) {
+          c.fail(`import "${spec}" is a bare specifier: Foundry loads modules in the browser without an import map, so it cannot resolve; import a ./ path inside the module`, loc);
         }
       }
     }
@@ -502,6 +522,13 @@ function checkImports(ctx, c) {
   }
   c.detail(`${count} import(s) checked, none leave the module; no top-level await`);
 }
+
+// Foundry namespaces other identifiers as "<id>.<name>" too, and with the
+// default i18n prefix (the module id) they look like lang keys. A literal in
+// one of these call positions is an identifier, never a key: hook names
+// (Hooks.on/once/off/call/callAll), query names (CONFIG.queries[...],
+// user.query(...)) and setting ids (game.settings.settings.get(...)).
+const NOT_A_KEY_RE = /(?:(?<![\w$])Hooks\s*\.\s*(?:on|once|off|call|callAll)\s*\(|(?<![\w$])queries\s*\[|\.\s*query\s*\(|(?<![\w$])settings\s*\.\s*(?:get|has|set|delete)\s*\()\s*$/;
 
 function checkI18n(ctx, c, stats) {
   const prefix = ctx.baron.i18nPrefix;
@@ -526,6 +553,7 @@ function checkI18n(ctx, c, stats) {
       }
       const text = s.value ?? s.head;
       if (!text.startsWith(head)) continue;
+      if (NOT_A_KEY_RE.test(before)) continue;
       if (s.value === null || plusAfter || plusBefore) {
         if (text.length > head.length) dynamicHeads.add(text);
         continue;
@@ -579,12 +607,20 @@ function checkI18n(ctx, c, stats) {
 function checkPersisted(ctx, c) {
   const list = Array.isArray(ctx.baron.persisted) ? ctx.baron.persisted.filter((s) => typeof s === "string" && s) : [];
   if (!list.length) return c.detail("no persisted identifiers declared in baron.json");
-  // Comments do not count: a flag scope or rule slug that only survives in a
-  // comment has stopped being written, and worlds that stored it are orphaned.
-  const code = ctx.ownScripts.map((rel) => ctx.scan(rel).code).join("\n");
+  // Matched as whole string literals, never as substrings: the module id also
+  // sits inside "<id>.SettingGmOnly" and "gmOnly" inside "gmOnlyRenamed", so a
+  // substring test stays green after exactly the rename it exists to catch. A
+  // template literal counts by its text before the first ${ (`swe-p-${i}`
+  // keeps the prefix "swe-p-"). Comments do not count: a flag scope or rule
+  // slug that only survives in a comment has stopped being written, and worlds
+  // that stored it are orphaned.
+  const literals = new Set();
+  for (const rel of ctx.ownScripts) {
+    for (const s of ctx.scan(rel).strings) literals.add(s.value ?? s.head);
+  }
   for (const s of list) {
-    if (!code.includes(s)) {
-      c.fail(`"${s}" no longer appears in scripts/: it is stored in worlds (flags, rule slugs, roll options), renaming it orphans existing data`, { file: "baron.json" });
+    if (!literals.has(s)) {
+      c.fail(`"${s}" no longer appears in scripts/ as a whole string literal (or the text before a template's first \${}): it is stored in worlds (flags, settings, rule slugs, roll options), renaming it orphans existing data`, { file: "baron.json" });
     }
   }
   c.detail(`${list.length} persisted identifier(s) present`);

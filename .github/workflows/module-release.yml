@@ -16,7 +16,8 @@ name: Module release
 # El modulo que llama TIENE que conceder `contents: write`: un workflow
 # reutilizable solo puede reducir los permisos que recibe, nunca ampliarlos, y
 # sin escritura no puede crear el release. <sha> = commit de baron-core.lock.json
-# (sync-core lo reescribe).
+# (sync-core lo reescribe); sin ese lock no hay commit del core que usar, asi que
+# solo sirve a modulos que ya vendorizan el core.
 #
 # Primero corre las mismas revisiones que module-check.yml; despues reproduce el
 # release.yml de pf2e-simple-weapon-editor v0.12.0: version desde la etiqueta,
@@ -63,8 +64,10 @@ jobs:
         run: |
           node -e '
             const fs = require("fs");
+            // Los workflows compartidos necesitan la copia vendorizada: el lock
+            // dice en que commit del core estan las herramientas.
             if (!fs.existsSync("baron-core.lock.json")) {
-              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe");
+              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: los workflows compartidos de pf2e-baron-core solo sirven a modulos que vendorizan el core. Corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe (scripts/baron-core.js, el lock y los pins de .github/workflows) junto con este workflow");
               process.exit(1);
             }
             const lock = JSON.parse(fs.readFileSync("baron-core.lock.json", "utf8"));

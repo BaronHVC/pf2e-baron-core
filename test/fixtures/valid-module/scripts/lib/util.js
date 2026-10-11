@@ -4,3 +4,8 @@
 export function noticeKey() {
   return "baron-fixture.Notice";
 }
+
+/** A persisted slug prefix built at runtime: baron.json lists "bfx-p-". */
+export function ruleSlug(i) {
+  return `bfx-p-${i}`;
+}
