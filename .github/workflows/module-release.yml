@@ -254,7 +254,7 @@ jobs:
               "- [ ] Descarga `" + ZIP_NAME + "` del release [" + TAG + "](" + release + ") de este repo privado.",
               "- [ ] Subelo en https://foundryvtt.com/creators/upload al paquete `" + m.id + "`, version `" + m.version + "`, compatibilidad " + compat + ".",
               "- [ ] Si es la primera version del paquete, espera la aprobacion de Foundry antes de anunciarla.",
-              "- [ ] En la pagina del paquete en foundryvtt.com, revisa los niveles (tiers) de Patreon que dan acceso.",
+              "- [ ] En la pagina del paquete en foundryvtt.com, asigna (o revisa, si ya existen) los niveles (tiers) de Patreon que dan acceso: sin un nivel asignado, ningun mecenas puede instalarlo.",
               "- [ ] Prueba la instalacion desde una cuenta de mecenas (con Patreon vinculado en su perfil de foundryvtt.com)" + (bases ? "; Foundry tiene que instalar tambien " + bases : "") + ". Manifest del paquete: " + m.manifest,
             ];
             if (PRERELEASE === "true") {
