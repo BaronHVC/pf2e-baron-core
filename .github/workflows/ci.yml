@@ -24,8 +24,15 @@ jobs:
 
       - name: Pruebas del core
         # Rutas explicitas: un "node --test" sin argumentos tambien recorre
-        # test/fixtures y test/helpers, que no son pruebas.
-        run: node --test test/*.test.mjs
+        # test/fixtures y test/helpers, que no son pruebas. Un segundo reporte
+        # TAP alimenta tap-annotate: el log del job solo lo bajan los admins
+        # del repo, pero las anotaciones con la prueba que fallo son publicas.
+        run: |
+          set +e
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=tap-core.txt test/*.test.mjs
+          status=$?
+          if [ "$status" -ne 0 ]; then node .github/scripts/tap-annotate.mjs tap-core.txt; fi
+          exit "$status"
 
       - name: Importar baron-core.js sin Foundry
         # Sin game, CONFIG, Hooks, ui ni document: si el archivo tocara un global
@@ -75,8 +82,14 @@ jobs:
 
       - name: Pruebas de sync-core y check-module
         # Arman repos de git temporales (core falso con etiqueta, modulo con
-        # pins) y corren los casos negativos de test/fixtures/negative.
-        run: node --test test/tools/*.test.mjs
+        # pins) y corren los casos negativos de test/fixtures/negative. Igual
+        # que arriba, las pruebas que fallen salen como anotaciones publicas.
+        run: |
+          set +e
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap --test-reporter-destination=tap-tools.txt test/tools/*.test.mjs
+          status=$?
+          if [ "$status" -ne 0 ]; then node .github/scripts/tap-annotate.mjs tap-tools.txt; fi
+          exit "$status"
 
       - name: check-module sobre el modulo de ejemplo valido
         # Salida legible en el log; sin GITHUB_ACTIONS para que sus avisos
