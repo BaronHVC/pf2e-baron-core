@@ -23,6 +23,18 @@ name: Module release
 # release.yml de pf2e-simple-weapon-editor v0.12.0: version desde la etiqueta,
 # prerelease para lo que no sea vX.Y.Z, module.json reescrito, ZIP con la
 # carpeta <id>/ adentro, release por version y canal de pruebas "dev".
+#
+# El module.json lo reescribe tools/release-manifest.mjs del core (el del commit
+# del lock, con sus pruebas), en los dos modos de baron.json:
+#
+# - public: lo de arriba.
+# - protected (modulo de pago, un complemento freemium): solo desde un repo
+#   PRIVADO. module.json con "protected": true, sin download, con el manifest que
+#   hospeda Foundry y la landingUrl de baron.json como url; falla si algo sigue
+#   apuntando a github.com. El ZIP y ese module.json quedan en un release del
+#   propio repo privado, nunca en el canal "dev", y el resumen del run trae la
+#   lista para subirlo a mano a foundryvtt.com: Foundry no tiene API para subir
+#   paquetes protegidos.
 on:
   workflow_call:
 
@@ -34,8 +46,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # El contexto github es el del modulo que llama: el evento push de su
+      # etiqueta dice si su repo es privado.
       - name: Leer baron.json
         id: baron
+        env:
+          REPO_PRIVATE: ${{ github.event.repository.private }}
         run: |
           node -e '
             const fs = require("fs");
@@ -44,18 +60,35 @@ jobs:
             if (fs.existsSync("baron.json")) given = JSON.parse(fs.readFileSync("baron.json", "utf8"));
             else console.log("::notice::sin baron.json: modo public y canal de pruebas activo");
             const cfg = { ...defaults, ...given };
-            // El modo protegido (modulos de pago) todavia no existe: mejor
-            // fallar que publicar un modulo de pago como si fuera gratuito.
-            if (cfg.mode === "protected") {
-              console.log("::error::protected mode is not implemented yet (see pf2e-baron-core README)");
-              process.exit(1);
-            }
-            if (cfg.mode !== "public") {
+            if (cfg.mode !== "public" && cfg.mode !== "protected") {
               console.log("::error file=baron.json::mode debe ser public o protected, no " + JSON.stringify(cfg.mode));
               process.exit(1);
             }
-            const dev = cfg.devChannel !== false;
-            fs.appendFileSync(process.env.GITHUB_OUTPUT, "devChannel=" + dev + "\n");
+            let dev = cfg.devChannel !== false;
+            let landing = "";
+            if (cfg.mode === "protected") {
+              // Los archivos de un release de un repo publico los baja
+              // cualquiera: un modulo de pago ahi ya se regalo. Mejor fallar.
+              if (process.env.REPO_PRIVATE !== "true") {
+                console.log("::error file=baron.json::mode protected (modulo de pago) solo se publica desde un repo privado, y este no lo es (github.event.repository.private = " + JSON.stringify(process.env.REPO_PRIVATE) + "): haz privado el repo antes de etiquetar, o usa mode public");
+                process.exit(1);
+              }
+              // Nunca canal de pruebas: sus archivos quedarian en un release,
+              // fuera del acceso por Patreon que controla Foundry.
+              if (given.devChannel === true) console.log("::notice file=baron.json::devChannel se ignora en mode protected: un modulo de pago nunca publica el canal dev");
+              dev = false;
+              // check-module [m] y release-manifest validan la URL; aqui solo
+              // se impide que un salto de linea escriba otras salidas del paso.
+              if (typeof cfg.landingUrl === "string") landing = cfg.landingUrl;
+              if (/[\r\n]/.test(landing)) {
+                console.log("::error file=baron.json::landingUrl no puede tener saltos de linea");
+                process.exit(1);
+              }
+            }
+            const out = (line) => fs.appendFileSync(process.env.GITHUB_OUTPUT, line + "\n");
+            out("mode=" + cfg.mode);
+            out("devChannel=" + dev);
+            out("landingUrl=" + landing);
             console.log("modo " + cfg.mode + ", canal de pruebas " + (dev ? "si" : "no"));
           '
 
@@ -96,8 +129,9 @@ jobs:
       # Reemplaza los dos pasos de validacion del release.yml de SWE (archivos
       # declarados, node --check, JSON, paridad en/es) y agrega el resto de
       # check-module: copia del core contra el lock, imports, claves i18n,
-      # identificadores persistidos, placeholders y la licencia de Paizo
-      # (baron.json paizo contra el modo y NOTICE.md).
+      # identificadores persistidos, placeholders, la licencia de Paizo
+      # (baron.json paizo contra el modo y NOTICE.md) y, en mode protected, la
+      # landingUrl y el requires a la base gratuita (revision m).
       - name: Validar que las fuentes no esten rotas (check-module --online)
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online
 
@@ -124,30 +158,21 @@ jobs:
 
       - name: Escribir version, download y manifest en module.json
         env:
-          VERSION: ${{ steps.v.outputs.version }}
           TAG: ${{ steps.v.outputs.tag }}
           PRERELEASE: ${{ steps.v.outputs.prerelease }}
+          MODE: ${{ steps.baron.outputs.mode }}
+          LANDING_URL: ${{ steps.baron.outputs.landingUrl }}
         run: |
-          node -e "
-            const fs = require('fs');
-            const m = JSON.parse(fs.readFileSync('module.json', 'utf8'));
-            const { VERSION, TAG, PRERELEASE, GITHUB_REPOSITORY } = process.env;
-            const base = 'https://github.com/' + GITHUB_REPOSITORY + '/releases';
-            m.version = VERSION;
-            m.download = base + '/download/' + TAG + '/' + m.id + '-' + TAG + '.zip';
-            // Stable builds point at 'latest' so Foundry offers updates on its own
-            // and the install URL never has to change. Prereleases are excluded
-            // from 'latest' on purpose, so pointing them there would make Foundry
-            // resolve a test build straight back to the last stable one.
-            m.manifest =
-              PRERELEASE === 'true'
-                ? base + '/download/' + TAG + '/module.json'
-                : base + '/latest/download/module.json';
-            fs.writeFileSync('module.json', JSON.stringify(m, null, 2) + '\n');
-            console.log('version  = ' + m.version);
-            console.log('download = ' + m.download);
-            console.log('manifest = ' + m.manifest);
-          "
+          # public: version de la etiqueta, download en el release de la
+          # etiqueta y manifest en releases/latest (estable) o en el release de
+          # la etiqueta (prerelease, que "latest" nunca resuelve).
+          # protected: "protected": true, sin download, manifest en
+          # r2.foundryvtt.com, url = landingUrl; falla si queda un github.com.
+          CHANNEL=stable
+          if [ "$PRERELEASE" = "true" ]; then CHANNEL=prerelease; fi
+          ARGS=(module.json --tag "$TAG" --repo "$GITHUB_REPOSITORY" --channel "$CHANNEL" --mode "$MODE")
+          if [ "$MODE" = "protected" ]; then ARGS+=(--landing-url "$LANDING_URL"); fi
+          node .baron-core/tools/release-manifest.mjs "${ARGS[@]}"
 
       - name: Armar el ZIP
         env:
@@ -183,6 +208,8 @@ jobs:
           # GitHub excluye los prerelease al resolver "releases/latest", que es la
           # URL de actualizacion de las versiones estables: asi una prueba nunca se
           # le ofrece como actualizacion a los usuarios reales.
+          # En mode protected este release queda en el repo privado: solo lo ven
+          # sus colaboradores, y de aqui se baja el ZIP para subirlo a Foundry.
           FLAGS=""
           if [ "$PRERELEASE" = "true" ]; then
             FLAGS="--prerelease"
@@ -199,15 +226,51 @@ jobs:
               module.json "$ZIP_NAME"
           fi
 
+      # Modulo de pago: Foundry no tiene API para subir paquetes protegidos, asi
+      # que el resto es a mano. La lista queda en el resumen del run y un aviso
+      # en el log apunta a ella.
+      - name: Lista para subir el modulo de pago a Foundry
+        if: steps.baron.outputs.mode == 'protected'
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            const m = JSON.parse(fs.readFileSync("module.json", "utf8"));
+            const { GITHUB_REPOSITORY, GITHUB_SERVER_URL, GITHUB_STEP_SUMMARY, TAG, PRERELEASE, ZIP_NAME } = process.env;
+            const release = (GITHUB_SERVER_URL || "https://github.com") + "/" + GITHUB_REPOSITORY + "/releases/tag/" + encodeURIComponent(TAG);
+            const c = m.compatibility || {};
+            const compat = ["minimum", "verified", "maximum"].filter((k) => c[k] !== undefined && c[k] !== "").map((k) => k + " `" + c[k] + "`").join(", ") || "(module.json no declara compatibility)";
+            const lines = [
+              "## Subida manual a Foundry: `" + m.id + "` " + m.version,
+              "",
+              "La CI ya armo el paquete protegido; Foundry no tiene API para subirlo, asi que lo que sigue es a mano. Requisito previo, una sola vez: el Premium Content Agreement de Foundry firmado en la cuenta de creador.",
+              "",
+              "- [ ] Descarga `" + ZIP_NAME + "` del release [" + TAG + "](" + release + ") de este repo privado.",
+              "- [ ] Subelo en https://foundryvtt.com/creators/upload al paquete `" + m.id + "`, version `" + m.version + "`, compatibilidad " + compat + ".",
+              "- [ ] Si es la primera version del paquete, espera la aprobacion de Foundry antes de anunciarla.",
+              "- [ ] En la pagina del paquete en foundryvtt.com, revisa los niveles (tiers) de Patreon que dan acceso.",
+              "- [ ] Prueba la instalacion desde una cuenta de mecenas (con Patreon vinculado en su perfil de foundryvtt.com). Manifest del paquete: " + m.manifest,
+            ];
+            if (PRERELEASE === "true") {
+              lines.push("", "> " + TAG + " es una prerelease: lo que subas a Foundry les llega a los mecenas como actualizacion. Una prueba se instala mejor a mano desde este ZIP.");
+            }
+            fs.appendFileSync(GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
+            console.log("::notice title=Subida manual pendiente::" + m.id + " " + m.version + ": baja " + ZIP_NAME + " de este release y subelo en https://foundryvtt.com/creators/upload (la lista completa esta en el resumen del run)");
+          '
+
       # Canal de pruebas: una etiqueta fija cuyos archivos se reemplazan en cada
       # prerelease, para instalar siempre desde la misma URL. El release por
       # version sigue existiendo aparte, para poder volver a una rc concreta.
       # Corre en TODO release, no solo prereleases: si no, publicar estables
       # directas deja el canal congelado y las instalaciones que vinieron de el
       # nunca ven la version nueva (paso con la v0.9.x: dev quedo en 0.8.0.21).
-      # Un modulo lo apaga con "devChannel": false en baron.json.
+      # Un modulo lo apaga con "devChannel": false en baron.json. Un modulo de
+      # pago (mode protected) nunca lo usa: Leer baron.json deja devChannel en
+      # false, y la condicion lo repite por si acaso.
       - name: Actualizar el canal de pruebas
-        if: steps.baron.outputs.devChannel == 'true'
+        if: steps.baron.outputs.devChannel == 'true' && steps.baron.outputs.mode == 'public'
         # El canal de pruebas es una comodidad, no parte del release: si falla,
         # la version publicada arriba sigue siendo valida y el run no se marca
         # como fallido por esto.
@@ -224,23 +287,10 @@ jobs:
           {
           set -x
           DEV_ZIP="$GITHUB_WORKSPACE/$MODULE_ID-dev.zip"
-          node -e "
-            const fs = require('fs');
-            const m = JSON.parse(fs.readFileSync('module.json', 'utf8'));
-            const { GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, VERSION } = process.env;
-            const dev = 'https://github.com/' + GITHUB_REPOSITORY + '/releases/download/dev/';
-            // Foundry compares versions segment by segment and falls back to a
-            // string compare on anything non-numeric, so '0.7.0-rc10' reads as
-            // older than '0.7.0-rc9' and the update stops being offered. The test
-            // channel therefore reports a plain numeric build that always grows.
-            m.version = VERSION.replace(/[-+].*\$/, '') + '.' + GITHUB_RUN_NUMBER;
-            m.manifest = dev + 'module.json';
-            m.download = dev + m.id + '-dev.zip';
-            fs.writeFileSync('module.json', JSON.stringify(m, null, 2) + '\n');
-            console.log('version  = ' + m.version);
-            console.log('manifest = ' + m.manifest);
-            console.log('download = ' + m.download);
-          "
+          # Version numerica X.Y.Z.<run> que siempre crece (Foundry compara
+          # "0.7.0-rc10" como texto y la tomaria por mas vieja que rc9), con
+          # manifest y download en el release fijo "dev".
+          node .baron-core/tools/release-manifest.mjs module.json --tag "$TAG" --repo "$GITHUB_REPOSITORY" --channel dev --run-number "$GITHUB_RUN_NUMBER"
           cp module.json "build/$MODULE_ID/module.json"
           rm -f "$DEV_ZIP"
           (cd build && zip -r "$DEV_ZIP" "$MODULE_ID")

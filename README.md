@@ -55,9 +55,10 @@ mi-modulo/
 
 | campo        | valores                  | uso                                                                                  |
 |--------------|--------------------------|--------------------------------------------------------------------------------------|
-| `mode`       | `"public"`, `"protected"` | `protected` (módulos de pago) **aún no existe**: `module-release` falla a propósito |
+| `mode`       | `"public"`, `"protected"` | `protected`: módulo de pago, un complemento freemium alojado por Foundry (ver [Modo de pago](#modo-de-pago)) |
 | `paizo`      | `"cup"`, `"orc"`        | licencia de Paizo que cubre el material del juego, independiente de `mode`: `cup` (Community Use Policy) solo para un proyecto sin ninguna parte de pago; `orc` para los de pago y para la base gratuita de un freemium. `protected` exige `orc` |
-| `devChannel` | `true` / `false`         | publicar o no el canal de pruebas `dev` en cada release                              |
+| `landingUrl` | URL `https`              | solo en `protected`, obligatoria: página pública del módulo (su Patreon, su página en foundryvtt.com); el release la pone como `url` de `module.json`. En `public` se ignora (el template la deja vacía) |
+| `devChannel` | `true` / `false`         | publicar o no el canal de pruebas `dev` en cada release; en `protected` se ignora: nunca hay canal `dev` |
 | `i18nPrefix` | texto                    | prefijo de las claves de idioma; en módulos nuevos es el id del módulo               |
 | `langParity` | `"error"`, `"warn"`      | qué pasa si `en.json` y `es.json` no tienen las mismas claves                        |
 | `persisted`  | lista de textos          | identificadores guardados en mundos (scope de flags, slugs, roll options) que nunca pueden desaparecer de `scripts/` |
@@ -84,10 +85,15 @@ node ../pf2e-baron-core/tools/sync-core.mjs --watch
 node ../pf2e-baron-core/tools/check-module.mjs
 node ../pf2e-baron-core/tools/check-module.mjs --online     # además compara el lock con este repo
 node ../pf2e-baron-core/tools/check-module.mjs --parity warn
+
+# Lo que module-release escribiría en module.json. Reescribe el archivo que le
+# pasas: úsalo sobre una copia (en CI lo corre el workflow)
+node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.0 --repo BaronHVC/<id> --channel stable
+node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.0 --repo BaronHVC/<id> --channel stable --mode protected --landing-url https://www.patreon.com/<tú>
 ```
 
-Ambas herramientas aceptan la carpeta del módulo como primer argumento (por
-defecto, la carpeta actual).
+`sync-core` y `check-module` aceptan la carpeta del módulo como primer argumento
+(por defecto, la carpeta actual).
 
 **`sync-core --ref`** lee `baron-core.js` con `git show <commit>:baron-core.js`
 (nunca hace checkout), lo normaliza a LF, verifica la línea
@@ -115,6 +121,7 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | j   | `module.json` sin clave `protected`, sin `requires` a pf2e-baron-core; aviso si `esmodules` lista la copia del core |
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
 | l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, aviso por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta) y aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`) |
+| m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a github.com (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona github.com, porque el release protegido lo rechaza (WARN). En un módulo `public` no imprime nada |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
@@ -161,7 +168,10 @@ jobs:
   propio; ZIP `<id>-<tag>.zip` con la carpeta `<id>/` y solo `module.json`,
   `scripts`, `styles`, `templates`, `lang` y `packs` (los que existan); y el canal
   de pruebas `dev` con versión numérica `X.Y.Z.<run>` en cada release, salvo que
-  `baron.json` diga `"devChannel": false`.
+  `baron.json` diga `"devChannel": false`. El `module.json` lo reescribe
+  `tools/release-manifest.mjs`, con las mismas salidas byte a byte que los
+  `node -e` que traía antes el workflow. Con `"mode": "protected"` el camino
+  cambia: ver [Modo de pago](#modo-de-pago).
 - Este repo tiene que seguir siendo **público**: un repo privado puede llamar
   workflows de uno público, no al revés.
 
@@ -218,14 +228,73 @@ Ninguna de las dos existe en v1.
 El costo aceptado: un arreglo del core llega a los usuarios solo cuando cada
 módulo resincroniza y publica.
 
-## Modo protegido (módulos de pago)
+## Modo de pago
 
-**No está implementado.** Un módulo con `"mode": "protected"` en `baron.json`
-hace fallar `module-release` con
-`protected mode is not implemented yet (see pf2e-baron-core README)`, para que
-un módulo de pago nunca se publique por accidente como gratuito. Lo previsto: repo
-privado, `module.json` del ZIP con `protected: true` y sin `download`, subida
-manual a foundryvtt.com y sin canal `dev`.
+Un módulo de pago (`"mode": "protected"`) es un **complemento freemium**:
+extiende un módulo base gratuito y solo lo descargan los mecenas de Patreon.
+
+- Repo **privado** en GitHub, creado con *Use this template* de
+  pf2e-module-template e inicializado con
+  `init-module --mode protected --requires <id-de-la-base>`. `LICENSE` con todos
+  los derechos reservados (la copia de `baron-core.js` sigue siendo MIT) y
+  `NOTICE.md` con la ORC; `baron.json` lleva `"mode": "protected"`,
+  `"paizo": "orc"` y `"landingUrl"`.
+- `module.json` lleva la base en `relationships.requires` y el módulo registra
+  sus funciones con la API de la base en `setup`/`ready`. El `module.json` del
+  código nunca lleva `"protected"` (revisión `j`): lo agrega el release.
+- Foundry aloja el paquete y decide quién lo descarga: el autor asigna niveles
+  de Patreon en la página del paquete y cada mecenas vincula su Patreon en su
+  perfil de foundryvtt.com.
+
+**Requisito previo, una sola vez:** el Premium Content Agreement de Foundry
+firmado en la cuenta de creador. Sin él no se publica ningún paquete protegido.
+
+### Qué hace la CI al empujar la etiqueta
+
+1. `Leer baron.json` falla si el repo no es privado
+   (`github.event.repository.private`): los archivos de un release de un repo
+   público los descarga cualquiera.
+2. `check-module --online`, con la revisión `m` (`landingUrl`, la base en
+   `requires`).
+3. `release-manifest.mjs --mode protected` reescribe `module.json`:
+   `"protected": true`, sin `download`, `manifest` =
+   `https://r2.foundryvtt.com/packages-public/<id>/module.json` (el que sirve
+   Foundry), `url` = `landingUrl` y la versión de la etiqueta. Falla si
+   cualquier texto del resultado todavía menciona github.com, y dice dónde
+   (`bugs`, `readme`, `changelog`, `authors[0].url`, …): un enlace al repo
+   privado está muerto para los jugadores y revela el repo. Foundry encuentra
+   por su id una dependencia publicada en foundryvtt.com, sin `manifest`.
+4. ZIP `<id>-<tag>.zip` con la carpeta `<id>/`, igual que en modo público.
+5. Release **en el propio repo privado** con el ZIP y ese `module.json`
+   (prerelease si la etiqueta no es `vX.Y.Z`): solo lo ven sus colaboradores.
+6. Nunca toca el canal `dev`.
+7. Deja en el resumen del run la lista de abajo, con el id, la versión y la
+   compatibilidad ya escritos.
+
+### Subida manual a Foundry
+
+Foundry no documenta ninguna API para subir paquetes protegidos, así que en cada
+versión:
+
+1. Descarga `<id>-<tag>.zip` del release de esa etiqueta, en el repo privado.
+2. Súbelo en https://foundryvtt.com/creators/upload al paquete `<id>`, con la
+   versión y la compatibilidad (`minimum`, `verified`, `maximum` de
+   `module.json`).
+3. La primera versión de un paquete espera la aprobación de Foundry antes de
+   aparecer.
+4. En la página del paquete en foundryvtt.com, asigna los niveles de Patreon que
+   dan acceso.
+5. Prueba la instalación desde una cuenta de mecenas, con Patreon vinculado en
+   su perfil de foundryvtt.com.
+
+### Por qué nunca el canal `dev`
+
+El canal `dev` es un release de GitHub con URL fija. En un repo privado nadie de
+fuera podría instalar desde ahí, y en uno público regalaría el paquete: el ZIP
+se descargaría sin pasar por Patreon. El acceso a un módulo de pago lo controla
+Foundry, así que todo lo que llega a los jugadores sale de foundryvtt.com, y lo
+que se sube ahí les llega como actualización. Una versión de prueba se instala a
+mano desde el ZIP de su release. `devChannel` se ignora en `mode: protected`.
 
 ## Pruebas
 
@@ -237,7 +306,7 @@ node --test test/*.test.mjs test/tools/*.test.mjs
 
 - `test/*.test.mjs`: los exports del core, incluida la paridad contra la copia
   de SWE v0.12.0 en `test/legacy/`.
-- `test/tools/*.test.mjs`: `sync-core` y `check-module`. Arman repos de git
+- `test/tools/*.test.mjs`: `sync-core`, `check-module` y `release-manifest`. Arman repos de git
   temporales (un core falso etiquetado y un módulo con pins), así que necesitan
   `git` en el PATH.
 - `test/fixtures/valid-module/` es el módulo mínimo que pasa todo;

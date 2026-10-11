@@ -8,6 +8,49 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+Sin cambios en `baron-core.js` ni en sus exports. Un módulo recibe el pipeline
+nuevo al resincronizar con `sync-core --ref` a la versión que lo traiga (el pin
+de sus workflows es el commit del lock).
+
+### Added
+
+- Modo de pago (`"mode": "protected"` en `baron.json`, un complemento freemium):
+  `module-release` ya no falla a propósito. Exige un repo privado
+  (`github.event.repository.private`), reescribe `module.json` para un paquete
+  protegido de Foundry (`"protected": true`, sin `download`, manifest
+  `https://r2.foundryvtt.com/packages-public/<id>/module.json`, `url` =
+  `landingUrl`), arma el ZIP igual que en modo público, lo publica con ese
+  `module.json` en un release del propio repo privado (prerelease si la etiqueta
+  no es `vX.Y.Z`), nunca toca el canal `dev` y deja en el resumen del run la
+  lista para subirlo a mano a foundryvtt.com y asignar los niveles de Patreon.
+  Ver «Modo de pago» en el README.
+- `baron.json` gana `landingUrl`: la página `https` pública de un módulo de pago,
+  que el release pone como `url`. En un módulo público se ignora.
+- `tools/release-manifest.mjs`: la reescritura de `module.json` del release como
+  herramienta con pruebas, en lugar de los dos `node -e` del workflow. En modo
+  público las salidas son idénticas byte a byte a las de antes (estable,
+  prerelease y canal `dev`, comparadas contra el `node -e` anterior). En modo
+  protegido falla sin `--landing-url` `https`, con `--channel dev` o si
+  cualquier texto del resultado menciona github.com, y lista sus rutas JSON
+  (`bugs`, `authors[0].url`, …). También rechaza un `--channel` que no coincida
+  con la etiqueta.
+- `tools/check-module.mjs`: revisión `[m] protected packaging`, solo con
+  `mode: protected`. Falla si `landingUrl` falta o no es una URL `https` (o
+  apunta a github.com); avisa si `relationships.requires` no lista ningún módulo
+  (la base del freemium; pf2e-baron-core no cuenta) o si otro texto de
+  `module.json` menciona github.com, que el release protegido rechazaría. En un
+  módulo público no imprime nada ni cuenta en el resumen.
+- `tools/shared.mjs`: `httpsUrlProblem`, `githubPaths` y `GITHUB_HOST_RE`, que
+  comparten `check-module` y `release-manifest`.
+
+### Changed
+
+- `module-release.yml`: el canal `dev` corre solo con `mode: public`, y `Leer
+  baron.json` publica `mode` y `landingUrl` como salidas del paso.
+- `test/fixtures/negative/paizo-orc-both-notices.json` y
+  `paizo-protected-cup.json` llevan `landingUrl`, para que sigan fallando solo
+  en la revisión `l`.
+
 ## [1.0.0] - 2026-10-11
 
 Primera versión estable. Las funciones son las mismas de `1.0.0-rc.1`, sin un
