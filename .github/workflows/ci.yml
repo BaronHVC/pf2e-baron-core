@@ -1,0 +1,84 @@
+name: CI
+
+# CI del propio core. Corre en cada push y pull request, y en las etiquetas
+# vX.Y.Z, donde ademas exige que la etiqueta sea exactamente "v" + CORE_VERSION:
+# los modulos fijan el core por esa etiqueta y sync-core rechaza una mal puesta.
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Pruebas del core
+        # Rutas explicitas: un "node --test" sin argumentos tambien recorre
+        # test/fixtures y test/helpers, que no son pruebas.
+        run: node --test test/*.test.mjs
+
+      - name: Importar baron-core.js sin Foundry
+        # Sin game, CONFIG, Hooks, ui ni document: si el archivo tocara un global
+        # de Foundry al importarse (o usara top-level await sobre uno), esto
+        # truena. Es la prueba de "sin efectos al importar".
+        run: |
+          node -e "import('./baron-core.js').then((m) => console.log('baron-core ' + m.CORE_VERSION + ': ' + Object.keys(m).length + ' exports'), (e) => { console.error(e); process.exit(1); })"
+
+      - name: Guardia de lo prohibido en baron-core.js
+        run: |
+          # 1) El core no conoce a ningun modulo: ni su id, ni su prefijo, ni sus
+          #    clases. Se busca en TODO el archivo, comentarios incluidos.
+          if grep -nE 'pf2e-simple-weapon-editor|\bSWE\b|swe-' baron-core.js; then
+            echo "::error file=baron-core.js::baron-core.js menciona pf2e-simple-weapon-editor, SWE o swe- (lineas arriba): la identidad de cada modulo llega como parametro"
+            exit 1
+          fi
+          # 2) El core no registra nada ni escribe en CONFIG. Se busca sobre el
+          #    codigo SIN comentarios, porque la cabecera del archivo explica
+          #    justamente que no hay Hooks.on ni game.settings.register.
+          node --input-type=module -e 'import fs from "node:fs"; import { scanJs } from "./tools/shared.mjs"; process.stdout.write(scanJs(fs.readFileSync("baron-core.js", "utf8")).code);' > "$RUNNER_TEMP/core-code.js"
+          PATTERN='Hooks\.(on|once)\b|game\.settings\.register|Handlebars\.register|game\.socket\b|customElements\.define|libWrapper\b|CONFIG(\.[A-Za-z_$][A-Za-z0-9_$]*|\[[^]]*\])+[[:space:]]*(=([^=]|$)|[-+*/%&|^]=|&&=|\|\|=|\?\?=)|(assign|mergeObject)\([[:space:]]*CONFIG\b|^(await[[:space:](]|(const|let|var)[[:space:]][^=]*=[[:space:]]*await\b)'
+          if grep -nE "$PATTERN" "$RUNNER_TEMP/core-code.js"; then
+            echo "::error file=baron-core.js::baron-core.js registra algo, escribe en CONFIG o usa top-level await (lineas arriba): eso vive en los archivos de entrada de cada modulo"
+            exit 1
+          fi
+          echo "Guardia limpia: sin literales de modulos, sin registros, sin escrituras a CONFIG"
+
+      - name: La etiqueta coincide con CORE_VERSION
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          VERSION=$(node --input-type=module -e 'import fs from "node:fs"; import { readCoreVersion } from "./tools/shared.mjs"; console.log(readCoreVersion(fs.readFileSync("baron-core.js", "utf8")) ?? "");')
+          if [ "$TAG" != "v$VERSION" ]; then
+            echo "::error file=baron-core.js::la etiqueta $TAG no coincide con CORE_VERSION \"$VERSION\" (se esperaba v$VERSION). Las etiquetas no se mueven: publica la version correcta con su propia etiqueta."
+            exit 1
+          fi
+          echo "Etiqueta $TAG = v + CORE_VERSION"
+
+  tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Pruebas de sync-core y check-module
+        # Arman repos de git temporales (core falso con etiqueta, modulo con
+        # pins) y corren los casos negativos de test/fixtures/negative.
+        run: node --test test/tools/*.test.mjs
+
+      - name: check-module sobre el modulo de ejemplo valido
+        # Salida legible en el log; sin GITHUB_ACTIONS para que sus avisos
+        # (no vendoriza el core, una clave sin uso) no salgan como anotaciones.
+        run: env -u GITHUB_ACTIONS node tools/check-module.mjs test/fixtures/valid-module

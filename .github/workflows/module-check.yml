@@ -1,0 +1,63 @@
+name: Module check
+
+# Workflow reutilizable: lo llama el ci.yml de cada modulo de la familia.
+#
+#   jobs:
+#     check:
+#       uses: BaronHVC/pf2e-baron-core/.github/workflows/module-check.yml@<sha>
+#
+# <sha> es el mismo commit que baron-core.lock.json: sync-core reescribe el pin
+# y check-module --online falla si difieren. Por eso las herramientas que corren
+# aqui son las del commit fijado, nunca las de main.
+#
+# El contexto `github` es el del modulo que llama: el checkout sin `repository`
+# trae el modulo, no este repo.
+on:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout del modulo
+        uses: actions/checkout@v4
+
+      - name: Leer el commit del core en baron-core.lock.json
+        id: lock
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("baron-core.lock.json")) {
+              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe");
+              process.exit(1);
+            }
+            const lock = JSON.parse(fs.readFileSync("baron-core.lock.json", "utf8"));
+            // "dev" (de sync-core --watch) no es un commit: se corta aqui con un
+            // mensaje claro en lugar de un checkout fallido mas abajo.
+            if (!/^[0-9a-f]{40}$/.test(lock.commit ?? "")) {
+              console.log("::error file=baron-core.lock.json::lock.commit no es un sha de 40 caracteres (" + JSON.stringify(lock.commit) + "): si dice dev, la copia viene de sync-core --watch; corre sync-core --ref <etiqueta>");
+              process.exit(1);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "commit=" + lock.commit + "\n");
+            console.log("baron-core " + lock.version + " @ " + lock.commit);
+          '
+
+      - name: Checkout de pf2e-baron-core en el commit del lock
+        uses: actions/checkout@v4
+        with:
+          repository: BaronHVC/pf2e-baron-core
+          ref: ${{ steps.lock.outputs.commit }}
+          path: .baron-core
+          # Historia completa: check-module --online necesita las etiquetas
+          # para comprobar que v<version> apunta al commit del lock.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: check-module --online
+        run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online

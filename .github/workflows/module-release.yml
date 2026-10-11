@@ -1,0 +1,269 @@
+name: Module release
+
+# Workflow reutilizable: lo llama el release.yml de cada modulo de la familia
+# al empujar una etiqueta v*.
+#
+#   on:
+#     push:
+#       tags:
+#         - "v*"
+#   permissions:
+#     contents: write
+#   jobs:
+#     release:
+#       uses: BaronHVC/pf2e-baron-core/.github/workflows/module-release.yml@<sha>
+#
+# El modulo que llama TIENE que conceder `contents: write`: un workflow
+# reutilizable solo puede reducir los permisos que recibe, nunca ampliarlos, y
+# sin escritura no puede crear el release. <sha> = commit de baron-core.lock.json
+# (sync-core lo reescribe).
+#
+# Primero corre las mismas revisiones que module-check.yml; despues reproduce el
+# release.yml de pf2e-simple-weapon-editor v0.12.0: version desde la etiqueta,
+# prerelease para lo que no sea vX.Y.Z, module.json reescrito, ZIP con la
+# carpeta <id>/ adentro, release por version y canal de pruebas "dev".
+on:
+  workflow_call:
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Leer baron.json
+        id: baron
+        run: |
+          node -e '
+            const fs = require("fs");
+            const defaults = { mode: "public", devChannel: true };
+            let given = {};
+            if (fs.existsSync("baron.json")) given = JSON.parse(fs.readFileSync("baron.json", "utf8"));
+            else console.log("::notice::sin baron.json: modo public y canal de pruebas activo");
+            const cfg = { ...defaults, ...given };
+            // El modo protegido (modulos de pago) todavia no existe: mejor
+            // fallar que publicar un modulo de pago como si fuera gratuito.
+            if (cfg.mode === "protected") {
+              console.log("::error::protected mode is not implemented yet (see pf2e-baron-core README)");
+              process.exit(1);
+            }
+            if (cfg.mode !== "public") {
+              console.log("::error file=baron.json::mode debe ser public o protected, no " + JSON.stringify(cfg.mode));
+              process.exit(1);
+            }
+            const dev = cfg.devChannel !== false;
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "devChannel=" + dev + "\n");
+            console.log("modo " + cfg.mode + ", canal de pruebas " + (dev ? "si" : "no"));
+          '
+
+      - name: Leer el commit del core en baron-core.lock.json
+        id: lock
+        run: |
+          node -e '
+            const fs = require("fs");
+            if (!fs.existsSync("baron-core.lock.json")) {
+              console.log("::error file=baron-core.lock.json::no existe baron-core.lock.json: corre node <core>/tools/sync-core.mjs --ref <etiqueta> y haz commit de lo que escribe");
+              process.exit(1);
+            }
+            const lock = JSON.parse(fs.readFileSync("baron-core.lock.json", "utf8"));
+            if (!/^[0-9a-f]{40}$/.test(lock.commit ?? "")) {
+              console.log("::error file=baron-core.lock.json::lock.commit no es un sha de 40 caracteres (" + JSON.stringify(lock.commit) + "): si dice dev, la copia viene de sync-core --watch; corre sync-core --ref <etiqueta>");
+              process.exit(1);
+            }
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, "commit=" + lock.commit + "\n");
+            console.log("baron-core " + lock.version + " @ " + lock.commit);
+          '
+
+      - name: Checkout de pf2e-baron-core en el commit del lock
+        uses: actions/checkout@v4
+        with:
+          repository: BaronHVC/pf2e-baron-core
+          ref: ${{ steps.lock.outputs.commit }}
+          path: .baron-core
+          # Historia completa: check-module --online necesita las etiquetas.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Reemplaza los dos pasos de validacion del release.yml de SWE (archivos
+      # declarados, node --check, JSON, paridad en/es) y agrega el resto de
+      # check-module: copia del core contra el lock, imports, claves i18n,
+      # identificadores persistidos y placeholders.
+      - name: Validar que las fuentes no esten rotas (check-module --online)
+        run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online
+
+      - name: Leer la version desde la etiqueta
+        id: v
+        run: |
+          # Solo una etiqueta da version: corrido desde una rama, esto
+          # publicaria un release con el nombre de la rama.
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::module-release corre solo al empujar una etiqueta v* (on: push: tags), no en $GITHUB_REF"
+            exit 1
+          fi
+          TAG="$GITHUB_REF_NAME"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          # Una etiqueta que no sea vX.Y.Z (por ejemplo v0.7.0-rc1) se publica
+          # como prerelease, y eso cambia tambien a donde apunta el manifest.
+          if echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Etiqueta: $TAG -> version ${TAG#v}"
+
+      - name: Escribir version, download y manifest en module.json
+        env:
+          VERSION: ${{ steps.v.outputs.version }}
+          TAG: ${{ steps.v.outputs.tag }}
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('module.json', 'utf8'));
+            const { VERSION, TAG, PRERELEASE, GITHUB_REPOSITORY } = process.env;
+            const base = 'https://github.com/' + GITHUB_REPOSITORY + '/releases';
+            m.version = VERSION;
+            m.download = base + '/download/' + TAG + '/' + m.id + '-' + TAG + '.zip';
+            // Stable builds point at 'latest' so Foundry offers updates on its own
+            // and the install URL never has to change. Prereleases are excluded
+            // from 'latest' on purpose, so pointing them there would make Foundry
+            // resolve a test build straight back to the last stable one.
+            m.manifest =
+              PRERELEASE === 'true'
+                ? base + '/download/' + TAG + '/module.json'
+                : base + '/latest/download/module.json';
+            fs.writeFileSync('module.json', JSON.stringify(m, null, 2) + '\n');
+            console.log('version  = ' + m.version);
+            console.log('download = ' + m.download);
+            console.log('manifest = ' + m.manifest);
+          "
+
+      - name: Armar el ZIP
+        env:
+          TAG: ${{ steps.v.outputs.tag }}
+        run: |
+          MODULE_ID=$(node -p "require('./module.json').id")
+          echo "MODULE_ID=$MODULE_ID" >> "$GITHUB_ENV"
+          # No llamar a esta variable ZIP: Info-ZIP lee $ZIP como argumentos por
+          # defecto, asi que exportarla hace que toda llamada posterior a zip
+          # reciba este nombre como archivo destino y trate el suyo como patron
+          # de entrada, escribiendo en el paquete equivocado sin dar error.
+          echo "ZIP_NAME=$MODULE_ID-$TAG.zip" >> "$GITHUB_ENV"
+          # Se respeta la carpeta interna que ya usaban tus ZIPs anteriores
+          mkdir -p "build/$MODULE_ID"
+          # Solo lo que Foundry carga, y solo lo que este modulo tenga. Nunca
+          # entran .baron-core, tools, baron.json, baron-core.lock.json ni .github;
+          # la copia del core viaja dentro de scripts/.
+          PARTS=()
+          for p in module.json scripts styles templates lang packs; do
+            if [ -e "$p" ]; then PARTS+=("$p"); fi
+          done
+          cp -r "${PARTS[@]}" "build/$MODULE_ID/"
+          (cd build && zip -r "../$MODULE_ID-$TAG.zip" "$MODULE_ID")
+          echo "--- contenido del ZIP ---"
+          unzip -l "$MODULE_ID-$TAG.zip"
+
+      - name: Publicar el release con sus dos archivos
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          PRERELEASE: ${{ steps.v.outputs.prerelease }}
+        run: |
+          # GitHub excluye los prerelease al resolver "releases/latest", que es la
+          # URL de actualizacion de las versiones estables: asi una prueba nunca se
+          # le ofrece como actualizacion a los usuarios reales.
+          FLAGS=""
+          if [ "$PRERELEASE" = "true" ]; then
+            FLAGS="--prerelease"
+            echo "::notice::$TAG no es una version estable: se publica como prerelease"
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "El release $TAG ya existe: se reemplazan los archivos"
+            gh release upload "$TAG" module.json "$ZIP_NAME" --clobber
+          else
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --generate-notes \
+              $FLAGS \
+              module.json "$ZIP_NAME"
+          fi
+
+      # Canal de pruebas: una etiqueta fija cuyos archivos se reemplazan en cada
+      # prerelease, para instalar siempre desde la misma URL. El release por
+      # version sigue existiendo aparte, para poder volver a una rc concreta.
+      # Corre en TODO release, no solo prereleases: si no, publicar estables
+      # directas deja el canal congelado y las instalaciones que vinieron de el
+      # nunca ven la version nueva (paso con la v0.9.x: dev quedo en 0.8.0.21).
+      # Un modulo lo apaga con "devChannel": false en baron.json.
+      - name: Actualizar el canal de pruebas
+        if: steps.baron.outputs.devChannel == 'true'
+        # El canal de pruebas es una comodidad, no parte del release: si falla,
+        # la version publicada arriba sigue siendo valida y el run no se marca
+        # como fallido por esto.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.v.outputs.tag }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          # El log del workflow solo lo puede descargar quien tenga permisos de
+          # admin en el repo. Este paso guarda su propia salida y la adjunta al
+          # release para poder diagnosticarlo desde afuera.
+          set +e
+          {
+          set -x
+          DEV_ZIP="$GITHUB_WORKSPACE/$MODULE_ID-dev.zip"
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('module.json', 'utf8'));
+            const { GITHUB_REPOSITORY, GITHUB_RUN_NUMBER, VERSION } = process.env;
+            const dev = 'https://github.com/' + GITHUB_REPOSITORY + '/releases/download/dev/';
+            // Foundry compares versions segment by segment and falls back to a
+            // string compare on anything non-numeric, so '0.7.0-rc10' reads as
+            // older than '0.7.0-rc9' and the update stops being offered. The test
+            // channel therefore reports a plain numeric build that always grows.
+            m.version = VERSION.replace(/[-+].*\$/, '') + '.' + GITHUB_RUN_NUMBER;
+            m.manifest = dev + 'module.json';
+            m.download = dev + m.id + '-dev.zip';
+            fs.writeFileSync('module.json', JSON.stringify(m, null, 2) + '\n');
+            console.log('version  = ' + m.version);
+            console.log('manifest = ' + m.manifest);
+            console.log('download = ' + m.download);
+          "
+          cp module.json "build/$MODULE_ID/module.json"
+          rm -f "$DEV_ZIP"
+          (cd build && zip -r "$DEV_ZIP" "$MODULE_ID")
+          echo "--- contenido del paquete de pruebas ---"
+          unzip -l "$DEV_ZIP"
+          NOTES="Canal de pruebas. Los archivos de este release se reemplazan en cada version de prueba, asi la URL de instalacion no cambia. Contenido actual: $TAG (version $VERSION). Para una version concreta, usa su propio release."
+          if gh release view dev; then
+            echo "El canal ya existe: se reemplazan sus archivos"
+            gh release upload dev module.json "$DEV_ZIP" --clobber
+            gh release edit dev --notes "$NOTES"
+          else
+            echo "Creando el canal por primera vez en $GITHUB_SHA"
+            # --target explicito: la etiqueta "dev" no existe todavia y el
+            # checkout de un tag deja el repo en HEAD desasociado, asi que se le
+            # dice exactamente sobre que commit crearla.
+            gh release create dev \
+              --target "$GITHUB_SHA" \
+              --title "Canal de pruebas" \
+              --notes "$NOTES" \
+              --prerelease \
+              module.json "$DEV_ZIP"
+          fi
+          echo "Estado final del canal:"
+          gh release view dev --json tagName,isPrerelease,assets \
+            --jq '{tag: .tagName, prerelease: .isPrerelease, assets: [.assets[].name]}'
+          } > dev-channel.log 2>&1
+          RC=$?
+          echo "exit_code=$RC" >> dev-channel.log
+          cat dev-channel.log
+          gh release upload "$TAG" dev-channel.log --clobber || true
