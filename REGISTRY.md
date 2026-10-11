@@ -43,6 +43,8 @@ tiempo no pueden usar el mismo. Esta tabla es la fuente de verdad.
 | id (scope de flags) | prefijo i18n | raíz CSS | prefijos de slug de reglas | roll options | helpers Handlebars | socket | envuelve |
 |---|---|---|---|---|---|---|---|
 | `pf2e-simple-weapon-editor` | `SWE` | `swe-editor` / `swe-open` | `SWE:`, `swe-cond`, `swe-x-`, `swe-s-`, `swe-p-`, `swe-a-` | `swe-adopted`, `swe-gated`, `swe-pick`, `swe-pick-made`, `swe-atk`, `swe-rider`, `swe-react`, `swe-dmg:` | `sweEq` | ninguno | `CharacterPF2e#prepareStrike`, `CharacterPF2e#prepareAreaAttack`, `ActorPF2e#applyDamage` (a mano) |
+| `baron-traps` | `baron-traps` | `btrap-app` / `btrap-open` | `btrap-` | `btrap-` | `btrap` | ninguno | ninguno |
+| `baron-cover` | `baron-cover` | `bcover-app` / `bcover-open` | `bcover-` | `bcover-` | `bcover` | ninguno | `game.pf2e.Check.roll` (lib-wrapper si está activo; si no, a mano) |
 
 ### Notas por módulo
 
