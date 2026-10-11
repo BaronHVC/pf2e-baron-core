@@ -14,7 +14,7 @@
 //   [e] vendored core vs lock     [k] no leftover template placeholders
 //   [f] lock vs core repo (--online)
 //   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md
-//   [m] protected packaging: a paid module has a landing page and requires its free base
+//   [m] protected packaging: a paid module has a landing page, requires its free base and never links to GitHub
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -817,9 +817,11 @@ function checkProtectedPackaging(ctx, c) {
   if (!bases.length) {
     c.warn("relationships.requires lists no module: a freemium add-on requires its free base, so Foundry installs and enables it first (init-module --requires <base-id> writes it)", loc);
   }
+  // A fail, not a warning: the tag build refuses these for certain, so a
+  // green push would only move the failure to release time.
   const kept = githubPaths(m).filter((p) => !RELEASE_REWRITES.has(p));
   if (kept.length) {
-    c.warn(`${kept.join(", ")} still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
+    c.fail(`${kept.join(", ")} still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
   }
   c.detail(`landing page ${landing}, requires ${bases.join(", ")}`);
 }

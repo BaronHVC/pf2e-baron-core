@@ -501,7 +501,7 @@ test("[m] without a module in relationships.requires it only warns: a freemium a
   assert.equal(parseReport(untyped.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", untyped.out);
 });
 
-test("[m] GitHub links the protected release would refuse warn with their JSON paths; url, manifest and download do not", (t) => {
+test("[m] GitHub links the protected release would refuse fail with their JSON paths; url, manifest and download do not", (t) => {
   const res = checkModule([
     paidAddon(t, {
       moduleJson: {
@@ -514,10 +514,12 @@ test("[m] GitHub links the protected release would refuse warn with their JSON p
     }),
   ]);
   const r = parseReport(res.out);
-  assert.equal(res.status, 0, res.out);
-  assert.deepEqual([...r.warn], ["m"], res.out);
+  // The tag build would refuse them, so a push must not stay green.
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["m"], res.out);
+  assert.deepEqual([...r.warn], [], res.out);
   // authors comes first: a merge keeps an existing key where it was.
-  assert.deepEqual(mLines(r, "WARN"), [
-    'WARN   [m] protected packaging: authors[0].url, bugs, readme, changelog, flags["https://github.com/BaronHVC/baron-fixture"] (key) still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)',
+  assert.deepEqual(mLines(r, "FAIL"), [
+    'FAIL   [m] protected packaging: authors[0].url, bugs, readme, changelog, flags["https://github.com/BaronHVC/baron-fixture"] (key) still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)',
   ]);
 });

@@ -37,10 +37,11 @@ de sus workflows es el commit del lock).
   `--channel` que no coincida con la etiqueta.
 - `tools/check-module.mjs`: revisión `[m] protected packaging`, solo con
   `mode: protected`. Falla si `landingUrl` falta o no es una URL `https` (o
-  apunta a GitHub); avisa si `relationships.requires` no lista ningún módulo
-  (la base del freemium; pf2e-baron-core no cuenta) o si otro texto de
-  `module.json` menciona GitHub, que el release protegido rechazaría. En un
-  módulo público no imprime nada ni cuenta en el resumen.
+  apunta a GitHub) y si otro texto o clave de `module.json` menciona GitHub,
+  porque el release protegido lo rechazaría (así falla en cada push, no hasta
+  la etiqueta); avisa si `relationships.requires` no lista ningún módulo (la
+  base del freemium; pf2e-baron-core no cuenta). En un módulo público no
+  imprime nada ni cuenta en el resumen.
 - `tools/shared.mjs`: `httpsUrlProblem`, `githubPaths`, `mentionsGitHub` y
   `GITHUB_HOST_RE`, que comparten `check-module` y `release-manifest`.
 
