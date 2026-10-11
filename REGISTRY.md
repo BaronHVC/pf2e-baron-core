@@ -33,12 +33,16 @@ tiempo no pueden usar el mismo. Esta tabla es la fuente de verdad.
   el prefijo del módulo.
 - Cada módulo que necesite socket usa el suyo (`module.<id>`, con `"socket": true`
   en su module.json). El core no registra ninguno.
+- **Envuelve:** cada método interno de PF2e o Foundry que el módulo envuelve, y
+  cómo lo hace. Con lib-wrapper activo se registra como `"WRAPPER"`; si no, a
+  mano, llamando siempre al original (regla 14 del CLAUDE.md de la plantilla).
+  Antes de envolver un método, revisa si otro módulo de la familia ya lo hace.
 
 ## Tabla
 
-| id (scope de flags) | prefijo i18n | raíz CSS | prefijos de slug de reglas | roll options | helpers Handlebars | socket |
-|---|---|---|---|---|---|---|
-| `pf2e-simple-weapon-editor` | `SWE` | `swe-editor` / `swe-open` | `SWE:`, `swe-cond`, `swe-x-`, `swe-s-`, `swe-p-`, `swe-a-` | `swe-adopted`, `swe-gated`, `swe-pick`, `swe-pick-made`, `swe-atk` | `sweEq` | ninguno |
+| id (scope de flags) | prefijo i18n | raíz CSS | prefijos de slug de reglas | roll options | helpers Handlebars | socket | envuelve |
+|---|---|---|---|---|---|---|---|
+| `pf2e-simple-weapon-editor` | `SWE` | `swe-editor` / `swe-open` | `SWE:`, `swe-cond`, `swe-x-`, `swe-s-`, `swe-p-`, `swe-a-` | `swe-adopted`, `swe-gated`, `swe-pick`, `swe-pick-made`, `swe-atk`, `swe-rider`, `swe-react`, `swe-dmg:` | `sweEq` | ninguno | `CharacterPF2e#prepareStrike`, `CharacterPF2e#prepareAreaAttack`, `ActorPF2e#applyDamage` (a mano) |
 
 ### Notas por módulo
 
