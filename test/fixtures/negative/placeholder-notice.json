@@ -1,0 +1,8 @@
+{
+  "description": "NOTICE.md was copied from the template by hand and still names __TITLE__",
+  "fails": "k",
+  "message": "leftover placeholder __TITLE__",
+  "write": {
+    "NOTICE.md": "# Legal notices\n\n__TITLE__ uses trademarks and/or copyrights owned by Paizo Inc., used under Paizo's Community Use Policy (paizo.com/licenses/communityuse). We are expressly prohibited from charging you to use or access this content. __TITLE__ is not published, endorsed, or specifically approved by Paizo. For more information about Paizo Inc. and Paizo products, visit paizo.com.\n"
+  }
+}

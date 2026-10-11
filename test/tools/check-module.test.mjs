@@ -161,7 +161,7 @@ const ORC_TEMPLATE_NOTICE = [
   "# Legal notices",
   "",
   "- Rellena todo lo que esta entre corchetes `[ ]` y borra estas notas antes de publicar.",
-  "- Fuente: [ORC License](https://paizo.com/orclicense) y [la AxE][axe].",
+  "- Fuente: [ORC License](https://paizo.com/orclicense), su [Copyright Notice](https://paizo.com/orclicense) y [Copyright Notice][axe].",
   "",
   "### ORC Notice",
   "",
@@ -206,6 +206,19 @@ test("[l] without a paizo key only notices, needs no NOTICE.md and is not counte
   assert.equal(r.summary, "check-module: 9 passed, 0 warnings, 0 failed");
 });
 
+test("[l] a protected module without a paizo key still only notices, but is told it needs orc", (t) => {
+  const dir = materialize(t, {
+    write: { "baron.json": JSON.stringify({ mode: "protected", i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }) },
+  });
+  const res = checkModule([dir]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.ok(!r.pass.has("l") && !r.fail.has("l") && !r.warn.has("l"), res.out);
+  assert.deepEqual(lLines(r, "NOTICE"), [
+    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked; a protected (paid) module must declare "orc", the Community Use Policy forbids charging',
+  ]);
+});
+
 test("[l] an ORC module with a complete notice passes, public (freemium base) or protected (paid add-on)", (t) => {
   for (const mode of ["public", "protected"]) {
     const dir = materialize(t, { merge: { "baron.json": { mode, paizo: "orc" } }, write: { "NOTICE.md": ORC_FILLED_NOTICE } });
@@ -241,6 +254,87 @@ test("[l] each unfilled field of the template's ORC block is reported on its lin
   );
 });
 
+test("[l] a hard-wrapped or quoted notice still has every unfilled field reported, on the line where it starts", (t) => {
+  // Word-wraps every line at 40 columns, as an editor or Prettier's proseWrap
+  // would, so the long fields end up split across lines.
+  const wrap = (text, quote) =>
+    text
+      .split("\n")
+      .flatMap((line) => {
+        const out = [];
+        let cur = "";
+        for (const w of line.split(" ")) {
+          if (cur && `${cur} ${w}`.length > 40) {
+            out.push(cur);
+            cur = w;
+          } else cur = cur ? `${cur} ${w}` : w;
+        }
+        out.push(cur);
+        return out;
+      })
+      .map((l) => (quote && l ? `> ${l}` : l))
+      .join("\n");
+  const expected = [
+    "[Title of Work]",
+    "[Copyright Notice]",
+    "[Author Credit Information]",
+    "[Copyright Notice]",
+    "[nombres, logos, arte e identidad comercial de Baron Fixture]",
+    "[ninguno]",
+  ];
+  for (const quote of [false, true]) {
+    const notice = wrap(ORC_TEMPLATE_NOTICE, quote);
+    const dir = materialize(t, { merge: { "baron.json": { paizo: "orc" } }, write: { "NOTICE.md": notice } });
+    const res = checkModule([dir]);
+    assert.equal(res.status, 0, res.out);
+    const warns = lLines(parseReport(res.out), "WARN");
+    const fields = warns.flatMap((l) => /unfilled template field\(s\) (.*): fill before publishing/.exec(l)[1].split(/, (?=\[)/));
+    assert.deepEqual(fields, expected, res.out);
+    const lines = notice.split("\n");
+    for (const l of warns) {
+      const [, first, at] = /field\(s\) (\[[^,\]]*).*NOTICE\.md:(\d+)\)$/.exec(l);
+      assert.ok(lines[at - 1].includes(first.split(" ")[0]), `${l}\n${lines[at - 1]}`);
+    }
+  }
+});
+
+test("[l] the notice is matched as GitHub shows it: quote markers, emphasis and links do not hide it, an HTML comment does", (t) => {
+  const ORC_FILLED = ORC_FILLED_NOTICE;
+  assert.ok(ORC_FILLED.split("the ORC License").length === 2);
+  const run = (notice) => checkModule([materialize(t, { merge: { "baron.json": { paizo: "orc" } }, write: { "NOTICE.md": notice } })]);
+  const shown = {
+    quoted: ORC_FILLED.replace(ORC_SENTENCE, `> This product is licensed under the\n> ORC License located at the Library of Congress at TX 9-307-067 and available\n> online at various locations. All warranties are disclaimed as set forth therein.`),
+    bold: ORC_FILLED.replace("the ORC License", "the **ORC License**"),
+    linked: ORC_FILLED.replace("the ORC License", "the [ORC License](https://paizo.com/orclicense)"),
+  };
+  for (const [name, notice] of Object.entries(shown)) {
+    const res = run(notice);
+    assert.equal(res.status, 0, `${name}\n${res.out}`);
+    assert.equal(parseReport(res.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", `${name}\n${res.out}`);
+  }
+  const hidden = run(ORC_FILLED.replace(ORC_SENTENCE, `<!-- ${ORC_SENTENCE} -->`));
+  assert.equal(hidden.status, 1, hidden.out);
+  assert.ok(lLines(parseReport(hidden.out), "FAIL")[0]?.includes("lacks the ORC Notice"), hidden.out);
+});
+
+test("[l] a NOTICE.md with both notices fails whichever license is declared: a paid module must not say it is free", (t) => {
+  const cupLine = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").split(/\r?\n/).find((l) => l.includes("used under Paizo's"));
+  const both = `${ORC_FILLED_NOTICE}\n## Community Use Policy\n\n${cupLine}\n`;
+  for (const [baron, other] of [
+    [{ mode: "protected", paizo: "orc" }, "Community Use Policy notice"],
+    [{ mode: "public", paizo: "orc" }, "Community Use Policy notice"],
+    [{ mode: "public", paizo: "cup" }, "ORC Notice"],
+  ]) {
+    const res = checkModule([materialize(t, { merge: { "baron.json": baron }, write: { "NOTICE.md": both } })]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 1, res.out);
+    assert.deepEqual([...r.fail], ["l"], res.out);
+    const fails = lLines(r, "FAIL");
+    assert.equal(fails.length, 1, res.out);
+    assert.ok(fails[0].includes(`paizo is "${baron.paizo}" but NOTICE.md also carries the ${other}`) && fails[0].endsWith("(NOTICE.md)"), res.out);
+  }
+});
+
 test("[l] a hard-wrapped notice with a typographic apostrophe still carries the CUP notice", (t) => {
   const apostrophe = String.fromCharCode(0x2019);
   const notice = `# Legal notices\n\nBaron Fixture uses trademarks and/or copyrights owned by Paizo Inc., used\nunder Paizo${apostrophe}s Community Use\n  Policy (paizo.com/licenses/communityuse).\n`;
@@ -250,18 +344,29 @@ test("[l] a hard-wrapped notice with a typographic apostrophe still carries the 
   assert.deepEqual(lLines(parseReport(res.out), "PASS"), ['PASS   [l] paizo license: paizo "cup", NOTICE.md carries the Community Use Policy notice']);
 });
 
-test("[l] PF2e or Pathfinder in the id or title warns under orc, never under cup", (t) => {
+test("[l] Paizo or one of its games in the id or title warns under orc, never under cup", (t) => {
   const orc = (moduleJson) =>
     checkModule([materialize(t, { merge: { "baron.json": { paizo: "orc" }, "module.json": moduleJson }, write: { "NOTICE.md": ORC_FILLED_NOTICE } })]);
 
   const byId = orc({ id: "pathfinder-fixture" });
   assert.equal(byId.status, 0, byId.out);
   assert.deepEqual([...parseReport(byId.out).warn], ["l"], byId.out);
-  assert.match(lLines(parseReport(byId.out), "WARN").join("\n"), /^WARN {3}\[l\] paizo license: module\.json id "pathfinder-fixture" name\(s\) PF2e\/Pathfinder: the ORC License never licenses Paizo's trademarks.* \(module\.json\)$/);
+  assert.match(lLines(parseReport(byId.out), "WARN").join("\n"), /^WARN {3}\[l\] paizo license: module\.json id "pathfinder-fixture" name\(s\) Paizo or one of its games \(PF2e, Pathfinder, Starfinder, Golarion\): the ORC License never licenses Paizo's trademarks.* \(module\.json\)$/);
 
   const both = orc({ id: "pf2e-fixture", title: "Pathfinder Fixture" });
   assert.equal(lLines(parseReport(both.out), "WARN").length, 1, both.out);
-  assert.ok(both.out.includes('module.json id "pf2e-fixture" and title "Pathfinder Fixture" name(s) PF2e/Pathfinder'), both.out);
+  assert.ok(both.out.includes('module.json id "pf2e-fixture" and title "Pathfinder Fixture" name(s) Paizo or one of its games'), both.out);
+
+  for (const moduleJson of [{ title: "Paizo Trap Tools" }, { title: "Starfinder Trap Tools" }, { title: "Golarion Trap Tools" }, { id: "pf2-fixture" }, { id: "sf2e-fixture" }]) {
+    const res = orc(moduleJson);
+    const [k, v] = Object.entries(moduleJson)[0];
+    assert.equal(lLines(parseReport(res.out), "WARN").length, 1, res.out);
+    assert.ok(res.out.includes(`module.json ${k} ${JSON.stringify(v)} name(s) Paizo or one of its games`), res.out);
+  }
+  // Neither the fixture's own id and title nor a word that merely contains
+  // the letters (Baron, Fixture) set it off.
+  const plain = orc({});
+  assert.equal(parseReport(plain.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", plain.out);
 
   const cup = checkModule([materialize(t, { merge: { "module.json": { id: "pf2e-fixture", title: "PF2e Baron Fixture" } } })]);
   assert.equal(cup.status, 0, cup.out);
@@ -283,7 +388,10 @@ test("[l] protected with cup fails on the license and still checks the notice", 
   const res = checkModule([dir]);
   const fails = lLines(parseReport(res.out), "FAIL");
   assert.equal(res.status, 1, res.out);
-  assert.equal(fails.length, 2, res.out);
+  assert.equal(fails.length, 3, res.out);
   assert.ok(fails[0].includes('mode "protected" with paizo "cup"') && fails[0].endsWith("(baron.json)"), res.out);
   assert.ok(fails[1].includes("lacks the Community Use Policy notice") && fails[1].endsWith("(NOTICE.md)"), res.out);
+  assert.ok(fails[2].includes("also carries the ORC Notice") && fails[2].endsWith("(NOTICE.md)"), res.out);
+  // The way out names init's output, which keeps exactly one block filled in.
+  assert.ok(fails[1].includes("tools/init-module.mjs --paizo cup"), res.out);
 });

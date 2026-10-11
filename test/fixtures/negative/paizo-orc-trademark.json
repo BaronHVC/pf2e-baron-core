@@ -1,7 +1,7 @@
 {
   "description": "an ORC module names PF2e in its title: ORC never licenses Paizo trademarks",
   "warns": "l",
-  "message": "module.json title \"PF2e Baron Fixture\" name(s) PF2e/Pathfinder",
+  "message": "module.json title \"PF2e Baron Fixture\" name(s) Paizo or one of its games",
   "merge": { "baron.json": { "paizo": "orc" }, "module.json": { "title": "PF2e Baron Fixture" } },
   "write": {
     "NOTICE.md": "# Legal notices\n\n## ORC Notice\n\nThis product is licensed under the ORC License located at the Library of Congress at TX 9-307-067 and available online at various locations. All warranties are disclaimed as set forth therein.\n\n## Attribution Notice\n\nThis product is based on the following Licensed Material:\n\nExample Work, (c) 2023 Example Publisher, Example Author.\n"

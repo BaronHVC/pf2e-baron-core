@@ -14,15 +14,29 @@ tengan que resincronizar.
   campo `paizo` (`"cup"` | `"orc"`), independiente de `mode`: un proyecto con
   cualquier parte de pago (un módulo `protected` o la base gratuita de un
   freemium) usa la ORC, porque la Community Use Policy prohíbe cobrar. Falla si
-  el valor no es `cup`/`orc`, si es `protected` con `cup`, si falta `NOTICE.md`
-  o si `NOTICE.md` no trae el aviso de esa licencia. Con `orc` avisa (sin
-  fallar) por cada renglón con campos entre corchetes del template sin llenar y
-  si el id o el título dicen PF2e/Pathfinder (la ORC nunca licencia marcas de
-  Paizo). Un módulo sin `paizo` solo recibe un NOTICE, así que nada que hoy
-  pase empieza a fallar. `baron-core.js` no cambia: los módulos reciben la
-  revisión cuando sus workflows apunten a un commit del core que la traiga.
-  Nuevos casos en `test/fixtures/negative/paizo-*.json`; el módulo de ejemplo
-  válido ahora declara `paizo: "cup"` y trae su `NOTICE.md`.
+  el valor no es `cup`/`orc`, si es `protected` con `cup`, si falta `NOTICE.md`,
+  si `NOTICE.md` no trae el aviso de esa licencia o si también trae el de la
+  otra (un módulo de pago que conservara el aviso de la Community Use Policy
+  diría que no se cobra). El aviso se busca como lo muestra GitHub: partido en
+  renglones, citado, con énfasis o como enlace cuenta; dentro de un comentario
+  HTML no. Con `orc` avisa (sin fallar) por cada renglón donde empieza un campo
+  entre corchetes del template sin llenar, aunque esté partido en renglones, y
+  si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder,
+  Starfinder, Golarion), porque la ORC nunca licencia marcas de Paizo. Un
+  módulo sin `paizo` solo recibe un NOTICE (a uno `protected` le dice que
+  necesita `orc`), así que nada que hoy pase empieza a fallar por esta
+  revisión. `baron-core.js` no cambia: los módulos reciben la revisión cuando
+  sus workflows apunten a un commit del core que la traiga. Nuevos casos en
+  `test/fixtures/negative/paizo-*.json`; el módulo de ejemplo válido ahora
+  declara `paizo: "cup"` y trae su `NOTICE.md`. La sección *Licencia* del
+  README ya no dice que la licencia de Paizo sigue al precio de cada módulo.
+
+### Changed
+
+- `tools/check-module.mjs`: `[k] placeholders` también revisa `NOTICE.md`. Un
+  `NOTICE.md` copiado a mano de la plantilla publicaría
+  "__TITLE__ uses trademarks…"; `init-module` siempre los llena, así que un
+  módulo inicializado no cambia.
 
 ### Fixed
 

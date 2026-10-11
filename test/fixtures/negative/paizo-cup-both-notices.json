@@ -1,0 +1,8 @@
+{
+  "description": "a CUP module whose NOTICE.md also claims the ORC License",
+  "fails": "l",
+  "message": "paizo is \"cup\" but NOTICE.md also carries the ORC Notice",
+  "write": {
+    "NOTICE.md": "# Legal notices\n\nBaron Fixture uses trademarks and/or copyrights owned by Paizo Inc., used under Paizo's Community Use Policy (paizo.com/licenses/communityuse). We are expressly prohibited from charging you to use or access this content. Baron Fixture is not published, endorsed, or specifically approved by Paizo. For more information about Paizo Inc. and Paizo products, visit paizo.com.\n\n## ORC Notice\n\nThis product is licensed under the ORC License located at the Library of Congress at TX 9-307-067 and available online at various locations. All warranties are disclaimed as set forth therein.\n"
+  }
+}
