@@ -123,6 +123,24 @@ test("packIndex keeps separate promises per pack and per field set", async () =>
   assert.equal(b.calls.length, 1);
 });
 
+test("packIndex keys never collide, whatever characters pack ids and fields hold", async () => {
+  const { packIndex } = await freshCore();
+  const packs = { p: makePack(["p"]), "p|x": makePack(["p|x"]), q: makePack(["q"]) };
+  restore = setGlobals({ game: makeGame({ packs }) });
+  // Each pair used to share one cache entry: a comma inside a field, a pipe in
+  // the pack id or in a field, and an empty field name.
+  const pairs = [
+    [packIndex("p", ["a,b"]), packIndex("p", ["a", "b"])],
+    [packIndex("p|x", []), packIndex("p", ["x|"])],
+    [packIndex("q", []), packIndex("q", [""])]
+  ];
+  for (const [first, second] of pairs) assert.notEqual(first, second);
+  assert.deepEqual(await pairs[1][1], ["p"]); // the "p" pack, not "p|x"
+  assert.deepEqual(packs.p.calls, [{ fields: ["a,b"] }, { fields: ["a", "b"] }, { fields: ["x|"] }]);
+  assert.equal(packs["p|x"].calls.length, 1);
+  assert.deepEqual(packs.q.calls, [{ fields: [] }, { fields: [""] }]);
+});
+
 test("packIndex resolves [] for a missing pack, and that result stays cached", async () => {
   const { packIndex } = await freshCore();
   const packs = {};

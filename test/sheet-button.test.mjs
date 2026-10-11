@@ -143,6 +143,63 @@ test("plain keys work without a CSS global", () => {
   assert.equal(buttons(header).length, 1);
 });
 
+test("keys with quotes, backslashes and line breaks dedupe without a CSS global", (t) => {
+  restoreDom();
+  restoreDom = installDom({ css: false });
+  const err = t.mock.method(console, "error", () => {});
+  for (const key of ['a"b', "a\\b", "line\nbreak", "a]b", "mod:open"]) {
+    const { sheet, header } = makeSheet({ item: weapon() });
+    for (let i = 0; i < 3; i++) injectSheetButton(sheet, opts({ key }).options);
+    const all = buttons(header);
+    assert.equal(all.length, 1, JSON.stringify(key));
+    assert.equal(all[0].dataset.baronBtn, key);
+  }
+  assert.equal(err.mock.callCount(), 0);
+});
+
+test("a call without a string key or without match/onClick functions is logged and adds nothing", (t) => {
+  const err = t.mock.method(console, "error", () => {});
+  const { sheet, header } = makeSheet({ item: weapon() });
+  const bad = [
+    { key: undefined },
+    { key: "" },
+    { key: 42 },
+    { match: undefined },
+    { match: "weapon" },
+    { onClick: undefined }
+  ];
+  for (const extra of bad) injectSheetButton(sheet, opts(extra).options);
+  assert.equal(buttons(header).length, 0);
+  assert.equal(err.mock.callCount(), bad.length);
+  for (const call of err.mock.calls) {
+    assert.equal(call.arguments[0], "my-mod | header button");
+    assert.ok(call.arguments[1] instanceof TypeError);
+  }
+  // Two modules that both forgot the key no longer hide each other: both are
+  // refused, and a correct call afterwards still gets its button.
+  injectSheetButton(sheet, opts({ key: "my-mod:open" }).options);
+  assert.equal(buttons(header).length, 1);
+});
+
+test("cssClass, icon and title left out stay off the element", () => {
+  const { sheet, header } = makeSheet({ item: weapon() });
+  injectSheetButton(sheet, { key: "m:x", match: () => true, onClick() {}, label: "Go" });
+  assert.deepEqual(shapeOf(buttons(header)[0]), {
+    tag: "a",
+    attrs: [
+      ["data-baron-btn", "m:x"],
+      ["role", "button"]
+    ],
+    children: [
+      { tag: "i", attrs: [], children: [] },
+      { tag: "span", attrs: [], children: ["Go"] }
+    ]
+  });
+  const titled = makeSheet({ item: weapon() });
+  injectSheetButton(titled.sheet, { key: "m:x", match: () => true, onClick() {}, title: () => null });
+  assert.equal(buttons(titled.header)[0].getAttribute("title"), null);
+});
+
 test("skips compendium items, non-matching items and users canShow rejects, in that order", () => {
   const log = [];
   const tracked = (extra) =>

@@ -57,7 +57,8 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - `packIndex(packId, fields)`: generaliza `runeIndex` (`main.js:559-568`) y
   `equipmentIndex` (`armor.js:411-421`). Una promesa memorizada por compendio y
   campos (en cualquier orden); `[]` si el compendio no existe; una promesa
-  rechazada se queda en caché, como en el original.
+  rechazada se queda en caché, como en el original. La clave de la caché es
+  JSON, así que ningún id ni campo con `,` o `|` comparte entrada con otro.
 
 **UI**
 - `guardClicks(app)`, `releaseClickGuard(app)`, `renderSoon(app)`:
@@ -65,8 +66,11 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
   `app._sweGuard` sino bajo un `Symbol` privado del archivo.
 - `injectSheetButton(sheet, options)`: generaliza `injectButton`
   (`main.js:2363-2387`) e `injectArmorButton` (`armor.js:1188-1212`) con el mismo
-  orden de pasos. Deduplica por `key` (`data-baron-btn`), no por clase; arma el
-  botón con `createElement` (sin `innerHTML`); no registra ningún hook.
+  orden de pasos. Deduplica por `key` (`data-baron-btn`), no por clase, y la
+  compara por valor (ninguna key necesita escaparse para CSS); arma el botón con
+  `createElement` (sin `innerHTML`); no registra ningún hook. Una llamada sin
+  `key` de texto o sin `match`/`onClick` se registra en la consola y no agrega
+  nada; `cssClass`, `icon` y `title` omitidos no se escriben como `"undefined"`.
 
 ### Herramientas y CI
 

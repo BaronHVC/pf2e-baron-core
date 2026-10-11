@@ -176,13 +176,17 @@ export const PF2E_MODIFIER_TYPES = ["circumstance", "status", "item", "untyped"]
 /*  Permissions and executor                                                  */
 /* -------------------------------------------------------------------------- */
 
-// Hooks fire on every connected client, so every entry point that writes
-// documents must run on exactly one of them: the active GM. Without that guard
+// Hooks such as createX/updateX/deleteX, combat turns and new chat messages
+// fire on every connected client, so an entry point that writes documents from
+// one of them must run on exactly one client: the active GM. Without that guard
 // the write is multiplied by the number of people at the table, and players
 // who do not own the document hit a permission error.
 /**
- * True on exactly one client: the one whose user is the active GM. Gate every
- * document-writing hook handler on it.
+ * True on exactly one client: the one whose user is the active GM. Gate on it
+ * the document-writing handlers of hooks that every client receives. Never
+ * gate preCreate/preUpdate/preDelete handlers or local UI handlers: those run
+ * only on the client that started the action, so the guard would silently
+ * skip them for players and for any GM who is not the active one.
  * @returns {boolean}
  */
 export function isSoleExecutor() {
@@ -263,7 +267,8 @@ export function sheetElement(sheet) {
 
 // One promise per pack and field set, shared by every caller in the module:
 // building an index is expensive and its content does not change mid-session.
-// A rejection stays cached on purpose (no retry), as it always has.
+// A rejection stays cached on purpose (no retry), as it always has. The key is
+// JSON so no pack id or field name can run into another ("a,b" vs "a" + "b").
 const PACK_INDEX = new Map();
 
 /**
@@ -275,7 +280,7 @@ const PACK_INDEX = new Map();
  *   does not have the pack.
  */
 export function packIndex(packId, fields = []) {
-  const key = `${packId}|${[...fields].sort().join(",")}`;
+  const key = JSON.stringify([packId, [...fields].sort()]);
   let promise = PACK_INDEX.get(key);
   if (!promise) {
     promise = (async () => {
@@ -366,7 +371,8 @@ export function renderSoon(app) {
  * Skips compendium items, items `match` rejects and users `canShow` rejects,
  * and never adds the same `key` twice to one header (buttons from different
  * keys, e.g. two modules, coexist). Errors are logged, never thrown, so a
- * failure cannot break the sheet's render.
+ * failure cannot break the sheet's render; a call without a string `key` or
+ * without `match`/`onClick` functions is such an error and adds nothing.
  * @param {object} sheet  The rendered item sheet.
  * @param {object} options
  * @param {string} options.key  Unique per module and button: "<moduleId>:<name>".
@@ -384,24 +390,34 @@ export function injectSheetButton(sheet, options) {
     // Destructured inside the try, not in the signature, so even a null
     // options object ends up logged instead of thrown into the render hook.
     const { key, match, canShow, cssClass, icon, label, title, onClick } = options;
+    // Without a key every caller that forgot it would share the key
+    // "undefined" and hide each other's buttons; without match/onClick the
+    // failure would only surface later. Refuse the call up front instead.
+    if (typeof key !== "string" || !key || typeof match !== "function" || typeof onClick !== "function") {
+      throw new TypeError("injectSheetButton needs a non-empty string key and match/onClick functions");
+    }
     const item = sheet.item ?? sheet.document;
     if (!item || !match(item)) return;
     if (item.pack) return;
     if (canShow && !canShow(item)) return;
     const el = sheetElement(sheet);
     const header = el?.querySelector(".window-header");
-    if (!header || header.querySelector(`[data-baron-btn="${globalThis.CSS?.escape?.(key) ?? key}"]`)) return;
+    // Compared as values, not through an attribute selector, so no key ever
+    // needs CSS escaping, whatever characters it holds.
+    if (!header || [...header.querySelectorAll("[data-baron-btn]")].some((b) => b.dataset.baronBtn === key)) return;
     const btn = document.createElement("a");
-    btn.className = cssClass;
+    // Optional parts left out stay off the element instead of reading "undefined".
+    if (cssClass != null) btn.className = cssClass;
     btn.dataset.baronBtn = key;
     const iconEl = document.createElement("i");
-    iconEl.className = icon;
+    if (icon != null) iconEl.className = icon;
     const labelEl = document.createElement("span");
     labelEl.textContent = typeof label === "function" ? label(item) : label;
     btn.appendChild(iconEl);
     btn.appendChild(labelEl);
     btn.setAttribute("role", "button");
-    btn.title = typeof title === "function" ? title(item) : title;
+    const tip = typeof title === "function" ? title(item) : title;
+    if (tip != null) btn.title = tip;
     btn.addEventListener("click", (ev) => {
       ev.preventDefault();
       ev.stopPropagation();
