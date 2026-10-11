@@ -254,6 +254,10 @@ node --test test/*.test.mjs test/tools/*.test.mjs
 
 ## Licencia
 
-Este repositorio todavía no tiene archivo de licencia: la decisión está
-pendiente. Mientras no lo tenga, que sea público no lo convierte en código
-abierto.
+[MIT](LICENSE). Cubre el código de este repositorio, incluida la copia de
+`baron-core.js` que viaja dentro de cada módulo, también dentro de los ZIP de
+los módulos de pago: ahí sigue siendo MIT aunque el resto del módulo no lo sea.
+
+La licencia es solo del código. Los nombres y reglas de Pathfinder que usan los
+módulos son de Paizo y van con los avisos de cada módulo (`NOTICE.md`): la
+Community Use Policy en los gratuitos, la ORC License en los de pago.
