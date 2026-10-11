@@ -1,6 +1,10 @@
 /**
  * baron-core: shared helpers for BaronHVC's PF2e modules for Foundry VTT.
  *
+ * SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 BaronHVC. The MIT License applies to this file wherever
+ * it is vendored, paid modules included: see LICENSE in the core repository.
+ *
  * Vendored from BaronHVC/pf2e-baron-core. Do not edit copies by hand: run
  * tools/sync-core.mjs from the core repo, which rewrites this file and the
  * module's baron-core.lock.json together (check-module rejects a copy whose
@@ -22,7 +26,7 @@
  * `version` field of the consuming module's baron-core.lock.json.
  * @type {string}
  */
-export const CORE_VERSION = "1.0.0-rc.1";
+export const CORE_VERSION = "1.0.0";
 
 /* -------------------------------------------------------------------------- */
 /*  i18n                                                                      */

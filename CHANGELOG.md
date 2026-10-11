@@ -8,8 +8,25 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-11
+
+Primera versión estable. Las funciones son las mismas de `1.0.0-rc.1`, sin un
+solo cambio de comportamiento; la adoptó pf2e-simple-weapon-editor v0.14.0
+(con rc.1), probada en Foundry v14 y publicada.
+
+### Changed
+
+- `baron-core.js`: `CORE_VERSION` = `"1.0.0"` y encabezado
+  `SPDX-License-Identifier: MIT` con el copyright, para que la copia vendorizada
+  diga su licencia por sí sola dentro de cualquier ZIP, también de pago. Cambia
+  el sha256 del archivo: los módulos lo toman al resincronizar con
+  `sync-core --ref v1.0.0`.
+- `REGISTRY.md`: columna «envuelve» con los métodos internos de PF2e o Foundry
+  que envuelve cada módulo.
+
 ### Added
 
+- `LICENSE`: MIT.
 - `tools/check-module.mjs`: revisión `[l] paizo license`. `baron.json` gana el
   campo `paizo` (`"cup"` | `"orc"`), independiente de `mode`: un proyecto con
   cualquier parte de pago (un módulo `protected` o la base gratuita de un
@@ -121,5 +138,6 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - Workflows reutilizables `module-check.yml` y `module-release.yml` (modo
   público; el protegido falla a propósito porque aún no existe).
 
-[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/BaronHVC/pf2e-baron-core/releases/tag/v1.0.0-rc.1
