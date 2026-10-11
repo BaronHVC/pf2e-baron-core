@@ -191,6 +191,15 @@ const ORC_TEMPLATE_NOTICE = [
 
 const lLines = (r, level) => r.lines.filter((l) => l.startsWith(`${level.padEnd(6)} [l]`));
 
+// What rule [m] asks of a protected module beyond [l]: a landing page in
+// baron.json and its free base in relationships.requires (the fixture's own
+// pf2e system relationship kept, since a merge replaces the whole key).
+const LANDING_URL = "https://www.example.com/baron-fixture";
+const PF2E_SYSTEM = { id: "pf2e", type: "system", compatibility: { minimum: "7.0.0" } };
+const ADDON_RELATIONSHIPS = {
+  relationships: { systems: [PF2E_SYSTEM], requires: [{ id: "baron-fixture-base", type: "module", compatibility: {} }] },
+};
+
 test("[l] without a paizo key only notices, needs no NOTICE.md and is not counted", (t) => {
   const dir = materialize(t, {
     write: { "baron.json": JSON.stringify({ mode: "public", i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }) },
@@ -208,7 +217,8 @@ test("[l] without a paizo key only notices, needs no NOTICE.md and is not counte
 
 test("[l] a protected module without a paizo key still only notices, but is told it needs orc", (t) => {
   const dir = materialize(t, {
-    write: { "baron.json": JSON.stringify({ mode: "protected", i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }) },
+    write: { "baron.json": JSON.stringify({ mode: "protected", landingUrl: LANDING_URL, i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }) },
+    merge: { "module.json": ADDON_RELATIONSHIPS },
   });
   const res = checkModule([dir]);
   const r = parseReport(res.out);
@@ -221,12 +231,16 @@ test("[l] a protected module without a paizo key still only notices, but is told
 
 test("[l] an ORC module with a complete notice passes, public (freemium base) or protected (paid add-on)", (t) => {
   for (const mode of ["public", "protected"]) {
-    const dir = materialize(t, { merge: { "baron.json": { mode, paizo: "orc" } }, write: { "NOTICE.md": ORC_FILLED_NOTICE } });
+    const dir = materialize(t, {
+      merge: { "baron.json": { mode, paizo: "orc", landingUrl: LANDING_URL }, "module.json": ADDON_RELATIONSHIPS },
+      write: { "NOTICE.md": ORC_FILLED_NOTICE },
+    });
     const res = checkModule([dir]);
     const r = parseReport(res.out);
     assert.equal(res.status, 0, res.out);
     assert.deepEqual(lLines(r, "PASS"), ['PASS   [l] paizo license: paizo "orc", NOTICE.md carries the ORC Notice with every template field filled'], res.out);
-    assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed", res.out);
+    // Rule [m] only counts for the protected one.
+    assert.equal(r.summary, `check-module: ${mode === "protected" ? 11 : 10} passed, 0 warnings, 0 failed`, res.out);
   }
 });
 
@@ -321,7 +335,7 @@ test("[l] a NOTICE.md with both notices fails whichever license is declared: a p
   const cupLine = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").split(/\r?\n/).find((l) => l.includes("used under Paizo's"));
   const both = `${ORC_FILLED_NOTICE}\n## Community Use Policy\n\n${cupLine}\n`;
   for (const [baron, other] of [
-    [{ mode: "protected", paizo: "orc" }, "Community Use Policy notice"],
+    [{ mode: "protected", paizo: "orc", landingUrl: LANDING_URL }, "Community Use Policy notice"],
     [{ mode: "public", paizo: "orc" }, "Community Use Policy notice"],
     [{ mode: "public", paizo: "cup" }, "ORC Notice"],
   ]) {
@@ -394,4 +408,111 @@ test("[l] protected with cup fails on the license and still checks the notice", 
   assert.ok(fails[2].includes("also carries the ORC Notice") && fails[2].endsWith("(NOTICE.md)"), res.out);
   // The way out names init's output, which keeps exactly one block filled in.
   assert.ok(fails[1].includes("tools/init-module.mjs --paizo cup"), res.out);
+});
+
+/* ----------------------------------------------------------------------------
+ * [m] protected packaging. Only a protected (paid) module is checked; each
+ * case below turns the public fixture into a complete paid add-on (ORC notice,
+ * landing page, requires its base) and breaks one thing.
+ * -------------------------------------------------------------------------- */
+
+const mLines = (r, level) => r.lines.filter((l) => l.startsWith(`${level.padEnd(6)} [m]`));
+
+// A merge replaces whole keys, and JSON drops undefined ones: baron
+// { landingUrl: undefined } removes the field.
+const paidAddon = (t, { baron = {}, moduleJson = {} } = {}) =>
+  materialize(t, {
+    merge: {
+      "baron.json": { mode: "protected", paizo: "orc", landingUrl: LANDING_URL, ...baron },
+      "module.json": { ...ADDON_RELATIONSHIPS, ...moduleJson },
+    },
+    write: { "NOTICE.md": ORC_FILLED_NOTICE },
+  });
+
+test("[m] a public module prints nothing for it and is not counted, whatever its landingUrl", (t) => {
+  const valid = checkModule([VALID_MODULE]);
+  assert.ok(!valid.out.includes("[m]"), valid.out);
+  assert.equal(parseReport(valid.out).summary, "check-module: 10 passed, 0 warnings, 0 failed");
+  // The template gives every module "landingUrl": "", and a public one never uses it.
+  for (const landingUrl of ["", "http://www.example.com", "https://github.com/BaronHVC/baron-fixture"]) {
+    const res = checkModule([materialize(t, { merge: { "baron.json": { landingUrl } } })]);
+    assert.equal(res.status, 0, res.out);
+    assert.ok(!res.out.includes("[m]"), res.out);
+  }
+});
+
+test("[m] a paid add-on with an https landing page that requires its base passes", (t) => {
+  const res = checkModule([paidAddon(t)]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual(mLines(r, "PASS"), [`PASS   [m] protected packaging: landing page ${LANDING_URL}, requires baron-fixture-base`], res.out);
+  assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
+});
+
+test("[m] a missing, empty, malformed, non-https or github.com landingUrl fails on baron.json", (t) => {
+  for (const [landingUrl, reason] of [
+    [undefined, "landingUrl is missing"],
+    ["", "landingUrl is empty"],
+    ["   ", "landingUrl is empty"],
+    [42, "landingUrl must be a string"],
+    ["www.patreon.com/baron", 'landingUrl "www.patreon.com/baron" is not a URL'],
+    ["http://www.example.com/baron-fixture", 'landingUrl "http://www.example.com/baron-fixture" is not an https URL'],
+    ["https://www.example.com/baron fixture", 'landingUrl "https://www.example.com/baron fixture" contains whitespace'],
+    ["https://GitHub.com/BaronHVC/baron-fixture", 'landingUrl "https://GitHub.com/BaronHVC/baron-fixture" points at github.com'],
+  ]) {
+    const res = checkModule([paidAddon(t, { baron: { landingUrl } })]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 1, res.out);
+    assert.deepEqual([...r.fail], ["m"], res.out);
+    const fails = mLines(r, "FAIL");
+    assert.equal(fails.length, 1, res.out);
+    assert.ok(fails[0].startsWith(`FAIL   [m] protected packaging: ${reason}`) && fails[0].endsWith("(baron.json)"), `${reason}\n${res.out}`);
+  }
+});
+
+test("[m] without a module in relationships.requires it only warns: a freemium add-on requires its base", (t) => {
+  const warning = "WARN   [m] protected packaging: relationships.requires lists no module: a freemium add-on requires its free base";
+  for (const relationships of [
+    { systems: [PF2E_SYSTEM] },
+    { systems: [PF2E_SYSTEM], requires: [] },
+    { systems: [PF2E_SYSTEM], requires: [{ id: "pf2e", type: "system" }] },
+    { systems: [PF2E_SYSTEM], requires: [null, { type: "module" }, { id: "" }] },
+  ]) {
+    const res = checkModule([paidAddon(t, { moduleJson: { relationships } })]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 0, res.out);
+    assert.deepEqual([...r.warn], ["m"], res.out);
+    assert.ok(mLines(r, "WARN")[0]?.startsWith(warning) && mLines(r, "WARN")[0].endsWith("(module.json)"), res.out);
+  }
+
+  // The core is never the base: [j] fails it and [m] still finds no module.
+  const core = checkModule([paidAddon(t, { moduleJson: { relationships: { systems: [PF2E_SYSTEM], requires: [{ id: "pf2e-baron-core", type: "module" }] } } })]);
+  const rc = parseReport(core.out);
+  assert.equal(core.status, 1, core.out);
+  assert.deepEqual([...rc.fail], ["j"], core.out);
+  assert.deepEqual([...rc.warn], ["m"], core.out);
+
+  // Without "type" an entry is a module, Foundry's default.
+  const untyped = checkModule([paidAddon(t, { moduleJson: { relationships: { requires: [{ id: "baron-fixture-base" }] } } })]);
+  assert.equal(parseReport(untyped.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", untyped.out);
+});
+
+test("[m] github.com links the protected release would refuse warn with their JSON paths; url, manifest and download do not", (t) => {
+  const res = checkModule([
+    paidAddon(t, {
+      moduleJson: {
+        authors: [{ name: "BaronHVC", url: "https://GitHub.com/BaronHVC" }],
+        bugs: "https://github.com/BaronHVC/baron-fixture/issues",
+        readme: "https://github.com/BaronHVC/baron-fixture#readme",
+        changelog: "https://www.example.com/changelog",
+      },
+    }),
+  ]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual([...r.warn], ["m"], res.out);
+  // authors comes first: a merge keeps an existing key where it was.
+  assert.deepEqual(mLines(r, "WARN"), [
+    "WARN   [m] protected packaging: authors[0].url, bugs, readme still mention github.com: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)",
+  ]);
 });

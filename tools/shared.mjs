@@ -1,6 +1,6 @@
-// Helpers shared by sync-core.mjs and check-module.mjs. Node built-ins and git
-// only: the tools run on a dev's Windows box and on the Linux CI runner, with
-// no npm install in between.
+// Helpers shared by sync-core.mjs, check-module.mjs and release-manifest.mjs.
+// Node built-ins and git only: the tools run on a dev's Windows box and on the
+// Linux CI runner, with no npm install in between.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -132,6 +132,54 @@ export function coreFileAt(coreDir, commit) {
  */
 export function lockText({ version, commit, sha256 }) {
   return JSON.stringify({ version, commit, sha256 }, null, 2) + "\n";
+}
+
+/**
+ * Why `value` cannot be a protected module's landing page, or null when it
+ * can: a non-empty https URL. check-module rule [m] reports it on every push;
+ * release-manifest refuses to build without it, since it becomes the
+ * manifest's "url".
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function httpsUrlProblem(value) {
+  if (value === undefined || value === null) return "is missing";
+  if (typeof value !== "string") return "must be a string";
+  if (!value.trim()) return "is empty";
+  // URL() trims the ends and drops tabs and newlines, so it would accept a
+  // value that is not the link actually written into the manifest.
+  if (/\s/.test(value)) return `${JSON.stringify(value)} contains whitespace`;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return `${JSON.stringify(value)} is not a URL`;
+  }
+  if (url.protocol !== "https:") return `${JSON.stringify(value)} is not an https URL`;
+  return null;
+}
+
+/** A link into GitHub. Host names are case-insensitive, so the match is too. */
+export const GITHUB_HOST_RE = /github\.com/i;
+
+const JSON_IDENT_RE = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * JSON paths of every string under `value` that mentions github.com, such as
+ * "bugs" or "authors[0].url". A paid module lives in a private repo, so such a
+ * link in its published manifest is dead for players and names the repo.
+ * @param {unknown} value
+ * @param {string} [at] path of `value` itself
+ * @returns {string[]}
+ */
+export function githubPaths(value, at = "") {
+  if (typeof value === "string") return GITHUB_HOST_RE.test(value) ? [at || "(root)"] : [];
+  if (Array.isArray(value)) return value.flatMap((v, i) => githubPaths(v, `${at}[${i}]`));
+  if (!value || typeof value !== "object") return [];
+  return Object.entries(value).flatMap(([k, v]) => {
+    const key = JSON_IDENT_RE.test(k) ? (at ? `${at}.${k}` : k) : `${at}[${JSON.stringify(k)}]`;
+    return githubPaths(v, key);
+  });
 }
 
 const REGEX_KEYWORDS = new Set([

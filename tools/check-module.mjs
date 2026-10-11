@@ -14,6 +14,7 @@
 //   [e] vendored core vs lock     [k] no leftover template placeholders
 //   [f] lock vs core repo (--online)
 //   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md
+//   [m] protected packaging: a paid module has a landing page and requires its free base
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -21,11 +22,14 @@ import os from "node:os";
 import path from "node:path";
 import {
   CORE_DIR,
+  GITHUB_HOST_RE,
   LOCK_FILE,
   VENDORED_PATH,
   coreFileAt,
   findUsesPins,
+  githubPaths,
   gitTry,
+  httpsUrlProblem,
   readCoreVersion,
   scanJs,
   sha256Lf,
@@ -782,6 +786,44 @@ function checkPaizoLicense(ctx, c) {
   c.detail(`paizo "orc", NOTICE.md carries the ORC Notice with every template field filled`);
 }
 
+// The protected release build (release-manifest.mjs) rewrites these three and
+// refuses any other link into the private repo.
+const RELEASE_REWRITES = new Set(["url", "manifest", "download"]);
+
+// A paid module is a freemium add-on: private repo, a package Foundry hosts and
+// serves to patrons only, and a free base module whose API it registers its
+// features through. What the release needs is reported on every push, not
+// first at tag time.
+function checkProtectedPackaging(ctx, c) {
+  if (ctx.baron.mode !== "protected") return c.skip();
+  const conf = { file: "baron.json" };
+  const landing = ctx.baron.landingUrl;
+  const problem = httpsUrlProblem(landing);
+  if (problem) {
+    c.fail(`landingUrl ${problem}: a protected module needs the https page where players learn how to get it (Patreon, a site); the release writes it as the manifest's "url", since the private repo's link would be dead`, conf);
+  } else if (GITHUB_HOST_RE.test(landing)) {
+    c.fail(`landingUrl ${JSON.stringify(landing)} points at github.com: the repo of a paid module is private, so players would land on a 404; use the Patreon or site page`, conf);
+  }
+
+  const m = ctx.module;
+  if (!m) return c.skip("module.json unavailable (see [a])");
+  const loc = { file: "module.json" };
+  // Foundry's default relationship type is "module"; the core never counts
+  // as the base (rule [j] fails a core dependency on its own).
+  const requires = Array.isArray(m.relationships?.requires) ? m.relationships.requires : [];
+  const bases = requires
+    .filter((r) => r && typeof r.id === "string" && r.id && r.id !== "pf2e-baron-core" && (r.type ?? "module") === "module")
+    .map((r) => r.id);
+  if (!bases.length) {
+    c.warn("relationships.requires lists no module: a freemium add-on requires its free base, so Foundry installs and enables it first (init-module --requires <base-id> writes it)", loc);
+  }
+  const kept = githubPaths(m).filter((p) => !RELEASE_REWRITES.has(p));
+  if (kept.length) {
+    c.warn(`${kept.join(", ")} still mention github.com: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
+  }
+  c.detail(`landing page ${landing}, requires ${bases.join(", ")}`);
+}
+
 /* ----------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -808,6 +850,7 @@ function main() {
   r.check("j", "manifest rules", (c) => checkManifestRules(ctx, c));
   r.check("k", "placeholders", (c) => checkPlaceholders(ctx, c));
   r.check("l", "paizo license", (c) => checkPaizoLicense(ctx, c));
+  r.check("m", "protected packaging", (c) => checkProtectedPackaging(ctx, c));
 
   const { passed, warnings, failed } = r.counts;
   console.log(`check-module: ${passed} passed, ${warnings} warnings, ${failed} failed`);
