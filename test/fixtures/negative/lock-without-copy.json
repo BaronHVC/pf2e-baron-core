@@ -1,0 +1,10 @@
+{
+  "description": "a lock exists but scripts/baron-core.js was deleted",
+  "fails": "e",
+  "message": "scripts/baron-core.js does not",
+  "lock": {
+    "version": "1.0.0",
+    "commit": "0123456789abcdef0123456789abcdef01234567",
+    "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "mode": "public",
+  "devChannel": true,
+  "i18nPrefix": "baron-fixture",
+  "langParity": "error",
+  "persisted": ["baron-fixture", "bfx-flag"]
+}

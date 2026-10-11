@@ -1,0 +1,6 @@
+{
+  "description": "baron.json has a mode that does not exist",
+  "fails": "c",
+  "message": "mode must be \"public\" or \"protected\"",
+  "merge": { "baron.json": { "mode": "paid" } }
+}

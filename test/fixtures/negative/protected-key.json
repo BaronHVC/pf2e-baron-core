@@ -1,0 +1,6 @@
+{
+  "description": "the source module.json carries the protected key",
+  "fails": "j",
+  "message": "\"protected\" must not be in the source module.json",
+  "merge": { "module.json": { "protected": true } }
+}

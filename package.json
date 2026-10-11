@@ -1,0 +1,9 @@
+{
+  "name": "pf2e-baron-core",
+  "private": true,
+  "description": "Vendored helper library and tooling for BaronHVC's PF2e modules for Foundry VTT. Not an npm package and not a Foundry package: there is nothing to install.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs test/tools/*.test.mjs"
+  }
+}

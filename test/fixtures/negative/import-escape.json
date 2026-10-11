@@ -1,0 +1,6 @@
+{
+  "description": "a relative import climbs out of the module folder into a sibling module",
+  "fails": "g",
+  "message": "import \"../../other-module/x.js\" leaves the module folder",
+  "write": { "scripts/escape.js": "import \"../../other-module/x.js\";\n" }
+}

@@ -1,0 +1,8 @@
+{
+  "description": "a nested script references one of the module's own templates that does not exist",
+  "fails": "a",
+  "message": "\"templates/absent.hbs\" does not exist",
+  "write": {
+    "scripts/lib/dialog.js": "export const DIALOG = \"modules/baron-fixture/templates/absent.hbs\";\n"
+  }
+}

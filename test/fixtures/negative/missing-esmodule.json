@@ -1,0 +1,6 @@
+{
+  "description": "module.json declares an esmodule that does not exist",
+  "fails": "a",
+  "message": "\"scripts/gone.js\" does not exist",
+  "merge": { "module.json": { "esmodules": ["scripts/main.js", "scripts/gone.js"] } }
+}

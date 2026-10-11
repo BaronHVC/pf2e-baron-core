@@ -1,0 +1,8 @@
+{
+  "description": "a script awaits at module top level (valid ESM, so node --check passes)",
+  "fails": "g",
+  "message": "top-level await",
+  "write": {
+    "scripts/lib/tla.js": "const data = await Promise.resolve(1);\n\nexport default data;\n"
+  }
+}

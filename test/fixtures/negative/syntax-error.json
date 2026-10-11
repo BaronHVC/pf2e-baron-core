@@ -1,0 +1,6 @@
+{
+  "description": "a script does not parse",
+  "fails": "b",
+  "message": "SyntaxError",
+  "write": { "scripts/lib/broken.js": "export const broken = ;\n" }
+}

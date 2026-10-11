@@ -1,0 +1,6 @@
+{
+  "description": "a template placeholder was never replaced",
+  "fails": "k",
+  "message": "leftover placeholder __TITLE__",
+  "merge": { "module.json": { "title": "__TITLE__" } }
+}

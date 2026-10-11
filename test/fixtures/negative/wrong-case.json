@@ -1,0 +1,6 @@
+{
+  "description": "a declared path differs only in case: works on Windows, breaks on Linux hosts",
+  "fails": "a",
+  "message": "exists only as \"styles/module.css\"",
+  "merge": { "module.json": { "styles": ["styles/Module.css"] } }
+}

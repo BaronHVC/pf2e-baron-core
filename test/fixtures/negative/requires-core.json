@@ -1,0 +1,13 @@
+{
+  "description": "module.json declares pf2e-baron-core as a Foundry dependency",
+  "fails": "j",
+  "message": "relationships.requires lists pf2e-baron-core",
+  "merge": {
+    "module.json": {
+      "relationships": {
+        "systems": [{ "id": "pf2e", "type": "system", "compatibility": { "minimum": "7.0.0" } }],
+        "requires": [{ "id": "pf2e-baron-core", "type": "module" }]
+      }
+    }
+  }
+}

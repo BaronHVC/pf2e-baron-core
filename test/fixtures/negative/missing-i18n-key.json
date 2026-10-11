@@ -1,0 +1,8 @@
+{
+  "description": "a static i18n(\"X\") key is not in lang/en.json",
+  "fails": "h",
+  "message": "\"baron-fixture.NotThere\" is not in lang/en.json",
+  "write": {
+    "scripts/lib/more.js": "import { i18n } from \"../main.js\";\n\nexport const more = () => i18n(\"NotThere\");\n"
+  }
+}

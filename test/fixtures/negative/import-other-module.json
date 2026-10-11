@@ -1,0 +1,8 @@
+{
+  "description": "a script imports from another module's folder by absolute path",
+  "fails": "g",
+  "message": "import \"/modules/x/y.js\" is absolute",
+  "write": {
+    "scripts/lib/cross.js": "import { api } from \"/modules/x/y.js\";\n\nexport { api };\n"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "description": "a persisted identifier listed in baron.json no longer appears in scripts/",
+  "fails": "i",
+  "message": "\"bfx-renamed\" no longer appears in scripts/",
+  "merge": { "baron.json": { "persisted": ["baron-fixture", "bfx-flag", "bfx-renamed"] } }
+}

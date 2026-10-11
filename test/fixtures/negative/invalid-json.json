@@ -1,0 +1,6 @@
+{
+  "description": "a language file is not valid JSON",
+  "fails": "c",
+  "message": "invalid JSON",
+  "write": { "lang/es.json": "{ \"baron-fixture.Title\": }\n" }
+}

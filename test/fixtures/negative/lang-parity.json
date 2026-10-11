@@ -1,0 +1,8 @@
+{
+  "description": "es.json lacks a key that en.json has (baron.json langParity is error)",
+  "fails": "d",
+  "message": "es lacks 1 key(s) of en: baron-fixture.Unused",
+  "write": {
+    "lang/es.json": "{\n  \"baron-fixture.Title\": \"Baron Fixture\",\n  \"baron-fixture.Open\": \"Abrir\",\n  \"baron-fixture.Notice\": \"Aviso\",\n  \"baron-fixture.Kind_a\": \"Tipo A\",\n  \"baron-fixture.Kind_b\": \"Tipo B\"\n}\n"
+  }
+}

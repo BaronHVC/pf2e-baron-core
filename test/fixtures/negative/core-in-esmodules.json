@@ -1,0 +1,8 @@
+{
+  "description": "esmodules lists the vendored core: a warning, the module still loads",
+  "warns": "j",
+  "message": "esmodules lists scripts/baron-core.js",
+  "merge": { "module.json": { "esmodules": ["scripts/main.js", "scripts/baron-core.js"] } },
+  "write": { "scripts/baron-core.js": "export const CORE_VERSION = \"1.0.0\";\n" },
+  "lock": { "version": "1.0.0", "commit": "0123456789abcdef0123456789abcdef01234567", "sha256": "auto" }
+}
