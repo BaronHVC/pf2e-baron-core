@@ -1,0 +1,8 @@
+{
+  "description": "baron.json says cup but NOTICE.md carries only the ORC notices",
+  "fails": "l",
+  "message": "lacks the Community Use Policy notice",
+  "write": {
+    "NOTICE.md": "# Legal notices\n\n## ORC Notice\n\nThis product is licensed under the ORC License located at the Library of Congress at TX 9-307-067 and available online at various locations. All warranties are disclaimed as set forth therein.\n\n## Attribution Notice\n\nThis product is based on the following Licensed Material:\n\nExample Work, (c) 2023 Example Publisher, Example Author.\n"
+  }
+}

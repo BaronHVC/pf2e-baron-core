@@ -96,7 +96,8 @@ jobs:
       # Reemplaza los dos pasos de validacion del release.yml de SWE (archivos
       # declarados, node --check, JSON, paridad en/es) y agrega el resto de
       # check-module: copia del core contra el lock, imports, claves i18n,
-      # identificadores persistidos y placeholders.
+      # identificadores persistidos, placeholders y la licencia de Paizo
+      # (baron.json paizo contra el modo y NOTICE.md).
       - name: Validar que las fuentes no esten rotas (check-module --online)
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online
 

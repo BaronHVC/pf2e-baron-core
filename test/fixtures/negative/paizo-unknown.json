@@ -1,0 +1,6 @@
+{
+  "description": "baron.json declares a Paizo license that does not exist",
+  "fails": "l",
+  "message": "paizo must be \"cup\" or \"orc\", not \"ogl\"",
+  "merge": { "baron.json": { "paizo": "ogl" } }
+}

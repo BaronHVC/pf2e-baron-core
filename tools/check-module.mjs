@@ -13,6 +13,7 @@
 //   [d] language key parity       [j] manifest rules (no protected key, no core dependency)
 //   [e] vendored core vs lock     [k] no leftover template placeholders
 //   [f] lock vs core repo (--online)
+//   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -669,6 +670,72 @@ function checkPlaceholders(ctx, c) {
   c.detail(`${scanned} file(s) free of __PLACEHOLDER__ markers`);
 }
 
+// Paizo's license is a separate axis from how the module ships: "cup" is the
+// Community Use Policy, which forbids charging for anything in the project, so
+// a paid module and the free base it extends both declare "orc".
+const PAIZO_LICENSES = ["cup", "orc"];
+// A fragment of each required notice, as pf2e-module-template's NOTICE.md
+// copies it from paizo.com. Enough to tell the two apart and to catch a
+// module that switched license but kept the old notice.
+const PAIZO_NOTICE = {
+  cup: { name: "Community Use Policy notice", fragment: "used under Paizo's Community Use Policy" },
+  orc: { name: "ORC Notice", fragment: "licensed under the ORC License" },
+};
+// The bracketed fields of the template's ORC block that the author fills by
+// hand: the license's own Sample Notice fields and the template's Spanish
+// hints (the Reserved Material one ends with the module title). Listed one by
+// one rather than "any [text]": a finished notice may hold markdown links, and
+// the template's prose quotes the brackets themselves as `[ ]`.
+const ORC_FIELD_RE = /\[(?:Title of Work|Copyright Notice|Author Credit Information|ninguno|nombres, logos, arte e identidad comercial de [^\]\n]*)\]/g;
+// Built from char codes so this file stays ASCII: a notice pasted from
+// paizo.com or a word processor may use typographic apostrophes.
+const TYPOGRAPHIC_APOSTROPHES = new RegExp(`[${String.fromCharCode(0x2018, 0x2019)}]`, "g");
+const PAIZO_TRADEMARK_RE = /pf2e|pathfinder/i;
+
+function checkPaizoLicense(ctx, c) {
+  const paizo = ctx.baron.paizo;
+  if (paizo === undefined) {
+    return c.skip('baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked');
+  }
+  const conf = { file: "baron.json" };
+  if (!PAIZO_LICENSES.includes(paizo)) return c.fail(`paizo must be "cup" or "orc", not ${JSON.stringify(paizo)}`, conf);
+  if (ctx.baron.mode === "protected" && paizo === "cup") {
+    c.fail('mode "protected" with paizo "cup": the Community Use Policy forbids charging for anything in the project; a paid module, and the free base it extends, use "orc"', conf);
+  }
+
+  const r = existsExact(ctx.root, "NOTICE.md");
+  if (!r.ok) {
+    const found = r.actual ? ` (only "${r.actual}", and Linux hosts and GitHub links are case-sensitive)` : "";
+    return c.fail(`NOTICE.md does not exist${found}: it carries the Paizo ${PAIZO_NOTICE[paizo].name}; take it from pf2e-module-template (tools/init-module.mjs picks the block)`, { file: "NOTICE.md" });
+  }
+  const text = ctx.text("NOTICE.md");
+  const loc = { file: "NOTICE.md" };
+  // Whitespace collapsed: the notice may be hard-wrapped across lines.
+  const flat = text.replace(TYPOGRAPHIC_APOSTROPHES, "'").replace(/\s+/g, " ");
+  const { name, fragment } = PAIZO_NOTICE[paizo];
+  if (!flat.includes(fragment)) {
+    c.fail(`paizo is "${paizo}" but NOTICE.md lacks the ${name} ("... ${fragment} ..."): copy it from pf2e-module-template's NOTICE.md`, loc);
+  }
+  if (paizo !== "orc") return c.detail(`paizo "${paizo}", NOTICE.md carries the ${name}`);
+
+  // One warning per line, so each annotation points at what is left to fill.
+  const byLine = new Map();
+  for (const m of text.matchAll(ORC_FIELD_RE)) {
+    const line = text.slice(0, m.index).split("\n").length;
+    byLine.set(line, [...(byLine.get(line) ?? []), m[0]]);
+  }
+  for (const [line, fields] of byLine) {
+    c.warn(`unfilled template field(s) ${fields.join(", ")}: fill before publishing`, { file: "NOTICE.md", line });
+  }
+
+  const named = ["id", "title"].filter((k) => typeof ctx.module?.[k] === "string" && PAIZO_TRADEMARK_RE.test(ctx.module[k]));
+  if (named.length) {
+    const where = named.map((k) => `${k} ${JSON.stringify(ctx.module[k])}`).join(" and ");
+    c.warn(`module.json ${where} name(s) PF2e/Pathfinder: the ORC License never licenses Paizo's trademarks, so this is an open legal question; settle it before the first release, an id can never change afterwards`, { file: "module.json" });
+  }
+  c.detail(`paizo "orc", NOTICE.md carries the ORC Notice with every template field filled`);
+}
+
 /* ----------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -694,6 +761,7 @@ function main() {
   r.check("i", "persisted identifiers", (c) => checkPersisted(ctx, c));
   r.check("j", "manifest rules", (c) => checkManifestRules(ctx, c));
   r.check("k", "placeholders", (c) => checkPlaceholders(ctx, c));
+  r.check("l", "paizo license", (c) => checkPaizoLicense(ctx, c));
 
   const { passed, warnings, failed } = r.counts;
   console.log(`check-module: ${passed} passed, ${warnings} warnings, ${failed} failed`);

@@ -1,0 +1,6 @@
+{
+  "description": "a protected (paid) module declares the Community Use Policy, which forbids charging",
+  "fails": "l",
+  "message": "mode \"protected\" with paizo \"cup\"",
+  "merge": { "baron.json": { "mode": "protected" } }
+}

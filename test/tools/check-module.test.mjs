@@ -20,8 +20,8 @@ test("the valid fixture passes every check", () => {
   assert.equal(res.status, 0, res.out);
   assert.deepEqual([...r.fail], [], res.out);
   assert.deepEqual([...r.warn], [], res.out);
-  assert.deepEqual([...r.pass].sort(), ["a", "b", "c", "d", "g", "h", "i", "j", "k"], res.out);
-  assert.equal(r.summary, "check-module: 9 passed, 0 warnings, 0 failed");
+  assert.deepEqual([...r.pass].sort(), ["a", "b", "c", "d", "g", "h", "i", "j", "k", "l"], res.out);
+  assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed");
   // It does not vendor core: [e] says so and [f] stays silent.
   assert.ok(r.lines.some((l) => l.startsWith("NOTICE [e]") && l.includes("module does not vendor baron-core")), res.out);
   assert.ok(!r.lines.some((l) => l.includes("[f]")), res.out);
@@ -109,13 +109,13 @@ test("under GitHub Actions, findings become annotations with paths relative to t
 
 test("CRLF sources (git archive on Windows with autocrlf) check the same as LF", (t) => {
   const dir = materialize(t);
-  for (const rel of ["scripts/main.js", "scripts/lib/util.js", "templates/panel.hbs", "lang/en.json", "lang/es.json", "module.json"]) {
+  for (const rel of ["scripts/main.js", "scripts/lib/util.js", "templates/panel.hbs", "lang/en.json", "lang/es.json", "module.json", "NOTICE.md"]) {
     const file = path.join(dir, rel);
     fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/\r?\n/g, "\r\n"));
   }
   const res = checkModule([dir]);
   assert.equal(res.status, 0, res.out);
-  assert.equal(parseReport(res.out).summary, "check-module: 9 passed, 0 warnings, 0 failed");
+  assert.equal(parseReport(res.out).summary, "check-module: 10 passed, 0 warnings, 0 failed");
 });
 
 test("usage errors exit 1 with a message", () => {
@@ -128,4 +128,162 @@ test("usage errors exit 1 with a message", () => {
   const missing = checkModule([path.join(VALID_MODULE, "does-not-exist")]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /is not a folder/);
+});
+
+/* ----------------------------------------------------------------------------
+ * [l] Paizo license. The valid fixture is a CUP module; the single-change
+ * failures live in ../fixtures/negative/paizo-*.json, the cases below need
+ * more than one change or a closer look at the output.
+ * -------------------------------------------------------------------------- */
+
+const ORC_SENTENCE =
+  "This product is licensed under the ORC License located at the Library of Congress at TX 9-307-067 and available online at various locations. All warranties are disclaimed as set forth therein.";
+
+const ORC_FILLED_NOTICE = [
+  "# Legal notices",
+  "",
+  "## ORC Notice",
+  "",
+  ORC_SENTENCE,
+  "",
+  "## Attribution Notice",
+  "",
+  "This product is based on the following Licensed Material:",
+  "",
+  "Example Work, (c) 2023 Example Publisher, Example Author.",
+  "",
+].join("\n");
+
+// The ORC block of pf2e-module-template's NOTICE.md as init leaves it for
+// "Baron Fixture" (abridged prose, every bracketed field kept), plus the
+// brackets a finished notice may hold: quoted `[ ]`, inline and reference links.
+const ORC_TEMPLATE_NOTICE = [
+  "# Legal notices",
+  "",
+  "- Rellena todo lo que esta entre corchetes `[ ]` y borra estas notas antes de publicar.",
+  "- Fuente: [ORC License](https://paizo.com/orclicense) y [la AxE][axe].",
+  "",
+  "### ORC Notice",
+  "",
+  ORC_SENTENCE,
+  "",
+  "### Attribution Notice",
+  "",
+  "This product is based on the following Licensed Material:",
+  "",
+  "[Title of Work], [Copyright Notice], [Author Credit Information].",
+  "",
+  "If you use our Licensed Material in your own published works, please credit us as follows:",
+  "",
+  "Baron Fixture, [Copyright Notice], BaronHVC.",
+  "",
+  "### Reserved Material Notice",
+  "",
+  "Reserved Material elements in this product include, but may not be limited to: [nombres, logos, arte e identidad comercial de Baron Fixture], and all elements designated as Reserved Material under the ORC License.",
+  "",
+  "### Expressly Designated Licensed Material",
+  "",
+  "The following elements are owned by the Licensor and would otherwise constitute Reserved Material and are hereby designated as Licensed Material: [ninguno].",
+  "",
+  "[axe]: https://paizo.com/orclicense",
+  "",
+].join("\n");
+
+const lLines = (r, level) => r.lines.filter((l) => l.startsWith(`${level.padEnd(6)} [l]`));
+
+test("[l] without a paizo key only notices, needs no NOTICE.md and is not counted", (t) => {
+  const dir = materialize(t, {
+    write: { "baron.json": JSON.stringify({ mode: "public", i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }) },
+    delete: ["NOTICE.md"],
+  });
+  const res = checkModule([dir]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.ok(!r.pass.has("l") && !r.fail.has("l") && !r.warn.has("l"), res.out);
+  assert.deepEqual(lLines(r, "NOTICE"), [
+    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked',
+  ]);
+  assert.equal(r.summary, "check-module: 9 passed, 0 warnings, 0 failed");
+});
+
+test("[l] an ORC module with a complete notice passes, public (freemium base) or protected (paid add-on)", (t) => {
+  for (const mode of ["public", "protected"]) {
+    const dir = materialize(t, { merge: { "baron.json": { mode, paizo: "orc" } }, write: { "NOTICE.md": ORC_FILLED_NOTICE } });
+    const res = checkModule([dir]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 0, res.out);
+    assert.deepEqual(lLines(r, "PASS"), ['PASS   [l] paizo license: paizo "orc", NOTICE.md carries the ORC Notice with every template field filled'], res.out);
+    assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed", res.out);
+  }
+});
+
+test("[l] each unfilled field of the template's ORC block is reported on its line; quoted brackets and links are not fields", (t) => {
+  const dir = materialize(t, { merge: { "baron.json": { paizo: "orc" } }, write: { "NOTICE.md": ORC_TEMPLATE_NOTICE } });
+  const res = checkModule([dir]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual([...r.warn], ["l"], res.out);
+  const lineOf = (s) => ORC_TEMPLATE_NOTICE.split("\n").findIndex((l) => l.includes(s)) + 1;
+  const warn = (fields, at) => `WARN   [l] paizo license: unfilled template field(s) ${fields}: fill before publishing (NOTICE.md:${lineOf(at)})`;
+  assert.deepEqual(lLines(r, "WARN"), [
+    warn("[Title of Work], [Copyright Notice], [Author Credit Information]", "[Title of Work]"),
+    warn("[Copyright Notice]", "Baron Fixture, [Copyright Notice]"),
+    warn("[nombres, logos, arte e identidad comercial de Baron Fixture]", "[nombres,"),
+    warn("[ninguno]", "[ninguno]"),
+  ]);
+  assert.equal(r.summary, "check-module: 9 passed, 1 warnings, 0 failed");
+
+  // Under GitHub Actions each line becomes a warning annotation on NOTICE.md.
+  const ci = checkModule(["."], { cwd: dir, env: childEnv({ GITHUB_ACTIONS: "true" }) });
+  assert.ok(
+    ci.out.includes(`::warning file=NOTICE.md,line=${lineOf("[ninguno]")},title=check-module [l] paizo license::unfilled template field(s) [ninguno]: fill before publishing`),
+    ci.out,
+  );
+});
+
+test("[l] a hard-wrapped notice with a typographic apostrophe still carries the CUP notice", (t) => {
+  const apostrophe = String.fromCharCode(0x2019);
+  const notice = `# Legal notices\n\nBaron Fixture uses trademarks and/or copyrights owned by Paizo Inc., used\nunder Paizo${apostrophe}s Community Use\n  Policy (paizo.com/licenses/communityuse).\n`;
+  const dir = materialize(t, { write: { "NOTICE.md": notice } });
+  const res = checkModule([dir]);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual(lLines(parseReport(res.out), "PASS"), ['PASS   [l] paizo license: paizo "cup", NOTICE.md carries the Community Use Policy notice']);
+});
+
+test("[l] PF2e or Pathfinder in the id or title warns under orc, never under cup", (t) => {
+  const orc = (moduleJson) =>
+    checkModule([materialize(t, { merge: { "baron.json": { paizo: "orc" }, "module.json": moduleJson }, write: { "NOTICE.md": ORC_FILLED_NOTICE } })]);
+
+  const byId = orc({ id: "pathfinder-fixture" });
+  assert.equal(byId.status, 0, byId.out);
+  assert.deepEqual([...parseReport(byId.out).warn], ["l"], byId.out);
+  assert.match(lLines(parseReport(byId.out), "WARN").join("\n"), /^WARN {3}\[l\] paizo license: module\.json id "pathfinder-fixture" name\(s\) PF2e\/Pathfinder: the ORC License never licenses Paizo's trademarks.* \(module\.json\)$/);
+
+  const both = orc({ id: "pf2e-fixture", title: "Pathfinder Fixture" });
+  assert.equal(lLines(parseReport(both.out), "WARN").length, 1, both.out);
+  assert.ok(both.out.includes('module.json id "pf2e-fixture" and title "Pathfinder Fixture" name(s) PF2e/Pathfinder'), both.out);
+
+  const cup = checkModule([materialize(t, { merge: { "module.json": { id: "pf2e-fixture", title: "PF2e Baron Fixture" } } })]);
+  assert.equal(cup.status, 0, cup.out);
+  assert.equal(parseReport(cup.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", cup.out);
+});
+
+test("[l] NOTICE.md must have that exact name: Linux hosts and GitHub links are case-sensitive", (t) => {
+  const dir = materialize(t);
+  fs.renameSync(path.join(dir, "NOTICE.md"), path.join(dir, "notice.md"));
+  const res = checkModule([dir]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["l"], res.out);
+  assert.ok(lLines(r, "FAIL")[0]?.includes('NOTICE.md does not exist (only "notice.md"'), res.out);
+});
+
+test("[l] protected with cup fails on the license and still checks the notice", (t) => {
+  const dir = materialize(t, { merge: { "baron.json": { mode: "protected" } }, write: { "NOTICE.md": ORC_FILLED_NOTICE } });
+  const res = checkModule([dir]);
+  const fails = lLines(parseReport(res.out), "FAIL");
+  assert.equal(res.status, 1, res.out);
+  assert.equal(fails.length, 2, res.out);
+  assert.ok(fails[0].includes('mode "protected" with paizo "cup"') && fails[0].endsWith("(baron.json)"), res.out);
+  assert.ok(fails[1].includes("lacks the Community Use Policy notice") && fails[1].endsWith("(NOTICE.md)"), res.out);
 });

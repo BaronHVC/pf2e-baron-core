@@ -1,0 +1,6 @@
+{
+  "description": "baron.json switched to orc but NOTICE.md still carries the Community Use Policy notice",
+  "fails": "l",
+  "message": "lacks the ORC Notice",
+  "merge": { "baron.json": { "paizo": "orc" } }
+}

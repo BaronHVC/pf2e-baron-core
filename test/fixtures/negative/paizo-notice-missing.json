@@ -1,0 +1,6 @@
+{
+  "description": "baron.json declares a Paizo license but NOTICE.md was deleted",
+  "fails": "l",
+  "message": "NOTICE.md does not exist",
+  "delete": ["NOTICE.md"]
+}

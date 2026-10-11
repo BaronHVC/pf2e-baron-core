@@ -1,0 +1,9 @@
+{
+  "description": "an ORC module whose NOTICE.md still has the template fields in brackets",
+  "warns": "l",
+  "message": "[Title of Work], [Copyright Notice], [Author Credit Information]: fill before publishing",
+  "merge": { "baron.json": { "paizo": "orc" } },
+  "write": {
+    "NOTICE.md": "# Legal notices\n\n## ORC Notice\n\nThis product is licensed under the ORC License located at the Library of Congress at TX 9-307-067 and available online at various locations. All warranties are disclaimed as set forth therein.\n\n## Attribution Notice\n\nThis product is based on the following Licensed Material:\n\n[Title of Work], [Copyright Notice], [Author Credit Information].\n"
+  }
+}

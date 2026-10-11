@@ -8,6 +8,22 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/check-module.mjs`: revisión `[l] paizo license`. `baron.json` gana el
+  campo `paizo` (`"cup"` | `"orc"`), independiente de `mode`: un proyecto con
+  cualquier parte de pago (un módulo `protected` o la base gratuita de un
+  freemium) usa la ORC, porque la Community Use Policy prohíbe cobrar. Falla si
+  el valor no es `cup`/`orc`, si es `protected` con `cup`, si falta `NOTICE.md`
+  o si `NOTICE.md` no trae el aviso de esa licencia. Con `orc` avisa (sin
+  fallar) por cada renglón con campos entre corchetes del template sin llenar y
+  si el id o el título dicen PF2e/Pathfinder (la ORC nunca licencia marcas de
+  Paizo). Un módulo sin `paizo` solo recibe un NOTICE, así que nada que hoy
+  pase empieza a fallar. `baron-core.js` no cambia: los módulos reciben la
+  revisión cuando sus workflows apunten a un commit del core que la traiga.
+  Nuevos casos en `test/fixtures/negative/paizo-*.json`; el módulo de ejemplo
+  válido ahora declara `paizo: "cup"` y trae su `NOTICE.md`.
+
 ### Fixed
 
 - `tools/sync-core.mjs --watch` hacía la copia inicial antes de empezar a

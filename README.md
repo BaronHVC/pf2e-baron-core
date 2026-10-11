@@ -56,12 +56,13 @@ mi-modulo/
 | campo        | valores                  | uso                                                                                  |
 |--------------|--------------------------|--------------------------------------------------------------------------------------|
 | `mode`       | `"public"`, `"protected"` | `protected` (módulos de pago) **aún no existe**: `module-release` falla a propósito |
+| `paizo`      | `"cup"`, `"orc"`        | licencia de Paizo que cubre el material del juego, independiente de `mode`: `cup` (Community Use Policy) solo para un proyecto sin ninguna parte de pago; `orc` para los de pago y para la base gratuita de un freemium. `protected` exige `orc` |
 | `devChannel` | `true` / `false`         | publicar o no el canal de pruebas `dev` en cada release                              |
 | `i18nPrefix` | texto                    | prefijo de las claves de idioma; en módulos nuevos es el id del módulo               |
 | `langParity` | `"error"`, `"warn"`      | qué pasa si `en.json` y `es.json` no tienen las mismas claves                        |
 | `persisted`  | lista de textos          | identificadores guardados en mundos (scope de flags, slugs, roll options) que nunca pueden desaparecer de `scripts/` |
 
-Sin `baron.json`, `check-module` usa `{"mode":"public","devChannel":true,"i18nPrefix":<id>,"langParity":"error","persisted":[]}` y lo avisa.
+Sin `baron.json`, `check-module` usa `{"mode":"public","devChannel":true,"i18nPrefix":<id>,"langParity":"error","persisted":[]}` y lo avisa. Sin `paizo`, la revisión `l` no revisa nada y solo lo avisa.
 
 ## Comandos
 
@@ -113,6 +114,7 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | i   | cada texto de `persisted` sigue apareciendo en `scripts/` como literal completo, o como el texto antes del primer `${}` de una plantilla (`` `swe-p-${i}` `` cuenta para `swe-p-`); sin contar comentarios. Una subcadena no basta: el id también vive dentro de `"<id>.SettingGmOnly"` |
 | j   | `module.json` sin clave `protected`, sin `requires` a pf2e-baron-core; aviso si `esmodules` lista la copia del core |
 | k   | sin placeholders `__ALGO__` sobrantes del template                                                              |
+| l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe y trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`, aunque esté partido en renglones). Con `orc`, aviso por cada renglón con campos del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`) y aviso si el id o el título dicen PF2e/Pathfinder: la ORC nunca licencia marcas de Paizo y el id no se puede cambiar. Sin `paizo`, solo un NOTICE |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
