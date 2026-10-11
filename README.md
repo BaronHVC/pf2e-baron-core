@@ -17,8 +17,10 @@ hooks, settings, helpers and sockets stay in each module's own entry files.*
   se llama una de sus funciones, y no registra nada (ni hooks, ni settings, ni
   helpers de Handlebars, ni sockets, ni elementos personalizados). Todo lo que
   identifica a un módulo (id, prefijo i18n, clases CSS) entra como parámetro.
-- **`tools/`**: `sync-core.mjs` y `check-module.mjs`. Solo usan módulos de Node y
-  `git`; corren igual en Windows y en Linux, sin `npm install`.
+- **`tools/`**: `sync-core.mjs`, `check-module.mjs` y `release-manifest.mjs`
+  (la reescritura de `module.json` que corre `module-release`), más
+  `shared.mjs`, lo que comparten. Solo usan módulos de Node y `git`; corren
+  igual en Windows y en Linux, sin `npm install`.
 - **`.github/workflows/`**: la CI de este repo (`ci.yml`) y los dos workflows
   reutilizables que llaman los módulos (`module-check.yml`, `module-release.yml`).
 - **No es un paquete de Foundry**: no tiene `module.json`, no se instala y no se
