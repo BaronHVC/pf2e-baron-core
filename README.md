@@ -261,5 +261,7 @@ node --test test/*.test.mjs test/tools/*.test.mjs
 los módulos de pago: ahí sigue siendo MIT aunque el resto del módulo no lo sea.
 
 La licencia es solo del código. Los nombres y reglas de Pathfinder que usan los
-módulos son de Paizo y van con los avisos de cada módulo (`NOTICE.md`): la
-Community Use Policy en los gratuitos, la ORC License en los de pago.
+módulos son de Paizo y van con los avisos de cada módulo (`NOTICE.md`), según
+`paizo` en `baron.json`: la Community Use Policy solo en un proyecto sin ninguna
+parte de pago; la ORC License en los de pago y en la base gratuita de un
+freemium.
