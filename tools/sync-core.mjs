@@ -168,10 +168,6 @@ function watch(moduleDir) {
   console.log(`sync-core --watch: ${src}`);
   console.log(`                -> ${dest}`);
   console.log(`The lock now says "dev": run sync-core --ref <tag> before committing. Ctrl+C to stop.`);
-  // Forced even when the module already holds identical text (right after a
-  // --ref sync): from here on the copy follows the working tree, so the lock
-  // must stop vouching for a release the moment watching starts.
-  copy(true);
 
   // Watch the folder, not the file: an atomic save replaces the inode and a
   // file watcher would go silent after the first save. Long real path: on
@@ -189,6 +185,13 @@ function watch(moduleDir) {
     clearTimeout(timer);
     timer = setTimeout(copy, 150);
   });
+  // The first copy comes only once the watcher is armed: an edit saved right
+  // after that copy appears would otherwise land before anything listens and
+  // never be mirrored (reproduced 40 times out of 40 by editing the moment the
+  // lock appeared). Forced even when the module already holds identical text
+  // (right after a --ref sync): from here on the copy follows the working
+  // tree, so the lock must stop vouching for a release the moment watching starts.
+  copy(true);
   const stop = () => {
     watcher.close();
     clearTimeout(timer);

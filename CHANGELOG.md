@@ -8,6 +8,15 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Fixed
+
+- `tools/sync-core.mjs --watch` hacía la copia inicial antes de empezar a
+  vigilar la carpeta: un cambio guardado justo al aparecer esa copia nunca se
+  reflejaba (40 de 40 veces editando en cuanto aparecía el lock). Ahora el
+  vigilante se arma primero. Solo afecta al modo de desarrollo; `baron-core.js`
+  y `check-module` no cambian, así que ningún módulo necesita resincronizar.
+  Era la causa del rojo intermitente del job `tools` en la CI de `v1.0.0-rc.1`.
+
 ## [1.0.0-rc.1]
 
 Primera versión. Todo el código se extrajo **tal cual** de
