@@ -22,7 +22,6 @@ import os from "node:os";
 import path from "node:path";
 import {
   CORE_DIR,
-  GITHUB_HOST_RE,
   LOCK_FILE,
   VENDORED_PATH,
   coreFileAt,
@@ -30,6 +29,7 @@ import {
   githubPaths,
   gitTry,
   httpsUrlProblem,
+  mentionsGitHub,
   readCoreVersion,
   scanJs,
   sha256Lf,
@@ -801,8 +801,8 @@ function checkProtectedPackaging(ctx, c) {
   const problem = httpsUrlProblem(landing);
   if (problem) {
     c.fail(`landingUrl ${problem}: a protected module needs the https page where players learn how to get it (Patreon, a site); the release writes it as the manifest's "url", since the private repo's link would be dead`, conf);
-  } else if (GITHUB_HOST_RE.test(landing)) {
-    c.fail(`landingUrl ${JSON.stringify(landing)} points at github.com: the repo of a paid module is private, so players would land on a 404; use the Patreon or site page`, conf);
+  } else if (mentionsGitHub(landing)) {
+    c.fail(`landingUrl ${JSON.stringify(landing)} points at GitHub: the repo of a paid module is private, so players would land on a 404; use the Patreon or site page`, conf);
   }
 
   const m = ctx.module;
@@ -819,7 +819,7 @@ function checkProtectedPackaging(ctx, c) {
   }
   const kept = githubPaths(m).filter((p) => !RELEASE_REWRITES.has(p));
   if (kept.length) {
-    c.warn(`${kept.join(", ")} still mention github.com: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
+    c.warn(`${kept.join(", ")} still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
   }
   c.detail(`landing page ${landing}, requires ${bases.join(", ")}`);
 }

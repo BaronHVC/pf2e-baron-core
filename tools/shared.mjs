@@ -159,26 +159,43 @@ export function httpsUrlProblem(value) {
   return null;
 }
 
-/** A link into GitHub. Host names are case-insensitive, so the match is too. */
-export const GITHUB_HOST_RE = /github\.com/i;
+/**
+ * A link into GitHub, which can name a private repo: github.com and its
+ * subdomains, the githubusercontent.com hosts that serve raw files and release
+ * assets, and github.io Pages. Host names are case-insensitive, so the match
+ * is too.
+ */
+export const GITHUB_HOST_RE = /github\.com|githubusercontent\.com|github\.io/i;
+
+// URL parsing percent-decodes a host, so "github%2Ecom" still opens github.com.
+const percentDecoded = (s) => s.replace(/%([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+
+/**
+ * Whether `text` mentions a GitHub host (GITHUB_HOST_RE), percent-escaped too.
+ * @param {string} text
+ * @returns {boolean}
+ */
+export const mentionsGitHub = (text) => GITHUB_HOST_RE.test(text) || GITHUB_HOST_RE.test(percentDecoded(text));
 
 const JSON_IDENT_RE = /^[A-Za-z_$][\w$]*$/;
 
 /**
- * JSON paths of every string under `value` that mentions github.com, such as
- * "bugs" or "authors[0].url". A paid module lives in a private repo, so such a
- * link in its published manifest is dead for players and names the repo.
+ * JSON paths of every string under `value` that mentions a GitHub host, such
+ * as "bugs" or "authors[0].url", and of every key that does, marked " (key)".
+ * A paid module lives in a private repo, so such a link in its published
+ * manifest is dead for players and names the repo.
  * @param {unknown} value
  * @param {string} [at] path of `value` itself
  * @returns {string[]}
  */
 export function githubPaths(value, at = "") {
-  if (typeof value === "string") return GITHUB_HOST_RE.test(value) ? [at || "(root)"] : [];
+  if (typeof value === "string") return mentionsGitHub(value) ? [at || "(root)"] : [];
   if (Array.isArray(value)) return value.flatMap((v, i) => githubPaths(v, `${at}[${i}]`));
   if (!value || typeof value !== "object") return [];
   return Object.entries(value).flatMap(([k, v]) => {
     const key = JSON_IDENT_RE.test(k) ? (at ? `${at}.${k}` : k) : `${at}[${JSON.stringify(k)}]`;
-    return githubPaths(v, key);
+    // A key is published just like a value.
+    return [...(mentionsGitHub(k) ? [`${key} (key)`] : []), ...githubPaths(v, key)];
   });
 }
 

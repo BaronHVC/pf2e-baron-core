@@ -15,8 +15,8 @@
 // protected           Foundry hosts the package and serves it to patrons only:
 //                     "protected": true, no download, the manifest Foundry
 //                     hosts, url = the landing page. Never the dev channel, and
-//                     the result may not mention github.com anywhere: the repo
-//                     of a paid module is private.
+//                     the result may not link to GitHub anywhere, not even in a
+//                     key: the repo of a paid module is private.
 //
 // The file is written (2-space JSON and a newline) only when the result is
 // valid; any error exits 1 and leaves it untouched.
@@ -98,7 +98,7 @@ export function releaseManifest(manifest, { tag, repo, channel, runNumber = null
     const leaks = githubPaths(m);
     if (leaks.length) {
       throw new Error(
-        `the protected manifest still mentions github.com at ${leaks.join(", ")}: a paid module lives in a private repo, so those links are dead for players and name the repo. Point them at a public page (the landing page) or remove them; a dependency listed on foundryvtt.com resolves by its id alone`,
+        `the protected manifest still links to GitHub (github.com, githubusercontent.com, github.io) at ${leaks.join(", ")}: a paid module lives in a private repo, so those links are dead for players and name the repo. Point them at a public page (the landing page) or remove them; a dependency listed on foundryvtt.com resolves by its id alone`,
       );
     }
     return m;

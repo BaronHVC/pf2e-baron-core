@@ -7,7 +7,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { foundryManifestUrl, isStableTag, releaseManifest } from "../../tools/release-manifest.mjs";
-import { githubPaths, httpsUrlProblem } from "../../tools/shared.mjs";
+import { githubPaths, httpsUrlProblem, mentionsGitHub } from "../../tools/shared.mjs";
 import { TOOLS, VALID_MODULE, childEnv, readJson, runNode, tempDir } from "./helpers.mjs";
 
 const SOURCE = readJson(VALID_MODULE, "module.json");
@@ -19,6 +19,10 @@ const pub = (tag, channel, extra = {}) => releaseManifest(SOURCE, { tag, repo: R
 const paid = (manifest = SOURCE, extra = {}) => releaseManifest(manifest, { tag: "v1.2.3", repo: REPO, channel: "stable", mode: "protected", landingUrl: LANDING, ...extra });
 /** Everything except the given keys, to show the rest passes through untouched. */
 const without = (obj, ...keys) => Object.fromEntries(Object.entries(obj).filter(([k]) => !keys.includes(k)));
+// The protected leak error, matched on the JSON paths it lists.
+const LEAK = "the protected manifest still links to GitHub (github.com, githubusercontent.com, github.io) at ";
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const leakAt = (paths, prefix = "") => new RegExp(`${prefix}${escapeRe(`${LEAK}${paths}: `)}`);
 
 /* ----------------------------------------------------------------------------
  * Public
@@ -111,7 +115,7 @@ test("protected: protected true, no download, the manifest Foundry hosts, url = 
   }
 });
 
-test("protected: any string still mentioning github.com fails, with every JSON path listed", () => {
+test("protected: any string still linking to GitHub fails, with every JSON path listed", () => {
   const leaky = {
     ...SOURCE,
     authors: [{ name: "BaronHVC" }, { name: "Baron", url: "https://GitHub.com/BaronHVC" }],
@@ -124,20 +128,37 @@ test("protected: any string still mentioning github.com fails, with every JSON p
   assert.throws(
     () => paid(leaky),
     (err) => {
-      assert.match(
-        err.message,
-        /^the protected manifest still mentions github\.com at authors\[1\]\.url, relationships\.requires\[0\]\.manifest, bugs, readme, changelog, flags\["odd key"\]: a paid module lives in a private repo/,
-      );
+      assert.match(err.message, leakAt('authors[1].url, relationships.requires[0].manifest, bugs, readme, changelog, flags["odd key"]', "^"));
+      assert.match(err.message, /: a paid module lives in a private repo/);
       return true;
     },
   );
   // Each field on its own is enough.
   for (const key of ["bugs", "readme", "changelog"]) {
-    assert.throws(() => paid({ ...SOURCE, [key]: `https://github.com/${REPO}` }), new RegExp(`mentions github\\.com at ${key}: `));
+    assert.throws(() => paid({ ...SOURCE, [key]: `https://github.com/${REPO}` }), leakAt(key));
   }
-  assert.throws(() => paid({ ...SOURCE, authors: [{ name: "x", url: "https://github.com/x" }] }), /mentions github\.com at authors\[0\]\.url: /);
+  assert.throws(() => paid({ ...SOURCE, authors: [{ name: "x", url: "https://github.com/x" }] }), leakAt("authors[0].url"));
   // A landing page on GitHub is the private repo too.
-  assert.throws(() => paid(SOURCE, { landingUrl: `https://github.com/${REPO}` }), /mentions github\.com at url: /);
+  assert.throws(() => paid(SOURCE, { landingUrl: `https://github.com/${REPO}` }), leakAt("url"));
+});
+
+test("protected: every GitHub host fails, and so does a key or a percent-escaped host", () => {
+  // Each of these can name the private repo: raw files, release assets, Pages.
+  for (const [extra, at] of [
+    [{ readme: `https://raw.githubusercontent.com/${REPO}/main/README.md` }, "readme"],
+    [{ media: [{ type: "cover", url: "https://objects.githubusercontent.com/github-production-release-asset/1/x.webp" }] }, "media[0].url"],
+    [{ changelog: "https://baronhvc.GitHub.io/baron-fixture/changelog" }, "changelog"],
+    [{ bugs: "https://gist.github.com/BaronHVC/1" }, "bugs"],
+    [{ bugs: "https://github%2Ecom/BaronHVC/baron-fixture/issues" }, "bugs"],
+    [{ flags: { [`https://github.com/${REPO}`]: true } }, `flags["https://github.com/${REPO}"] (key)`],
+    [{ flags: { baron: { "x.github.io": { y: "https://github.com/x" } } } }, 'flags.baron["x.github.io"] (key), flags.baron["x.github.io"].y'],
+  ]) {
+    assert.throws(() => paid({ ...SOURCE, ...extra }), leakAt(at), JSON.stringify(extra));
+  }
+  // A landing page on any GitHub host is refused as the manifest's url.
+  for (const landingUrl of [`https://raw.githubusercontent.com/${REPO}/main/README.md`, "https://baronhvc.github.io/baron-fixture"]) {
+    assert.throws(() => paid(SOURCE, { landingUrl }), leakAt("url"), landingUrl);
+  }
 });
 
 test("protected: the landing URL is required and must be https", () => {
@@ -162,8 +183,12 @@ test("httpsUrlProblem and githubPaths, the shared pieces", () => {
   assert.equal(httpsUrlProblem(["https://x.example"]), "must be a string");
   assert.deepEqual(githubPaths({ a: [{ b: "x" }, "GITHUB.COM"], "c-d": { e: "https://github.com" }, n: 1, z: null }), ["a[1]", '["c-d"].e']);
   assert.deepEqual(githubPaths("https://github.com"), ["(root)"]);
-  // raw.githubusercontent.com is a different host and does not match.
-  assert.deepEqual(githubPaths({ media: "https://raw.githubusercontent.com/x/y/main/a.webp" }), []);
+  assert.deepEqual(githubPaths({ media: "https://raw.githubusercontent.com/x/y/main/a.webp", pages: "https://x.github.io/y" }), ["media", "pages"]);
+  // A key is reported before what it holds; a lookalike host is not GitHub.
+  assert.deepEqual(githubPaths({ "github.com": "github.io", ok: "https://github.example.com/x" }), ['["github.com"] (key)', '["github.com"]']);
+  assert.deepEqual(githubPaths({ a: "https://github%2ecom/x", b: "100%25 github" }), ["a"]);
+  assert.equal(mentionsGitHub("https://GITHUBUSERCONTENT.COM/x"), true);
+  assert.equal(mentionsGitHub("https://www.patreon.com/c/baron"), false);
 });
 
 /* ----------------------------------------------------------------------------
@@ -203,11 +228,11 @@ test("on any error the CLI exits 1, leaves module.json untouched and annotates u
   const args = [file, "--tag", "v1.2.3", "--repo", REPO, "--channel", "stable", "--mode", "protected", "--landing-url", LANDING];
   const res = runNode(SCRIPT, args);
   assert.equal(res.status, 1, res.out);
-  assert.match(res.stderr, /^release-manifest: ERROR: the protected manifest still mentions github\.com at bugs: /);
+  assert.match(res.stderr, leakAt("bugs", "^release-manifest: ERROR: "));
   assert.equal(fs.readFileSync(file, "utf8"), text);
 
   const ci = runNode(SCRIPT, args, { env: childEnv({ GITHUB_ACTIONS: "true" }) });
-  assert.ok(ci.stdout.startsWith("::error title=release-manifest::the protected manifest still mentions github.com at bugs: "), ci.out);
+  assert.ok(ci.stdout.startsWith(`::error title=release-manifest::${LEAK}bugs: `), ci.out);
 
   // An empty --landing-url (an empty baron.json field) says so.
   const empty = runNode(SCRIPT, [file, "--tag", "v1.2.3", "--repo", REPO, "--channel", "stable", "--mode", "protected", "--landing-url", ""]);

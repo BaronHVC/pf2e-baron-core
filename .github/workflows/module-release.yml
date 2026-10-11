@@ -31,7 +31,7 @@ name: Module release
 # - protected (modulo de pago, un complemento freemium): solo desde un repo
 #   PRIVADO. module.json con "protected": true, sin download, con el manifest que
 #   hospeda Foundry y la landingUrl de baron.json como url; falla si algo sigue
-#   apuntando a github.com. El ZIP y ese module.json quedan en un release del
+#   apuntando a GitHub. El ZIP y ese module.json quedan en un release del
 #   propio repo privado, nunca en el canal "dev", y el resumen del run trae la
 #   lista para subirlo a mano a foundryvtt.com: Foundry no tiene API para subir
 #   paquetes protegidos.
@@ -167,7 +167,7 @@ jobs:
           # etiqueta y manifest en releases/latest (estable) o en el release de
           # la etiqueta (prerelease, que "latest" nunca resuelve).
           # protected: "protected": true, sin download, manifest en
-          # r2.foundryvtt.com, url = landingUrl; falla si queda un github.com.
+          # r2.foundryvtt.com, url = landingUrl; falla si queda un enlace a GitHub.
           CHANNEL=stable
           if [ "$PRERELEASE" = "true" ]; then CHANNEL=prerelease; fi
           ARGS=(module.json --tag "$TAG" --repo "$GITHUB_REPOSITORY" --channel "$CHANNEL" --mode "$MODE")

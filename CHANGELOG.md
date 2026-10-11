@@ -31,17 +31,18 @@ de sus workflows es el commit del lock).
   público las salidas son idénticas byte a byte a las de antes (estable,
   prerelease y canal `dev`, comparadas contra el `node -e` anterior). En modo
   protegido falla sin `--landing-url` `https`, con `--channel dev` o si
-  cualquier texto del resultado menciona github.com, y lista sus rutas JSON
-  (`bugs`, `authors[0].url`, …). También rechaza un `--channel` que no coincida
-  con la etiqueta.
+  cualquier texto o clave del resultado menciona GitHub (`github.com` y sus
+  subdominios, `githubusercontent.com`, `github.io`, también con escapes `%2E`),
+  y lista sus rutas JSON (`bugs`, `authors[0].url`, …). También rechaza un
+  `--channel` que no coincida con la etiqueta.
 - `tools/check-module.mjs`: revisión `[m] protected packaging`, solo con
   `mode: protected`. Falla si `landingUrl` falta o no es una URL `https` (o
-  apunta a github.com); avisa si `relationships.requires` no lista ningún módulo
+  apunta a GitHub); avisa si `relationships.requires` no lista ningún módulo
   (la base del freemium; pf2e-baron-core no cuenta) o si otro texto de
-  `module.json` menciona github.com, que el release protegido rechazaría. En un
+  `module.json` menciona GitHub, que el release protegido rechazaría. En un
   módulo público no imprime nada ni cuenta en el resumen.
-- `tools/shared.mjs`: `httpsUrlProblem`, `githubPaths` y `GITHUB_HOST_RE`, que
-  comparten `check-module` y `release-manifest`.
+- `tools/shared.mjs`: `httpsUrlProblem`, `githubPaths`, `mentionsGitHub` y
+  `GITHUB_HOST_RE`, que comparten `check-module` y `release-manifest`.
 
 ### Changed
 

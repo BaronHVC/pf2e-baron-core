@@ -121,7 +121,7 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | j   | `module.json` sin clave `protected`, sin `requires` a pf2e-baron-core; aviso si `esmodules` lista la copia del core |
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
 | l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, aviso por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta) y aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`) |
-| m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a github.com (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona github.com, porque el release protegido lo rechaza (WARN). En un módulo `public` no imprime nada |
+| m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a GitHub (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto ni clave de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona GitHub, porque el release protegido lo rechaza (WARN). GitHub es `github.com` y sus subdominios, `githubusercontent.com` (archivos crudos y adjuntos de releases) y `github.io` (Pages), también con escapes `%2E`: todos pueden nombrar el repo privado. En un módulo `public` no imprime nada |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
@@ -260,7 +260,8 @@ firmado en la cuenta de creador. Sin él no se publica ningún paquete protegido
    `"protected": true`, sin `download`, `manifest` =
    `https://r2.foundryvtt.com/packages-public/<id>/module.json` (el que sirve
    Foundry), `url` = `landingUrl` y la versión de la etiqueta. Falla si
-   cualquier texto del resultado todavía menciona github.com, y dice dónde
+   cualquier texto o clave del resultado todavía menciona GitHub
+   (`github.com`, `githubusercontent.com`, `github.io`), y dice dónde
    (`bugs`, `readme`, `changelog`, `authors[0].url`, …): un enlace al repo
    privado está muerto para los jugadores y revela el repo. Foundry encuentra
    por su id una dependencia publicada en foundryvtt.com, sin `manifest`.

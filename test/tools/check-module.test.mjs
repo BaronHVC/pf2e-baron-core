@@ -449,7 +449,7 @@ test("[m] a paid add-on with an https landing page that requires its base passes
   assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
 });
 
-test("[m] a missing, empty, malformed, non-https or github.com landingUrl fails on baron.json", (t) => {
+test("[m] a missing, empty, malformed, non-https or GitHub landingUrl fails on baron.json", (t) => {
   for (const [landingUrl, reason] of [
     [undefined, "landingUrl is missing"],
     ["", "landingUrl is empty"],
@@ -458,7 +458,11 @@ test("[m] a missing, empty, malformed, non-https or github.com landingUrl fails 
     ["www.patreon.com/baron", 'landingUrl "www.patreon.com/baron" is not a URL'],
     ["http://www.example.com/baron-fixture", 'landingUrl "http://www.example.com/baron-fixture" is not an https URL'],
     ["https://www.example.com/baron fixture", 'landingUrl "https://www.example.com/baron fixture" contains whitespace'],
-    ["https://GitHub.com/BaronHVC/baron-fixture", 'landingUrl "https://GitHub.com/BaronHVC/baron-fixture" points at github.com'],
+    ["https://GitHub.com/BaronHVC/baron-fixture", 'landingUrl "https://GitHub.com/BaronHVC/baron-fixture" points at GitHub'],
+    // Every GitHub host can name the private repo, percent-escaped too.
+    ["https://raw.githubusercontent.com/BaronHVC/baron-fixture/main/README.md", 'landingUrl "https://raw.githubusercontent.com/BaronHVC/baron-fixture/main/README.md" points at GitHub'],
+    ["https://baronhvc.github.io/baron-fixture", 'landingUrl "https://baronhvc.github.io/baron-fixture" points at GitHub'],
+    ["https://github%2Ecom/BaronHVC/baron-fixture", 'landingUrl "https://github%2Ecom/BaronHVC/baron-fixture" points at GitHub'],
   ]) {
     const res = checkModule([paidAddon(t, { baron: { landingUrl } })]);
     const r = parseReport(res.out);
@@ -497,14 +501,15 @@ test("[m] without a module in relationships.requires it only warns: a freemium a
   assert.equal(parseReport(untyped.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", untyped.out);
 });
 
-test("[m] github.com links the protected release would refuse warn with their JSON paths; url, manifest and download do not", (t) => {
+test("[m] GitHub links the protected release would refuse warn with their JSON paths; url, manifest and download do not", (t) => {
   const res = checkModule([
     paidAddon(t, {
       moduleJson: {
         authors: [{ name: "BaronHVC", url: "https://GitHub.com/BaronHVC" }],
         bugs: "https://github.com/BaronHVC/baron-fixture/issues",
-        readme: "https://github.com/BaronHVC/baron-fixture#readme",
-        changelog: "https://www.example.com/changelog",
+        readme: "https://raw.githubusercontent.com/BaronHVC/baron-fixture/main/README.md",
+        changelog: "https://baronhvc.github.io/baron-fixture/changelog",
+        flags: { "https://github.com/BaronHVC/baron-fixture": true },
       },
     }),
   ]);
@@ -513,6 +518,6 @@ test("[m] github.com links the protected release would refuse warn with their JS
   assert.deepEqual([...r.warn], ["m"], res.out);
   // authors comes first: a merge keeps an existing key where it was.
   assert.deepEqual(mLines(r, "WARN"), [
-    "WARN   [m] protected packaging: authors[0].url, bugs, readme still mention github.com: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)",
+    'WARN   [m] protected packaging: authors[0].url, bugs, readme, changelog, flags["https://github.com/BaronHVC/baron-fixture"] (key) still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)',
   ]);
 });
