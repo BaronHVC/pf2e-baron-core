@@ -260,3 +260,24 @@ test("sync-core --watch mirrors the core working tree and marks the lock dev", a
   assert.deepEqual([...parseReport(res.out).fail], ["e"], res.out);
   assert.match(res.out, /sync-core --watch/);
 });
+
+test("sync-core --watch marks the lock dev on start even when the copy is already identical", async (t) => {
+  const { core } = makeCoreRepo(t, "1.2.3");
+  const mod = makeConsumer(t);
+  const synced = syncCore(core, [mod, "--ref", "v1.2.3"]);
+  assert.equal(synced.status, 0, synced.out);
+  assert.equal(readJson(mod, "baron-core.lock.json").version, "1.2.3");
+
+  // No edit at all: the module holds the release text, yet watching means the
+  // copy no longer follows a release, so the lock must say so right away.
+  const watcher = startNode(path.join(core, "tools", "sync-core.mjs"), [mod, "--watch"]);
+  t.after(watcher.stop);
+  const lockFile = path.join(mod, "baron-core.lock.json");
+  const isDev = () => {
+    const lock = JSON.parse(fs.readFileSync(lockFile, "utf8"));
+    return lock.version === "dev" && lock.commit === "dev" && lock.sha256 === sha256Lf(fakeCore("1.2.3"));
+  };
+  assert.ok(await waitFor(isDev), `lock not marked dev on start\n${watcher.output()}`);
+  assert.equal(readText(mod, "scripts", "baron-core.js"), fakeCore("1.2.3"));
+  await watcher.stop();
+});

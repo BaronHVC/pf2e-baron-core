@@ -147,7 +147,7 @@ function watch(moduleDir) {
   const lockFile = path.join(moduleDir, LOCK_FILE);
   const stamp = () => new Date().toTimeString().slice(0, 8);
 
-  const copy = () => {
+  const copy = (force = false) => {
     let text;
     try {
       text = toLf(fs.readFileSync(src, "utf8"));
@@ -157,7 +157,7 @@ function watch(moduleDir) {
       return;
     }
     const current = fs.existsSync(dest) ? toLf(fs.readFileSync(dest, "utf8")) : null;
-    if (current === text) return;
+    if (!force && current === text) return;
     const sha256 = sha256Lf(text);
     writeLf(dest, text);
     writeLf(lockFile, lockText({ version: "dev", commit: "dev", sha256 }));
@@ -168,7 +168,10 @@ function watch(moduleDir) {
   console.log(`sync-core --watch: ${src}`);
   console.log(`                -> ${dest}`);
   console.log(`The lock now says "dev": run sync-core --ref <tag> before committing. Ctrl+C to stop.`);
-  copy();
+  // Forced even when the module already holds identical text (right after a
+  // --ref sync): from here on the copy follows the working tree, so the lock
+  // must stop vouching for a release the moment watching starts.
+  copy(true);
 
   // Watch the folder, not the file: an atomic save replaces the inode and a
   // file watcher would go silent after the first save. Long real path: on
