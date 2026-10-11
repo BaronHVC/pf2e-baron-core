@@ -279,14 +279,17 @@ que instala el complemento no tiene de dónde bajar la base.
 4. ZIP `<id>-<tag>.zip` con la carpeta `<id>/`, igual que en modo público.
 5. Release **en el propio repo privado** con el ZIP y ese `module.json`
    (prerelease si la etiqueta no es `vX.Y.Z`): solo lo ven sus colaboradores.
+   Una prerelease solo comprueba que el paquete se arma: nunca se sube a
+   Foundry (ver abajo).
 6. Nunca toca el canal `dev`.
 7. Deja en el resumen del run la lista de abajo, con el id, la versión y la
-   compatibilidad ya escritos.
+   compatibilidad ya escritos; en una prerelease, en su lugar, por qué no se
+   sube y cómo probar.
 
 ### Subida manual a Foundry
 
 Foundry no documenta ninguna API para subir paquetes protegidos, así que en cada
-versión:
+versión **estable** (`vX.Y.Z`; una prerelease nunca se sube):
 
 1. Descarga `<id>-<tag>.zip` del release de esa etiqueta, en el repo privado.
 2. Súbelo en https://foundryvtt.com/creators/upload al paquete `<id>`, con la
@@ -306,8 +309,17 @@ El canal `dev` es un release de GitHub con URL fija. En un repo privado nadie de
 fuera podría instalar desde ahí, y en uno público regalaría el paquete: el ZIP
 se descargaría sin pasar por Patreon. El acceso a un módulo de pago lo controla
 Foundry, así que todo lo que llega a los jugadores sale de foundryvtt.com, y lo
-que se sube ahí les llega como actualización. Una versión de prueba se instala a
-mano desde el ZIP de su release. `devChannel` se ignora en `mode: protected`.
+que se sube ahí les llega como actualización. `devChannel` se ignora en
+`mode: protected`.
+
+Una versión de prueba tampoco sale de un ZIP: el de un release protegido lleva
+`"protected": true`, y Foundry esconde un paquete protegido de tu propia
+instalación (v14 lo rechaza sin firma). El código se prueba desde la copia de
+trabajo, enlazada con `tools/link-foundry.ps1`. Una etiqueta de prueba
+(`v1.1.0-rc.1`) solo comprueba que el paquete protegido se arma, y **nunca se
+sube a Foundry**: Foundry compara versiones por segmentos y como texto, así que
+la estable `1.1.0` no contaría como más nueva que `1.1.0-rc.1` y los mecenas se
+quedarían en la prueba.
 
 ## Pruebas
 

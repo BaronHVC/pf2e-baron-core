@@ -228,7 +228,9 @@ jobs:
 
       # Modulo de pago: Foundry no tiene API para subir paquetes protegidos, asi
       # que el resto es a mano. La lista queda en el resumen del run y un aviso
-      # en el log apunta a ella.
+      # en el log apunta a ella. Una prerelease nunca se sube: Foundry tomaria
+      # la estable X.Y.Z por mas vieja que X.Y.Z-rc.N (compara por segmentos y
+      # como texto), asi que su resumen dice como probar en su lugar.
       - name: Lista para subir el modulo de pago a Foundry
         if: steps.baron.outputs.mode == 'protected'
         env:
@@ -246,7 +248,17 @@ jobs:
             // Foundry la encuentra solo por su id en foundryvtt.com.
             const req = (m.relationships && Array.isArray(m.relationships.requires)) ? m.relationships.requires : [];
             const bases = req.filter((r) => r && typeof r.id === "string" && r.id && (r.type || "module") === "module").map((r) => "`" + r.id + "`").join(", ");
-            const lines = [
+            const stable = m.version.replace(/[-+].*$/, "");
+            const lines = PRERELEASE === "true" ? [
+              "## Prerelease protegida: `" + m.id + "` " + m.version + " (no se sube a Foundry)",
+              "",
+              "La CI armo el paquete protegido y lo dejo en el release [" + TAG + "](" + release + ") de este repo privado, solo para comprobar que se arma.",
+              "",
+              "- [ ] No subas esta version a Foundry: compara versiones por segmentos y como texto, asi que la estable `" + stable + "` nunca contaria como mas nueva que `" + m.version + "` y los mecenas se quedarian en la prueba.",
+              "- [ ] No instales este ZIP a mano: su module.json lleva protected en true, y Foundry esconde un paquete protegido de tu propia instalacion (v14 lo rechaza sin firma).",
+              "- [ ] Prueba el codigo desde la copia de trabajo, enlazada a Foundry con tools/link-foundry.ps1.",
+              "- [ ] Cuando este lista, etiqueta la estable (`v" + stable + "`): el resumen de ese run trae la lista para subirla a Foundry.",
+            ] : [
               "## Subida manual a Foundry: `" + m.id + "` " + m.version,
               "",
               "La CI ya armo el paquete protegido; Foundry no tiene API para subirlo, asi que lo que sigue es a mano. Requisito previo, una sola vez: el Premium Content Agreement de Foundry firmado en la cuenta de creador" + (bases ? ", y la base gratuita (" + bases + ") publicada en foundryvtt.com con ese mismo id: el manifiesto protegido no lleva su manifest, asi que Foundry la encuentra solo por su id." : "."),
@@ -257,11 +269,9 @@ jobs:
               "- [ ] En la pagina del paquete en foundryvtt.com, asigna (o revisa, si ya existen) los niveles (tiers) de Patreon que dan acceso: sin un nivel asignado, ningun mecenas puede instalarlo.",
               "- [ ] Prueba la instalacion desde una cuenta de mecenas (con Patreon vinculado en su perfil de foundryvtt.com)" + (bases ? "; Foundry tiene que instalar tambien " + bases : "") + ". Manifest del paquete: " + m.manifest,
             ];
-            if (PRERELEASE === "true") {
-              lines.push("", "> " + TAG + " es una prerelease: lo que subas a Foundry les llega a los mecenas como actualizacion. Una prueba se instala mejor a mano desde este ZIP.");
-            }
             fs.appendFileSync(GITHUB_STEP_SUMMARY, lines.join("\n") + "\n");
-            console.log("::notice title=Subida manual pendiente::" + m.id + " " + m.version + ": baja " + ZIP_NAME + " de este release y subelo en https://foundryvtt.com/creators/upload (la lista completa esta en el resumen del run)");
+            if (PRERELEASE === "true") console.log("::notice title=Prerelease protegida::" + m.id + " " + m.version + ": no la subas a Foundry; prueba desde la copia de trabajo (detalles en el resumen del run)");
+            else console.log("::notice title=Subida manual pendiente::" + m.id + " " + m.version + ": baja " + ZIP_NAME + " de este release y subelo en https://foundryvtt.com/creators/upload (la lista completa esta en el resumen del run)");
           '
 
       # Canal de pruebas: una etiqueta fija cuyos archivos se reemplazan en cada

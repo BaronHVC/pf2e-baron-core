@@ -23,6 +23,9 @@ de sus workflows es el commit del lock).
   `module.json` en un release del propio repo privado (prerelease si la etiqueta
   no es `vX.Y.Z`), nunca toca el canal `dev` y deja en el resumen del run la
   lista para subirlo a mano a foundryvtt.com y asignar los niveles de Patreon.
+  En una prerelease, el resumen dice en cambio que no se sube a Foundry (la
+  estable `X.Y.Z` no contaría como más nueva que `X.Y.Z-rc.N`) y que se prueba
+  desde la copia de trabajo, porque el ZIP protegido no se instala a mano.
   Requisito nuevo: la base gratuita publicada en foundryvtt.com con su id antes
   del primer release del complemento. Ver «Modo de pago» en el README.
 - `baron.json` gana `landingUrl`: la página `https` pública de un módulo de pago,
