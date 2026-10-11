@@ -23,7 +23,8 @@ de sus workflows es el commit del lock).
   `module.json` en un release del propio repo privado (prerelease si la etiqueta
   no es `vX.Y.Z`), nunca toca el canal `dev` y deja en el resumen del run la
   lista para subirlo a mano a foundryvtt.com y asignar los niveles de Patreon.
-  Ver «Modo de pago» en el README.
+  Requisito nuevo: la base gratuita publicada en foundryvtt.com con su id antes
+  del primer release del complemento. Ver «Modo de pago» en el README.
 - `baron.json` gana `landingUrl`: la página `https` pública de un módulo de pago,
   que el release pone como `url`. En un módulo público se ignora.
 - `tools/release-manifest.mjs`: la reescritura de `module.json` del release como
@@ -34,7 +35,10 @@ de sus workflows es el commit del lock).
   cualquier texto o clave del resultado menciona GitHub (`github.com` y sus
   subdominios, `githubusercontent.com`, `github.io`, también con escapes `%2E`),
   y lista sus rutas JSON (`bugs`, `authors[0].url`, …). También rechaza un
-  `--channel` que no coincida con la etiqueta.
+  `--channel` que no coincida con la etiqueta. El `manifest` de una dependencia
+  (el de la base, aunque su repo sea público) también falla, con su propio
+  mensaje: se quita y la base se publica en foundryvtt.com, donde Foundry la
+  encuentra por su id.
 - `tools/check-module.mjs`: revisión `[m] protected packaging`, solo con
   `mode: protected`. Falla si `landingUrl` falta o no es una URL `https` (o
   apunta a GitHub) y si otro texto o clave de `module.json` menciona GitHub,

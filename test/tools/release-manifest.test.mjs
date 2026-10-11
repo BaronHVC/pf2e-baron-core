@@ -128,8 +128,21 @@ test("protected: any string still linking to GitHub fails, with every JSON path 
   assert.throws(
     () => paid(leaky),
     (err) => {
-      assert.match(err.message, leakAt('authors[1].url, relationships.requires[0].manifest, bugs, readme, changelog, flags["odd key"]', "^"));
-      assert.match(err.message, /: a paid module lives in a private repo/);
+      // The module's own links first, then the dependency's, each with its way out.
+      assert.match(err.message, leakAt('authors[1].url, bugs, readme, changelog, flags["odd key"]', "^"));
+      assert.match(err.message, /: a paid module lives in a private repo, .*; and at relationships\.requires\[0\]\.manifest: a dependency's manifest is refused too/);
+      return true;
+    },
+  );
+  // The free base's public manifest leaks nothing: the message neither calls it
+  // the private repo nor sends it to the landing page.
+  const dep = { ...SOURCE, relationships: { requires: [{ id: "baron-base", type: "module", manifest: "https://github.com/BaronHVC/baron-base/releases/latest/download/module.json" }] } };
+  assert.throws(
+    () => paid(dep),
+    (err) => {
+      assert.match(err.message, leakAt("relationships.requires[0].manifest", "^"));
+      assert.match(err.message, /remove it and list that module on foundryvtt\.com, where Foundry finds a dependency by its id alone$/);
+      assert.doesNotMatch(err.message, /private repo|landing page/);
       return true;
     },
   );

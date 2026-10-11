@@ -242,16 +242,20 @@ jobs:
             const release = (GITHUB_SERVER_URL || "https://github.com") + "/" + GITHUB_REPOSITORY + "/releases/tag/" + encodeURIComponent(TAG);
             const c = m.compatibility || {};
             const compat = ["minimum", "verified", "maximum"].filter((k) => c[k] !== undefined && c[k] !== "").map((k) => k + " `" + c[k] + "`").join(", ") || "(module.json no declara compatibility)";
+            // La base gratuita va sin manifest (seria un enlace a GitHub):
+            // Foundry la encuentra solo por su id en foundryvtt.com.
+            const req = (m.relationships && Array.isArray(m.relationships.requires)) ? m.relationships.requires : [];
+            const bases = req.filter((r) => r && typeof r.id === "string" && r.id && (r.type || "module") === "module").map((r) => "`" + r.id + "`").join(", ");
             const lines = [
               "## Subida manual a Foundry: `" + m.id + "` " + m.version,
               "",
-              "La CI ya armo el paquete protegido; Foundry no tiene API para subirlo, asi que lo que sigue es a mano. Requisito previo, una sola vez: el Premium Content Agreement de Foundry firmado en la cuenta de creador.",
+              "La CI ya armo el paquete protegido; Foundry no tiene API para subirlo, asi que lo que sigue es a mano. Requisito previo, una sola vez: el Premium Content Agreement de Foundry firmado en la cuenta de creador" + (bases ? ", y la base gratuita (" + bases + ") publicada en foundryvtt.com con ese mismo id: el manifiesto protegido no lleva su manifest, asi que Foundry la encuentra solo por su id." : "."),
               "",
               "- [ ] Descarga `" + ZIP_NAME + "` del release [" + TAG + "](" + release + ") de este repo privado.",
               "- [ ] Subelo en https://foundryvtt.com/creators/upload al paquete `" + m.id + "`, version `" + m.version + "`, compatibilidad " + compat + ".",
               "- [ ] Si es la primera version del paquete, espera la aprobacion de Foundry antes de anunciarla.",
               "- [ ] En la pagina del paquete en foundryvtt.com, revisa los niveles (tiers) de Patreon que dan acceso.",
-              "- [ ] Prueba la instalacion desde una cuenta de mecenas (con Patreon vinculado en su perfil de foundryvtt.com). Manifest del paquete: " + m.manifest,
+              "- [ ] Prueba la instalacion desde una cuenta de mecenas (con Patreon vinculado en su perfil de foundryvtt.com)" + (bases ? "; Foundry tiene que instalar tambien " + bases : "") + ". Manifest del paquete: " + m.manifest,
             ];
             if (PRERELEASE === "true") {
               lines.push("", "> " + TAG + " es una prerelease: lo que subas a Foundry les llega a los mecenas como actualizacion. Una prueba se instala mejor a mano desde este ZIP.");

@@ -199,6 +199,19 @@ export function githubPaths(value, at = "") {
   });
 }
 
+/**
+ * githubPaths() output split in two: the module's own links, and those under
+ * "relationships", usually the manifest of a public dependency. A protected
+ * manifest refuses both, but the way out differs: a dependency is found by its
+ * id once it is listed on foundryvtt.com.
+ * @param {string[]} paths
+ * @returns {{ own: string[], deps: string[] }}
+ */
+export function splitGitHubPaths(paths) {
+  const isDep = (p) => /^relationships[.[]/.test(p);
+  return { own: paths.filter((p) => !isDep(p)), deps: paths.filter(isDep) };
+}
+
 const REGEX_KEYWORDS = new Set([
   "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
   "throw", "case", "do", "else", "yield", "await",

@@ -33,6 +33,7 @@ import {
   readCoreVersion,
   scanJs,
   sha256Lf,
+  splitGitHubPaths,
   toLf,
   workflowFiles,
 } from "./shared.mjs";
@@ -819,9 +820,12 @@ function checkProtectedPackaging(ctx, c) {
   }
   // A fail, not a warning: the tag build refuses these for certain, so a
   // green push would only move the failure to release time.
-  const kept = githubPaths(m).filter((p) => !RELEASE_REWRITES.has(p));
-  if (kept.length) {
-    c.fail(`${kept.join(", ")} still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
+  const { own, deps } = splitGitHubPaths(githubPaths(m).filter((p) => !RELEASE_REWRITES.has(p)));
+  if (own.length) {
+    c.fail(`${own.join(", ")} still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them`, loc);
+  }
+  if (deps.length) {
+    c.fail(`${deps.join(", ")} link to GitHub: the protected release refuses every GitHub link, a dependency's manifest included; remove it and list that module on foundryvtt.com, where Foundry finds a dependency by its id alone`, loc);
   }
   c.detail(`landing page ${landing}, requires ${bases.join(", ")}`);
 }

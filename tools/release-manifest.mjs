@@ -23,7 +23,7 @@
 
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
-import { githubPaths, httpsUrlProblem } from "./shared.mjs";
+import { githubPaths, httpsUrlProblem, splitGitHubPaths } from "./shared.mjs";
 
 const USAGE =
   "usage: node release-manifest.mjs <module.json> --tag <tag> --repo <owner/name> --channel stable|prerelease|dev [--run-number <n>] [--mode public|protected] [--landing-url <url>]";
@@ -95,11 +95,18 @@ export function releaseManifest(manifest, { tag, repo, channel, runNumber = null
     m.url = landingUrl;
     m.protected = true;
     delete m.download;
-    const leaks = githubPaths(m);
-    if (leaks.length) {
-      throw new Error(
-        `the protected manifest still links to GitHub (github.com, githubusercontent.com, github.io) at ${leaks.join(", ")}: a paid module lives in a private repo, so those links are dead for players and name the repo. Point them at a public page (the landing page) or remove them; a dependency listed on foundryvtt.com resolves by its id alone`,
-      );
+    const { own, deps } = splitGitHubPaths(githubPaths(m));
+    if (own.length || deps.length) {
+      const why = [];
+      if (own.length) {
+        why.push(`at ${own.join(", ")}: a paid module lives in a private repo, so those links are dead for players and name the repo; point them at a public page (the landing page) or remove them`);
+      }
+      // Usually the free base's public manifest: no leak, but still a GitHub
+      // link, and Foundry needs none for a package it lists.
+      if (deps.length) {
+        why.push(`at ${deps.join(", ")}: a dependency's manifest is refused too, since a protected manifest never links to GitHub; remove it and list that module on foundryvtt.com, where Foundry finds a dependency by its id alone`);
+      }
+      throw new Error(`the protected manifest still links to GitHub (github.com, githubusercontent.com, github.io) ${why.join("; and ")}`);
     }
     return m;
   }

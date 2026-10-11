@@ -249,6 +249,14 @@ extiende un módulo base gratuito y solo lo descargan los mecenas de Patreon.
 **Requisito previo, una sola vez:** el Premium Content Agreement de Foundry
 firmado en la cuenta de creador. Sin él no se publica ningún paquete protegido.
 
+**Requisito previo, por cada base:** la base gratuita publicada en
+foundryvtt.com como paquete gratuito normal, con el mismo id que lista el
+`requires` del complemento, antes del primer release del complemento. El
+manifiesto protegido no puede llevar el `manifest` de la base (es un enlace a
+GitHub, y el release protegido los rechaza todos), así que Foundry encuentra la
+base solo por su id en el listado de foundryvtt.com: si no está ahí, un mecenas
+que instala el complemento no tiene de dónde bajar la base.
+
 ### Qué hace la CI al empujar la etiqueta
 
 1. `Leer baron.json` falla si el repo no es privado
@@ -264,8 +272,10 @@ firmado en la cuenta de creador. Sin él no se publica ningún paquete protegido
    cualquier texto o clave del resultado todavía menciona GitHub
    (`github.com`, `githubusercontent.com`, `github.io`), y dice dónde
    (`bugs`, `readme`, `changelog`, `authors[0].url`, …): un enlace al repo
-   privado está muerto para los jugadores y revela el repo. Foundry encuentra
-   por su id una dependencia publicada en foundryvtt.com, sin `manifest`.
+   privado está muerto para los jugadores y revela el repo. El `manifest` de
+   una dependencia en `relationships` también falla, aunque su repo sea
+   público: Foundry encuentra por su id una dependencia publicada en
+   foundryvtt.com, así que se quita (ver el requisito de la base, arriba).
 4. ZIP `<id>-<tag>.zip` con la carpeta `<id>/`, igual que en modo público.
 5. Release **en el propio repo privado** con el ZIP y ese `module.json`
    (prerelease si la etiqueta no es `vX.Y.Z`): solo lo ven sus colaboradores.
@@ -287,7 +297,8 @@ versión:
 4. En la página del paquete en foundryvtt.com, asigna los niveles de Patreon que
    dan acceso.
 5. Prueba la instalación desde una cuenta de mecenas, con Patreon vinculado en
-   su perfil de foundryvtt.com.
+   su perfil de foundryvtt.com: Foundry tiene que instalar también la base
+   gratuita.
 
 ### Por qué nunca el canal `dev`
 

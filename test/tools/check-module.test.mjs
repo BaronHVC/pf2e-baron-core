@@ -523,3 +523,14 @@ test("[m] GitHub links the protected release would refuse fail with their JSON p
     'FAIL   [m] protected packaging: authors[0].url, bugs, readme, changelog, flags["https://github.com/BaronHVC/baron-fixture"] (key) still link to GitHub: the protected release refuses them, since the repo is private; point them at a public page or remove them (module.json)',
   ]);
 });
+
+test("[m] the base's GitHub manifest in requires fails on its own terms: list the base on foundryvtt.com, not the private repo", (t) => {
+  const base = { id: "baron-fixture-base", type: "module", manifest: "https://github.com/BaronHVC/baron-fixture-base/releases/latest/download/module.json" };
+  const res = checkModule([paidAddon(t, { moduleJson: { relationships: { systems: [PF2E_SYSTEM], requires: [base] } } })]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["m"], res.out);
+  assert.deepEqual(mLines(r, "FAIL"), [
+    "FAIL   [m] protected packaging: relationships.requires[0].manifest link to GitHub: the protected release refuses every GitHub link, a dependency's manifest included; remove it and list that module on foundryvtt.com, where Foundry finds a dependency by its id alone (module.json)",
+  ]);
+});
