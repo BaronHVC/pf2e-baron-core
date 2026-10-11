@@ -53,3 +53,14 @@ es su id). `swe-x-` y `swe-s-` se arman en tiempo de ejecución
 (`` `swe-${splash ? "s" : "x"}-${i}` `` en `scripts/main.js` v0.12.0), así que no
 pueden ir en `persisted`: no hay texto literal que buscar. Los demás prefijos sí
 aparecen tal cual en el código.
+
+**baron-traps** (base gratuita de un freemium, ORC). Además de la fila: el id de
+aplicación `baron-traps-panel`, la herramienta de controles de escena
+`btrapPanel` y el tipo de behavior de Region `baron-traps.trap`. Su registro de
+funciones para el complemento acepta los tipos `resolver`, `visual`, `detector` y
+`panelAction`. No envuelve nada.
+
+**baron-cover** (base gratuita de un freemium, ORC). Guarda la clave `attack` bajo
+su scope en los ChatMessage y registra los ajustes `attackCover`, `creatureCover`
+e `ignoreDefeated`. Envuelve `game.pf2e.Check.roll`: con lib-wrapper si está
+activo y, si no, a mano, con la bandera `_bcoverWrappedRoll`.
