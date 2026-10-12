@@ -8,6 +8,17 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-10-11
+
+### Fixed
+
+- `module-release.yml`: el ZIP ahora incluye `LICENSE` y `NOTICE.md` cuando el
+  módulo los tiene, en modo público y en protegido. Antes solo llevaba lo que
+  carga Foundry, así que el aviso MIT y los avisos de la ORC no viajaban con la
+  copia que recibe cada usuario. Las funciones de `baron-core.js` no cambian;
+  solo `CORE_VERSION` pasa a `"1.1.1"`. Cada módulo lo recibe al resincronizar
+  con `sync-core --ref v1.1.1`.
+
 ## [1.1.0] - 2026-10-11
 
 El modo de pago del pipeline. Las funciones de `baron-core.js` no cambian; solo
@@ -193,7 +204,8 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - Workflows reutilizables `module-check.yml` y `module-release.yml` (modo
   público; el protegido falla a propósito porque aún no existe).
 
-[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0-rc.1...v1.0.0
 [1.0.0-rc.1]: https://github.com/BaronHVC/pf2e-baron-core/releases/tag/v1.0.0-rc.1

@@ -187,11 +187,13 @@ jobs:
           echo "ZIP_NAME=$MODULE_ID-$TAG.zip" >> "$GITHUB_ENV"
           # Se respeta la carpeta interna que ya usaban tus ZIPs anteriores
           mkdir -p "build/$MODULE_ID"
-          # Solo lo que Foundry carga, y solo lo que este modulo tenga. Nunca
+          # Solo lo que Foundry carga, mas la licencia y los avisos legales, y
+          # solo lo que este modulo tenga. MIT y ORC exigen que el aviso viaje
+          # con cada copia, y el ZIP es la copia que reciben los usuarios. Nunca
           # entran .baron-core, tools, baron.json, baron-core.lock.json ni .github;
           # la copia del core viaja dentro de scripts/.
           PARTS=()
-          for p in module.json scripts styles templates lang packs; do
+          for p in module.json scripts styles templates lang packs LICENSE NOTICE.md; do
             if [ -e "$p" ]; then PARTS+=("$p"); fi
           done
           cp -r "${PARTS[@]}" "build/$MODULE_ID/"
