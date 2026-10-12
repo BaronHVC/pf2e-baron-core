@@ -677,6 +677,22 @@ test("[n] a file with more than five placeholders names five keys and counts the
   assert.deepEqual(nLines(parseReport(res.out), "WARN"), [nLine("WARN", 7, sample, PUSH_REASON, "lang/en.json")], res.out);
 });
 
+test("[n] a key with a line break prints escaped, so it cannot forge a workflow command", (t) => {
+  const key = "baron-fixture.Nl\n::error file=x::forged";
+  const dir = materialize(t, { merge: { "lang/en.json": { [key]: todo("newline key") }, "lang/es.json": { [key]: todo("newline key") } } });
+  const res = checkModule(["."], { cwd: dir, env: childEnv({ GITHUB_ACTIONS: "true" }) });
+  const lines = res.out.split(/\r?\n/);
+  assert.equal(res.status, 0, res.out);
+  // The key stays inside the report lines of [n] and [h] (which echoes it too) and their escaped annotations.
+  assert.deepEqual(lines.filter((l) => l.startsWith("::error")), [], res.out);
+  assert.deepEqual(lines.filter((l) => l.includes("forged") && !/^(?:WARN {3}\[n\]|NOTICE \[h\]|::warning |::notice )/.test(l)), [], res.out);
+  const shown = "baron-fixture.Nl\\n::error file=x::forged";
+  assert.deepEqual(nLines(parseReport(res.out), "WARN"), [
+    nLine("WARN", 1, shown, PUSH_REASON, "lang/en.json"),
+    nLine("WARN", 1, shown, PUSH_REASON, "lang/es.json"),
+  ]);
+});
+
 test("[n] the release workflow runs check-module with --release, the push workflow without it", () => {
   const runs = (wf) => readText(REPO, ".github", "workflows", wf).split(/\r?\n/).filter((l) => /^\s*run:.*\/check-module\.mjs\b/.test(l));
   const release = runs("module-release.yml");

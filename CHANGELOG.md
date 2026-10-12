@@ -33,6 +33,12 @@ tengan que resincronizar.
   proceso, y la prueba exigía las dos cosas a la vez. Ahora espera también el
   log. Era la causa del rojo de las etiquetas `v1.1.0` y `v1.1.1`; la
   herramienta no cambia, así que ningún módulo necesita resincronizar.
+- `tools/check-module.mjs`: una clave de idioma (o un id de módulo) con un salto
+  de línea ya no parte la línea del reporte. Antes, bajo GitHub Actions, el
+  texto tras el salto podía empezar con `::error ...` y el runner lo leía como
+  comando (una anotación falsa, incluso en un push). Ahora el salto se imprime
+  escapado (`\n`) en las líneas PASS/WARN/FAIL/NOTICE y en el encabezado; las
+  anotaciones ya lo escapaban.
 
 ## [1.1.1] - 2026-10-11
 

@@ -81,6 +81,10 @@ function usage(message) {
 // Workflow command escaping, from the GitHub Actions toolkit.
 const escData = (s) => String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
 const escProp = (s) => escData(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
+// A report line stays one stdout line: a CR/LF inside it (a lang key, a
+// module id, a stack trace) prints escaped, so no text from the module can
+// start a line that the Actions runner reads as a workflow command.
+const oneLine = (s) => String(s).replace(/\r/g, "\\r").replace(/\n/g, "\\n");
 
 class Reporter {
   constructor({ root, annotate }) {
@@ -129,7 +133,7 @@ class Reporter {
 
   emit(level, id, title, msg, loc) {
     const where = loc?.file ? ` (${loc.file}${loc.line ? `:${loc.line}` : ""})` : "";
-    console.log(`${level.padEnd(6)} [${id}] ${title}${msg ? `: ${msg}` : ""}${where}`);
+    console.log(oneLine(`${level.padEnd(6)} [${id}] ${title}${msg ? `: ${msg}` : ""}${where}`));
     if (!this.annotate || level === "PASS") return;
     const command = { FAIL: "error", WARN: "warning", NOTICE: "notice" }[level];
     const props = [];
@@ -887,7 +891,7 @@ function main() {
   const ctx = loadModule(root, opts);
   const r = new Reporter({ root, annotate: !!process.env.GITHUB_ACTIONS });
   const stats = {};
-  console.log(`check-module: ${ctx.module?.id ?? path.basename(root)} (${root})${opts.online ? " --online" : ""}${opts.release ? " --release" : ""}`);
+  console.log(oneLine(`check-module: ${ctx.module?.id ?? path.basename(root)} (${root})${opts.online ? " --online" : ""}${opts.release ? " --release" : ""}`));
 
   r.check("a", "declared files", (c) => checkDeclaredFiles(ctx, c));
   r.check("b", "script syntax", (c) => checkSyntax(ctx, c));
