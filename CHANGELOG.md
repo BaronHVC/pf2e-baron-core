@@ -13,13 +13,14 @@ tengan que resincronizar.
 - `tools/check-module.mjs`, revisión `[l]`: el marcador `PENDIENTE:` de la
   familia para un dato legal de `NOTICE.md` que espera la firma del autor (una
   atribución sin cotejar, una decisión que solo él toma). Cuenta escrito como
-  `PENDIENTE:` o `PENDIENTE (<quién>):`, en negritas o no, en mayúsculas
-  exactas y en cualquier parte del archivo, también dentro de un comentario
-  HTML; «pendiente:» en la prosa no cuenta. Cada renglón con el marcador da un
-  WARN en cada push y un FAIL con `--release`, con cualquier licencia de Paizo y
-  también sin `paizo` en `baron.json` (el release empaca `NOTICE.md` de todos
-  modos). Generaliza la compuerta que pf2e-simple-weapon-editor puso en su
-  propio `release.yml`.
+  `PENDIENTE:` o `PENDIENTE (<quién>):`, con énfasis (`*`, `_`) alrededor de la
+  palabra o del paréntesis o sin él, con o sin espacios antes de los dos puntos,
+  en mayúsculas exactas y en cualquier parte del archivo, también dentro de un
+  comentario HTML; «pendiente:» en la prosa no cuenta. Cada renglón con el
+  marcador da un WARN en cada push y un FAIL con `--release`, con cualquier
+  licencia de Paizo y también sin `paizo` en `baron.json` (el release empaca
+  `NOTICE.md` de todos modos). Generaliza la compuerta que
+  pf2e-simple-weapon-editor puso en su propio `release.yml`.
 
 ### Changed
 

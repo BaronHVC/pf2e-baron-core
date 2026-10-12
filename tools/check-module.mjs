@@ -735,10 +735,14 @@ const PAIZO_TRADEMARK_RE = /pf2|sf2e|pathfinder|starfinder|golarion|paizo/i;
 // session that drafts NOTICE.md text it cannot settle (an attribution not yet
 // checked against the book, a decision only the author makes) writes
 // "PENDIENTE: <what is missing>" on that line, or "PENDIENTE (<who>):" to name
-// who decides, bold or not. Upper case only, as with TODO-HUMANO: "pendiente:"
-// in Spanish prose is text. It counts anywhere in the file, an HTML comment
-// included: a sign-off is open whether GitHub shows the note or not.
-const PENDING_RE = /\bPENDIENTE(?:[ \t]*\([^()\n]*\))?:/;
+// who decides. Emphasis may wrap it anywhere ("__PENDIENTE:__", "**PENDIENTE**:",
+// "**PENDIENTE (who)**:") and spaces may come before the colon: a reader sees
+// the marker in every one of them. Only a letter or digit glued in front
+// breaks it ("_" is emphasis there, not part of a word).
+// Upper case only, as with TODO-HUMANO: "pendiente:" in Spanish prose is text.
+// It counts anywhere in the file, an HTML comment included: a sign-off is open
+// whether GitHub shows the note or not.
+const PENDING_RE = /(?<![\p{L}\p{N}])PENDIENTE(?:[*_]*[^\S\n]*(\([^()\n]*\)))?[*_]*[^\S\n]*:/u;
 
 // NOTICE.md reduced to the words GitHub shows: a notice inside an HTML comment
 // is not shown, so it does not count; quote markers, emphasis and link syntax
@@ -765,7 +769,9 @@ function reportPending(ctx, c, text) {
     if (!m) return;
     count++;
     const loc = { file: "NOTICE.md", line: i + 1 };
-    const what = `${JSON.stringify(m[0])} marker: a legal field awaits the author's sign-off`;
+    // Named without its emphasis or spacing, so every spelling reads the same.
+    const marker = m[1] ? `PENDIENTE ${m[1]}:` : "PENDIENTE:";
+    const what = `${JSON.stringify(marker)} marker: a legal field awaits the author's sign-off`;
     if (ctx.opts.release) c.fail(`${what} and the release does not publish it; settle it, delete the marker and tag again`, loc);
     else c.warn(`${what}; settle it and delete the marker before tagging, the release refuses it`, loc);
   });

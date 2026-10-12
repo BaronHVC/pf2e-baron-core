@@ -151,12 +151,16 @@ con puntos como lo hace Foundry.
 dato legal de `NOTICE.md` que espera la firma del autor: una atribución sin
 cotejar con el libro, una decisión que solo él toma. Quien redacta el aviso y no
 puede cerrarlo escribe en ese renglón `PENDIENTE: <qué falta>`, o
-`PENDIENTE (<quién>): <qué falta>` para nombrar quién decide, en negritas o no.
-Cuenta en cualquier parte del archivo, también dentro de un comentario HTML (la
-firma sigue abierta aunque GitHub no la muestre), y solo en mayúsculas y seguido
-de dos puntos: «pendiente:» en la prosa es texto. Cada renglón con el marcador
-da un WARN en cada push y un FAIL con `--release`, así que la etiqueta no
-publica un aviso sin firmar; al resolverlo, se borra el marcador.
+`PENDIENTE (<quién>): <qué falta>` para nombrar quién decide. El énfasis no lo
+esconde, ni alrededor de la palabra ni del paréntesis (`**PENDIENTE:**`,
+`__PENDIENTE:__`, `**PENDIENTE**:`, `**PENDIENTE (<quién>)**:`), y puede haber
+espacios antes de los dos puntos; solo una letra o un número pegados delante lo
+anulan (`XPENDIENTE:`). Cuenta en cualquier parte del archivo, también dentro de
+un comentario HTML (la firma sigue abierta aunque GitHub no la muestre), y solo
+en mayúsculas y seguido de dos puntos: «pendiente:» en la prosa es texto. Cada
+renglón con el marcador da un WARN en cada push y un FAIL con `--release`, así
+que la etiqueta no publica un aviso sin firmar; al resolverlo, se borra el
+marcador.
 
 ## Workflows reutilizables
 

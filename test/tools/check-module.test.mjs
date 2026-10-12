@@ -504,11 +504,45 @@ test("[l] a PENDIENTE: line in NOTICE.md warns on a push and fails with --releas
 
 test("[l] only the upper-case PENDIENTE followed by a colon is the marker: prose that says pendiente is text", (t) => {
   const cupNotice = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").replace(/\r\n/g, "\n").trimEnd();
-  const prose = ["Nada queda pendiente: todo esta firmado.", "Estado: PENDIENTE de revisar en la siguiente version.", "PENDIENTES: ninguno."];
+  const prose = [
+    "Nada queda pendiente: todo esta firmado.",
+    "Estado: PENDIENTE de revisar en la siguiente version.",
+    "PENDIENTES: ninguno.",
+    "Clave XPENDIENTE: interna.",
+    "Sin dos puntos: PENDIENTE (autor) revisa.",
+  ];
   const dir = materialize(t, { write: { "NOTICE.md": `${cupNotice}\n\n${prose.join("\n\n")}\n` } });
   const res = checkModule([dir, "--release"]);
   assert.equal(res.status, 0, res.out);
   assert.deepEqual(lLines(parseReport(res.out), "PASS"), ['PASS   [l] paizo license: paizo "cup", NOTICE.md carries the Community Use Policy notice'], res.out);
+});
+
+// Emphasis around the word or the parenthetical, and spaces before the colon,
+// still read as the marker; the report names it without them.
+test("[l] the PENDIENTE: marker counts whatever emphasis or spacing wraps it", (t) => {
+  const cupNotice = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").replace(/\r\n/g, "\n").trimEnd();
+  const spellings = [
+    ["__PENDIENTE:__ x", "PENDIENTE:"],
+    ["_PENDIENTE:_ x", "PENDIENTE:"],
+    ["**PENDIENTE**: x", "PENDIENTE:"],
+    ["*PENDIENTE*: x", "PENDIENTE:"],
+    ["PENDIENTE : x", "PENDIENTE:"],
+    ["**PENDIENTE (autor)**: x", "PENDIENTE (autor):"],
+    ["**PENDIENTE** (autor): x", "PENDIENTE (autor):"],
+  ];
+  const head = cupNotice.split("\n").length + 2;
+  const dir = materialize(t, { write: { "NOTICE.md": `${cupNotice}\n\n${spellings.map(([s]) => s).join("\n\n")}\n` } });
+
+  const push = checkModule([dir]);
+  const pr = parseReport(push.out);
+  assert.equal(push.status, 0, push.out);
+  assert.deepEqual(lLines(pr, "WARN"), spellings.map(([, m], i) => pendingLine("WARN", m, head + 2 * i)), push.out);
+
+  const release = checkModule([dir, "--release"]);
+  const rr = parseReport(release.out);
+  assert.equal(release.status, 1, release.out);
+  assert.deepEqual([...rr.fail], ["l"], release.out);
+  assert.deepEqual(lLines(rr, "FAIL"), spellings.map(([, m], i) => pendingLine("FAIL", m, head + 2 * i)), release.out);
 });
 
 test("[l] without a paizo key a PENDIENTE: line is still reported: the release ships NOTICE.md whatever the license", (t) => {
