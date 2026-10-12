@@ -7,7 +7,8 @@
 // Every check prints PASS / FAIL / WARN / NOTICE; under GitHub Actions the
 // findings are also emitted as annotations. Exit code 1 on any FAIL.
 // --release is for the tag build: what a push may still carry (text waiting
-// for a person to write it) fails instead of warning.
+// for a person to write it, a legal notice waiting for the author to fill or
+// sign it off) fails instead of warning.
 //
 //   [a] declared files exist      [g] imports stay inside the module, no top-level await
 //   [b] scripts parse as ESM      [h] static i18n keys exist in lang/en.json
@@ -15,7 +16,8 @@
 //   [d] language key parity       [j] manifest rules (no protected key, no core dependency)
 //   [e] vendored core vs lock     [k] no leftover template placeholders
 //   [f] lock vs core repo (--online)
-//   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md
+//   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md; no unfilled
+//       ORC field and no "PENDIENTE:" line left in NOTICE.md (FAIL with --release)
 //   [m] protected packaging: a paid module has a landing page, requires its free base and never links to GitHub
 //   [n] human text: no "TODO-HUMANO:" value left in lang files or module.json title/description (FAIL with --release)
 
@@ -729,6 +731,14 @@ const TYPOGRAPHIC_APOSTROPHES = new RegExp(`[${String.fromCharCode(0x2018, 0x201
 // worth a warning. tools/init-module.mjs in pf2e-module-template uses the same
 // list: keep the two in sync.
 const PAIZO_TRADEMARK_RE = /pf2|sf2e|pathfinder|starfinder|golarion|paizo/i;
+// The family marker for a legal field that waits on the author's sign-off: a
+// session that drafts NOTICE.md text it cannot settle (an attribution not yet
+// checked against the book, a decision only the author makes) writes
+// "PENDIENTE: <what is missing>" on that line, or "PENDIENTE (<who>):" to name
+// who decides, bold or not. Upper case only, as with TODO-HUMANO: "pendiente:"
+// in Spanish prose is text. It counts anywhere in the file, an HTML comment
+// included: a sign-off is open whether GitHub shows the note or not.
+const PENDING_RE = /\bPENDIENTE(?:[ \t]*\([^()\n]*\))?:/;
 
 // NOTICE.md reduced to the words GitHub shows: a notice inside an HTML comment
 // is not shown, so it does not count; quote markers, emphasis and link syntax
@@ -744,13 +754,35 @@ function renderedWords(markdown) {
     .replace(/\s+/g, " ");
 }
 
+/**
+ * Reports each line of NOTICE.md that holds the pending marker: a warning on a
+ * push, a failure with --release. Returns how many lines it reported.
+ */
+function reportPending(ctx, c, text) {
+  let count = 0;
+  text.split("\n").forEach((line, i) => {
+    const m = PENDING_RE.exec(line);
+    if (!m) return;
+    count++;
+    const loc = { file: "NOTICE.md", line: i + 1 };
+    const what = `${JSON.stringify(m[0])} marker: a legal field awaits the author's sign-off`;
+    if (ctx.opts.release) c.fail(`${what} and the release does not publish it; settle it, delete the marker and tag again`, loc);
+    else c.warn(`${what}; settle it and delete the marker before tagging, the release refuses it`, loc);
+  });
+  return count;
+}
+
 function checkPaizoLicense(ctx, c) {
   const paizo = ctx.baron.paizo;
   if (paizo === undefined) {
     // Still only a notice, so a module from before rule [l] keeps passing, but
     // a paid one is told which value it needs.
     const paid = ctx.baron.mode === "protected" ? '; a protected (paid) module must declare "orc", the Community Use Policy forbids charging' : "";
-    return c.skip(`baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked${paid}`);
+    const msg = `baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license is not checked and NOTICE.md is not required${paid}`;
+    // The release ships NOTICE.md whatever the license, so an open sign-off in
+    // it is reported all the same.
+    if (existsExact(ctx.root, "NOTICE.md").ok && reportPending(ctx, c, ctx.text("NOTICE.md"))) return c.notice(msg);
+    return c.skip(msg);
   }
   const conf = { file: "baron.json" };
   if (!PAIZO_LICENSES.includes(paizo)) return c.fail(`paizo must be "cup" or "orc", not ${JSON.stringify(paizo)}`, conf);
@@ -774,19 +806,28 @@ function checkPaizoLicense(ctx, c) {
   if (words.includes(other.fragment)) {
     c.fail(`paizo is "${paizo}" but NOTICE.md also carries the ${other.name} ("... ${other.fragment} ..."): a module under one license must not claim the other; delete that block, or ${noticeHint(paizo)}`, loc);
   }
+  // A push only warns, so a notice in progress stays green; the tag build
+  // passes --release and refuses an incomplete notice. One finding per line,
+  // so each annotation points at what is left to fill.
+  if (paizo === "orc") {
+    const byLine = new Map();
+    for (const m of text.matchAll(ORC_FIELD_RE)) {
+      const line = text.slice(0, m.index).split("\n").length;
+      const field = m[0].replace(new RegExp(FIELD_GAP, "g"), " ");
+      byLine.set(line, [...(byLine.get(line) ?? []), field]);
+    }
+    for (const [line, fields] of byLine) {
+      const what = `unfilled template field(s) ${fields.join(", ")}`;
+      const at = { file: "NOTICE.md", line };
+      if (ctx.opts.release) c.fail(`${what}: the release does not publish an incomplete ORC notice; fill them and tag again`, at);
+      else c.warn(`${what}: fill them before tagging, the release refuses them`, at);
+    }
+  }
+  reportPending(ctx, c, text);
   if (paizo !== "orc") return c.detail(`paizo "${paizo}", NOTICE.md carries the ${name}`);
 
-  // One warning per line, so each annotation points at what is left to fill.
-  const byLine = new Map();
-  for (const m of text.matchAll(ORC_FIELD_RE)) {
-    const line = text.slice(0, m.index).split("\n").length;
-    const field = m[0].replace(new RegExp(FIELD_GAP, "g"), " ");
-    byLine.set(line, [...(byLine.get(line) ?? []), field]);
-  }
-  for (const [line, fields] of byLine) {
-    c.warn(`unfilled template field(s) ${fields.join(", ")}: fill before publishing`, { file: "NOTICE.md", line });
-  }
-
+  // An open legal question rather than a field left to fill, so it stays a
+  // warning with --release: the author settles it, the check cannot.
   const named = ["id", "title"].filter((k) => typeof ctx.module?.[k] === "string" && PAIZO_TRADEMARK_RE.test(ctx.module[k]));
   if (named.length) {
     const where = named.map((k) => `${k} ${JSON.stringify(ctx.module[k])}`).join(" and ");

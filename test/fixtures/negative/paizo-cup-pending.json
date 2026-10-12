@@ -1,0 +1,8 @@
+{
+  "description": "a CUP module whose NOTICE.md still has a PENDIENTE: line awaiting the author's sign-off",
+  "warns": "l",
+  "message": "\"PENDIENTE:\" marker: a legal field awaits the author's sign-off; settle it and delete the marker before tagging, the release refuses it (NOTICE.md:5)",
+  "write": {
+    "NOTICE.md": "# Legal notices\n\nBaron Fixture uses trademarks and/or copyrights owned by Paizo Inc., used under Paizo's Community Use Policy (paizo.com/licenses/communityuse). We are expressly prohibited from charging you to use or access this content. Baron Fixture is not published, endorsed, or specifically approved by Paizo. For more information about Paizo Inc. and Paizo products, visit paizo.com.\n\nPENDIENTE: confirm the product name with the author.\n"
+  }
+}

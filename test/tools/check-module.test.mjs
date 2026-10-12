@@ -216,7 +216,7 @@ test("[l] without a paizo key only notices, needs no NOTICE.md and is not counte
   assert.equal(res.status, 0, res.out);
   assert.ok(!r.pass.has("l") && !r.fail.has("l") && !r.warn.has("l"), res.out);
   assert.deepEqual(lLines(r, "NOTICE"), [
-    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked',
+    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license is not checked and NOTICE.md is not required',
   ]);
   assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed");
 });
@@ -231,7 +231,7 @@ test("[l] a protected module without a paizo key still only notices, but is told
   assert.equal(res.status, 0, res.out);
   assert.ok(!r.pass.has("l") && !r.fail.has("l") && !r.warn.has("l"), res.out);
   assert.deepEqual(lLines(r, "NOTICE"), [
-    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked; a protected (paid) module must declare "orc", the Community Use Policy forbids charging',
+    'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license is not checked and NOTICE.md is not required; a protected (paid) module must declare "orc", the Community Use Policy forbids charging',
   ]);
 });
 
@@ -257,7 +257,7 @@ test("[l] each unfilled field of the template's ORC block is reported on its lin
   assert.equal(res.status, 0, res.out);
   assert.deepEqual([...r.warn], ["l"], res.out);
   const lineOf = (s) => ORC_TEMPLATE_NOTICE.split("\n").findIndex((l) => l.includes(s)) + 1;
-  const warn = (fields, at) => `WARN   [l] paizo license: unfilled template field(s) ${fields}: fill before publishing (NOTICE.md:${lineOf(at)})`;
+  const warn = (fields, at) => `WARN   [l] paizo license: unfilled template field(s) ${fields}: fill them before tagging, the release refuses them (NOTICE.md:${lineOf(at)})`;
   assert.deepEqual(lLines(r, "WARN"), [
     warn("[Title of Work], [Copyright Notice], [Author Credit Information]", "[Title of Work]"),
     warn("[Copyright Notice]", "Baron Fixture, [Copyright Notice]"),
@@ -269,7 +269,7 @@ test("[l] each unfilled field of the template's ORC block is reported on its lin
   // Under GitHub Actions each line becomes a warning annotation on NOTICE.md.
   const ci = checkModule(["."], { cwd: dir, env: childEnv({ GITHUB_ACTIONS: "true" }) });
   assert.ok(
-    ci.out.includes(`::warning file=NOTICE.md,line=${lineOf("[ninguno]")},title=check-module [l] paizo license::unfilled template field(s) [ninguno]: fill before publishing`),
+    ci.out.includes(`::warning file=NOTICE.md,line=${lineOf("[ninguno]")},title=check-module [l] paizo license::unfilled template field(s) [ninguno]: fill them before tagging, the release refuses them`),
     ci.out,
   );
 });
@@ -308,7 +308,7 @@ test("[l] a hard-wrapped or quoted notice still has every unfilled field reporte
     const res = checkModule([dir]);
     assert.equal(res.status, 0, res.out);
     const warns = lLines(parseReport(res.out), "WARN");
-    const fields = warns.flatMap((l) => /unfilled template field\(s\) (.*): fill before publishing/.exec(l)[1].split(/, (?=\[)/));
+    const fields = warns.flatMap((l) => /unfilled template field\(s\) (.*): fill them before tagging/.exec(l)[1].split(/, (?=\[)/));
     assert.deepEqual(fields, expected, res.out);
     const lines = notice.split("\n");
     for (const l of warns) {
@@ -414,6 +414,124 @@ test("[l] protected with cup fails on the license and still checks the notice", 
   assert.ok(fails[2].includes("also carries the ORC Notice") && fails[2].endsWith("(NOTICE.md)"), res.out);
   // The way out names init's output, which keeps exactly one block filled in.
   assert.ok(fails[1].includes("tools/init-module.mjs --paizo cup"), res.out);
+});
+
+test("[l] --release turns each unfilled ORC field into a failure on the same line", (t) => {
+  const dir = materialize(t, { merge: { "baron.json": { paizo: "orc" } }, write: { "NOTICE.md": ORC_TEMPLATE_NOTICE } });
+  const res = checkModule([dir, "--release"]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["l"], res.out);
+  assert.deepEqual(lLines(r, "WARN"), [], res.out);
+  const lineOf = (s) => ORC_TEMPLATE_NOTICE.split("\n").findIndex((l) => l.includes(s)) + 1;
+  const reason = "the release does not publish an incomplete ORC notice; fill them and tag again";
+  const fail = (fields, at) => `FAIL   [l] paizo license: unfilled template field(s) ${fields}: ${reason} (NOTICE.md:${lineOf(at)})`;
+  assert.deepEqual(lLines(r, "FAIL"), [
+    fail("[Title of Work], [Copyright Notice], [Author Credit Information]", "[Title of Work]"),
+    fail("[Copyright Notice]", "Baron Fixture, [Copyright Notice]"),
+    fail("[nombres, logos, arte e identidad comercial de Baron Fixture]", "[nombres,"),
+    fail("[ninguno]", "[ninguno]"),
+  ]);
+  assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 1 failed");
+
+  // Under GitHub Actions each line becomes an error annotation on NOTICE.md.
+  const ci = checkModule([".", "--release"], { cwd: dir, env: childEnv({ GITHUB_ACTIONS: "true" }) });
+  assert.equal(ci.status, 1, ci.out);
+  assert.ok(ci.out.includes(`::error file=NOTICE.md,line=${lineOf("[ninguno]")},title=check-module [l] paizo license::unfilled template field(s) [ninguno]: ${reason}`), ci.out);
+});
+
+test("[l] --release keeps the trademark warning a warning: an open legal question, not a field to fill", (t) => {
+  const dir = materialize(t, {
+    merge: { "baron.json": { paizo: "orc" }, "module.json": { id: "pathfinder-fixture" } },
+    write: { "NOTICE.md": ORC_FILLED_NOTICE },
+  });
+  const res = checkModule([dir, "--release"]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual([...r.fail], [], res.out);
+  assert.deepEqual([...r.warn], ["l"], res.out);
+  const warns = lLines(r, "WARN");
+  assert.equal(warns.length, 1, res.out);
+  assert.ok(warns[0].includes('module.json id "pathfinder-fixture" name(s) Paizo or one of its games'), res.out);
+});
+
+// The family marker for a legal field awaiting the author's sign-off, plain
+// and as pf2e-simple-weapon-editor writes it (bold, naming who decides), plus
+// one inside an HTML comment: GitHub hides it, the sign-off is still open.
+const PENDING_REASON = "settle it and delete the marker before tagging, the release refuses it";
+const PENDING_RELEASE_REASON = "and the release does not publish it; settle it, delete the marker and tag again";
+const pendingLine = (level, marker, line) =>
+  level === "FAIL"
+    ? `FAIL   [l] paizo license: "${marker}" marker: a legal field awaits the author's sign-off ${PENDING_RELEASE_REASON} (NOTICE.md:${line})`
+    : `WARN   [l] paizo license: "${marker}" marker: a legal field awaits the author's sign-off; ${PENDING_REASON} (NOTICE.md:${line})`;
+
+test("[l] a PENDIENTE: line in NOTICE.md warns on a push and fails with --release, under either license", (t) => {
+  const cupNotice = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").replace(/\r\n/g, "\n").trimEnd();
+  const cases = {
+    cup: {
+      baron: {},
+      notice: `${cupNotice}\n\nPENDIENTE: confirm the product name with the author.\n`,
+      markers: ["PENDIENTE:"],
+    },
+    orc: {
+      baron: { paizo: "orc" },
+      notice: ORC_FILLED_NOTICE.replace(
+        "## Attribution Notice\n",
+        "## Attribution Notice\n\n> **PENDIENTE (autor):** check each attribution against the book's own ORC notice.\n\n<!-- PENDIENTE: the designated material -->\n",
+      ),
+      markers: ["PENDIENTE (autor):", "PENDIENTE:"],
+    },
+  };
+  for (const [license, { baron, notice, markers }] of Object.entries(cases)) {
+    const lines = notice.split("\n").map((l, i) => [l, i + 1]).filter(([l]) => l.includes("PENDIENTE")).map(([, n]) => n);
+    assert.equal(lines.length, markers.length, license);
+    const dir = materialize(t, { merge: { "baron.json": baron }, write: { "NOTICE.md": notice } });
+
+    const push = checkModule([dir]);
+    const pr = parseReport(push.out);
+    assert.equal(push.status, 0, `${license}\n${push.out}`);
+    assert.deepEqual([...pr.warn], ["l"], push.out);
+    assert.deepEqual(lLines(pr, "WARN"), markers.map((m, i) => pendingLine("WARN", m, lines[i])), push.out);
+
+    const release = checkModule([dir, "--release"]);
+    const rr = parseReport(release.out);
+    assert.equal(release.status, 1, `${license}\n${release.out}`);
+    assert.deepEqual([...rr.fail], ["l"], release.out);
+    assert.deepEqual(lLines(rr, "WARN"), [], release.out);
+    assert.deepEqual(lLines(rr, "FAIL"), markers.map((m, i) => pendingLine("FAIL", m, lines[i])), release.out);
+  }
+});
+
+test("[l] only the upper-case PENDIENTE followed by a colon is the marker: prose that says pendiente is text", (t) => {
+  const cupNotice = fs.readFileSync(path.join(VALID_MODULE, "NOTICE.md"), "utf8").replace(/\r\n/g, "\n").trimEnd();
+  const prose = ["Nada queda pendiente: todo esta firmado.", "Estado: PENDIENTE de revisar en la siguiente version.", "PENDIENTES: ninguno."];
+  const dir = materialize(t, { write: { "NOTICE.md": `${cupNotice}\n\n${prose.join("\n\n")}\n` } });
+  const res = checkModule([dir, "--release"]);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual(lLines(parseReport(res.out), "PASS"), ['PASS   [l] paizo license: paizo "cup", NOTICE.md carries the Community Use Policy notice'], res.out);
+});
+
+test("[l] without a paizo key a PENDIENTE: line is still reported: the release ships NOTICE.md whatever the license", (t) => {
+  const dir = materialize(t, {
+    write: {
+      "baron.json": JSON.stringify({ mode: "public", i18nPrefix: "baron-fixture", persisted: ["baron-fixture"] }),
+      "NOTICE.md": "# Legal notices\n\nPENDIENTE: choose the Paizo license.\n",
+    },
+  });
+  const notice = 'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license is not checked and NOTICE.md is not required';
+
+  const push = checkModule([dir]);
+  const pr = parseReport(push.out);
+  assert.equal(push.status, 0, push.out);
+  assert.deepEqual([...pr.warn], ["l"], push.out);
+  assert.deepEqual(lLines(pr, "WARN"), [pendingLine("WARN", "PENDIENTE:", 3)], push.out);
+  assert.deepEqual(lLines(pr, "NOTICE"), [notice], push.out);
+
+  const release = checkModule([dir, "--release"]);
+  const rr = parseReport(release.out);
+  assert.equal(release.status, 1, release.out);
+  assert.deepEqual([...rr.fail], ["l"], release.out);
+  assert.deepEqual(lLines(rr, "FAIL"), [pendingLine("FAIL", "PENDIENTE:", 3)], release.out);
 });
 
 /* ----------------------------------------------------------------------------

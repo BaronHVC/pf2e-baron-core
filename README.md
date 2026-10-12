@@ -123,7 +123,7 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | i   | cada texto de `persisted` sigue apareciendo en `scripts/` como literal completo, o como el texto antes del primer `${}` de una plantilla (`` `swe-p-${i}` `` cuenta para `swe-p-`); sin contar comentarios. Una subcadena no basta: el id también vive dentro de `"<id>.SettingGmOnly"` |
 | j   | `module.json` sin clave `protected`, sin `requires` a pf2e-baron-core; aviso si `esmodules` lista la copia del core |
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
-| l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, aviso por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta) y aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`) |
+| l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, un hallazgo por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta): WARN en cada push, FAIL con `--release`. Con cualquier licencia, lo mismo por cada renglón con el marcador `PENDIENTE:` (ver *Pendientes legales*). Con `orc`, aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar; sigue siendo WARN con `--release`, porque es una pregunta legal abierta y no un campo por llenar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`), más los renglones con `PENDIENTE:` si hay `NOTICE.md`: el release lo empaca sea cual sea la licencia |
 | m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a GitHub (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto ni clave de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona GitHub (FAIL: el release protegido lo rechazaría de todos modos, así que falla ya en cada push y no hasta la etiqueta). GitHub es `github.com` y sus subdominios, `githubusercontent.com` (archivos crudos y adjuntos de releases) y `github.io` (Pages), también con escapes `%2E`: todos pueden nombrar el repo privado. En un módulo `public` no imprime nada |
 | n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta |
 
@@ -131,8 +131,10 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 repo donde viven las propias herramientas.
 
 `--release` es para el build de la etiqueta: lo que un push todavía puede
-llevar pasa de WARN a FAIL. Hoy es solo la revisión `n`. `module-release` lo
-pasa (público y protegido); `module-check`, en cada push, no.
+llevar pasa de WARN a FAIL. Hoy son la revisión `n` y, en la `l`, los campos
+de la ORC sin llenar y los renglones con `PENDIENTE:` de `NOTICE.md`; el aviso
+de marcas de la `l` sigue siendo WARN. `module-release` lo pasa (público y
+protegido); `module-check`, en cada push, no.
 
 **Textos humanos (`n`).** La política de IA de Foundry pide que las etiquetas
 de la interfaz y el texto preparado los escriba una persona. Una sesión de
@@ -144,6 +146,17 @@ mayúsculas exactas): un texto que lo cita a media frase es texto real. Cada
 archivo con pendientes da una línea con cuántos son y hasta cinco claves
 (`baron-fixture.Open`, `title`, `description`), con la ruta anidada aplanada
 con puntos como lo hace Foundry.
+
+**Pendientes legales (`l`).** `PENDIENTE:` es el marcador de la familia para un
+dato legal de `NOTICE.md` que espera la firma del autor: una atribución sin
+cotejar con el libro, una decisión que solo él toma. Quien redacta el aviso y no
+puede cerrarlo escribe en ese renglón `PENDIENTE: <qué falta>`, o
+`PENDIENTE (<quién>): <qué falta>` para nombrar quién decide, en negritas o no.
+Cuenta en cualquier parte del archivo, también dentro de un comentario HTML (la
+firma sigue abierta aunque GitHub no la muestre), y solo en mayúsculas y seguido
+de dos puntos: «pendiente:» en la prosa es texto. Cada renglón con el marcador
+da un WARN en cada push y un FAIL con `--release`, así que la etiqueta no
+publica un aviso sin firmar; al resolverlo, se borra el marcador.
 
 ## Workflows reutilizables
 
@@ -171,8 +184,9 @@ jobs:
   bajo un módulo. Recibir un arreglo del pipeline = resincronizar el core.
 - Ambos workflows hacen checkout de este repo **en el commit del lock** (con
   etiquetas) y corren `check-module --online` antes de cualquier otra cosa;
-  `module-release` le agrega `--release`, así que un `TODO-HUMANO:` que en cada
-  push solo avisa (revisión `n`) detiene la etiqueta.
+  `module-release` le agrega `--release`, así que un `TODO-HUMANO:` (revisión
+  `n`), un campo de la ORC sin llenar o un `PENDIENTE:` en `NOTICE.md`
+  (revisión `l`), que en cada push solo avisan, detienen la etiqueta.
 - Por eso **solo sirven a un módulo que ya vendoriza el core**: sin
   `baron-core.lock.json` fallan de inmediato, aunque `check-module` local pase
   (sin copia ni lock, [e] y [f] se saltan). Un módulo existente que todavía no
@@ -286,8 +300,9 @@ que instala el complemento no tiene de dónde bajar la base.
 2. `check-module --online --release`, con la revisión `m` (`landingUrl`, la
    base en `requires`, ningún enlace a GitHub). La misma revisión corre en cada
    push, así que lo que haría fallar el release ya sale en rojo antes de
-   etiquetar. Un `TODO-HUMANO:` pendiente (revisión `n`) solo avisa en el push y
-   aquí falla.
+   etiquetar. Un `TODO-HUMANO:` pendiente (revisión `n`), un campo de la ORC sin
+   llenar o un `PENDIENTE:` en `NOTICE.md` (revisión `l`) solo avisan en el push
+   y aquí fallan.
 3. `release-manifest.mjs --mode protected` reescribe `module.json`:
    `"protected": true`, sin `download`, `manifest` =
    `https://r2.foundryvtt.com/packages-public/<id>/module.json` (el que sirve

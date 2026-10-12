@@ -8,6 +8,32 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/check-module.mjs`, revisión `[l]`: el marcador `PENDIENTE:` de la
+  familia para un dato legal de `NOTICE.md` que espera la firma del autor (una
+  atribución sin cotejar, una decisión que solo él toma). Cuenta escrito como
+  `PENDIENTE:` o `PENDIENTE (<quién>):`, en negritas o no, en mayúsculas
+  exactas y en cualquier parte del archivo, también dentro de un comentario
+  HTML; «pendiente:» en la prosa no cuenta. Cada renglón con el marcador da un
+  WARN en cada push y un FAIL con `--release`, con cualquier licencia de Paizo y
+  también sin `paizo` en `baron.json` (el release empaca `NOTICE.md` de todos
+  modos). Generaliza la compuerta que pf2e-simple-weapon-editor puso en su
+  propio `release.yml`.
+
+### Changed
+
+- `tools/check-module.mjs`, revisión `[l]`: con `--release`, cada campo de la
+  ORC sin llenar en `NOTICE.md` (`[Title of Work]`, `[Copyright Notice]`,
+  `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`) es FAIL en
+  vez de WARN, así que `module-release` ya no publica un aviso ORC incompleto.
+  Sin `--release` sigue siendo WARN, ahora con el texto «fill them before
+  tagging, the release refuses them». El aviso de marcas de Paizo en el id o el
+  título sigue siendo WARN también con `--release`: es una pregunta legal
+  abierta, no un campo por llenar. Sin `paizo`, el NOTICE dice ahora «the Paizo
+  license is not checked and NOTICE.md is not required». Un módulo lo recibe al
+  resincronizar; las funciones de `baron-core.js` no cambian.
+
 ## [1.2.0] - 2026-10-11
 
 ### Added
