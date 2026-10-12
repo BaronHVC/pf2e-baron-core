@@ -8,6 +8,8 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-11
+
 ### Added
 
 - `tools/check-module.mjs`: revisión `[n] human text` y opción `--release`
@@ -236,7 +238,8 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - Workflows reutilizables `module-check.yml` y `module-release.yml` (modo
   público; el protegido falla a propósito porque aún no existe).
 
-[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.0.0-rc.1...v1.0.0
