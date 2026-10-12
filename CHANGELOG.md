@@ -8,6 +8,25 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `module-check.yml` (cada push) y `module-release.yml` (cada etiqueta, público
+  y protegido) corren las pruebas de node del propio módulo después de
+  `check-module`, con el nuevo `.github/scripts/run-module-tests.mjs`, en el
+  checkout del módulo (los `import` de `../scripts/*.js` resuelven como en
+  local). Corre lo primero que encuentre: el script `test` de `package.json`
+  con `npm test` (antes `npm ci` con lockfile o `npm install --no-audit
+  --no-fund` sin él, solo si declara `dependencies` o `devDependencies`); si
+  no, `node --test` con la lista explícita de `*.test.mjs` y `*.test.js` bajo
+  `test/` y `tests/` (nunca a secas: no carga `fixtures/` ni `helpers/`); sin
+  ninguno, un aviso «no tests found» y pasa. Una prueba roja tumba el job y,
+  con `node --test`, sale como anotación pública vía `tap-annotate.mjs`. En
+  `module-release` el paso va antes de reescribir `module.json` y de armar el
+  ZIP, así que una etiqueta con una prueba roja no publica. Un `package.json`
+  que no se puede leer falla el paso en vez de saltarse las pruebas. Un módulo
+  lo recibe al resincronizar con la próxima etiqueta del core; las funciones
+  de `baron-core.js` no cambian.
+
 ## [1.3.0] - 2026-10-11
 
 ### Added

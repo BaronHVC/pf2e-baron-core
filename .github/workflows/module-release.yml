@@ -19,10 +19,10 @@ name: Module release
 # (sync-core lo reescribe); sin ese lock no hay commit del core que usar, asi que
 # solo sirve a modulos que ya vendorizan el core.
 #
-# Primero corre las mismas revisiones que module-check.yml; despues reproduce el
-# release.yml de pf2e-simple-weapon-editor v0.12.0: version desde la etiqueta,
-# prerelease para lo que no sea vX.Y.Z, module.json reescrito, ZIP con la
-# carpeta <id>/ adentro, release por version y canal de pruebas "dev".
+# Primero corre las mismas revisiones y pruebas que module-check.yml; despues
+# reproduce el release.yml de pf2e-simple-weapon-editor v0.12.0: version desde
+# la etiqueta, prerelease para lo que no sea vX.Y.Z, module.json reescrito, ZIP
+# con la carpeta <id>/ adentro, release por version y canal de pruebas "dev".
 #
 # El module.json lo reescribe tools/release-manifest.mjs del core (el del commit
 # del lock, con sus pruebas), en los dos modos de baron.json:
@@ -140,6 +140,15 @@ jobs:
       # todo esto solo avisa.
       - name: Validar que las fuentes no esten rotas (check-module --online --release)
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online --release
+
+      # Las mismas pruebas del modulo que module-check.yml corre en cada push
+      # (npm test o node --test sobre test/ y tests/; ver alli), aqui antes de
+      # reescribir module.json y de armar el ZIP: una etiqueta con una prueba
+      # roja no publica, ni en mode public ni en protected. Corren sobre el
+      # checkout tal cual esta en la etiqueta, y su reporte TAP va a
+      # RUNNER_TEMP, fuera de lo que se empaca.
+      - name: Pruebas del modulo
+        run: node .baron-core/.github/scripts/run-module-tests.mjs .
 
       - name: Leer la version desde la etiqueta
         id: v

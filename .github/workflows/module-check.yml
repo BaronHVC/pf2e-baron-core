@@ -84,3 +84,17 @@ jobs:
       - name: check-module --online
         if: steps.lock.outputs.run == 'true'
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online
+
+      # Las pruebas de node del propio modulo, en su checkout (no en
+      # .baron-core), asi que un import de ../scripts/*.js resuelve igual que
+      # en local, la copia vendorizada del core incluida. Con un "test" en
+      # package.json corre npm test (npm ci o npm install antes, solo si
+      # declara dependencias); si no, node --test con la lista explicita de
+      # test/**/*.test.mjs y tests/**/*.test.mjs (o .test.js), nunca un
+      # "node --test" a secas, que tambien cargaria fixtures y helpers. Sin
+      # pruebas, solo un aviso. Una prueba roja tumba el job y sale como
+      # anotacion publica: el log del job solo lo bajan los admins del repo.
+      # module-release corre el mismo paso antes de publicar.
+      - name: Pruebas del modulo
+        if: steps.lock.outputs.run == 'true'
+        run: node .baron-core/.github/scripts/run-module-tests.mjs .

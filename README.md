@@ -23,6 +23,9 @@ hooks, settings, helpers and sockets stay in each module's own entry files.*
   igual en Windows y en Linux, sin `npm install`.
 - **`.github/workflows/`**: la CI de este repo (`ci.yml`) y los dos workflows
   reutilizables que llaman los módulos (`module-check.yml`, `module-release.yml`).
+  En **`.github/scripts/`**, lo que esos workflows corren aparte de `tools/`:
+  `run-module-tests.mjs` (las pruebas del módulo) y `tap-annotate.mjs` (cada
+  prueba roja como anotación pública).
 - **No es un paquete de Foundry**: no tiene `module.json`, no se instala y no se
   publica en foundryvtt.com. Los usuarios nunca lo ven.
 
@@ -191,6 +194,30 @@ jobs:
   `module-release` le agrega `--release`, así que un `TODO-HUMANO:` (revisión
   `n`), un campo de la ORC sin llenar o un `PENDIENTE:` en `NOTICE.md`
   (revisión `l`), que en cada push solo avisan, detienen la etiqueta.
+- Después de `check-module`, los dos corren **las pruebas de node del propio
+  módulo** con `.github/scripts/run-module-tests.mjs`, en el checkout del módulo
+  (no en `.baron-core`): un `import` de `../scripts/*.js`, la copia vendorizada
+  del core incluida, resuelve igual que en local. Corre lo primero que
+  encuentre:
+  1. un script `test` en `package.json`: `npm test`. Antes, solo si
+     `package.json` declara `dependencies` o `devDependencies`, `npm ci` (con
+     `package-lock.json` o `npm-shrinkwrap.json`) o `npm install --no-audit
+     --no-fund` (sin lockfile);
+  2. si no, `node --test` con la lista explícita de los `*.test.mjs` y
+     `*.test.js` bajo `test/` y `tests/`, a cualquier profundidad (sin
+     `node_modules` ni carpetas con punto). Nunca un `node --test` a secas, que
+     también cargaría `fixtures/` y `helpers/`: lo que no termina en `.test.mjs`
+     o `.test.js` no corre;
+  3. si no hay ninguno de los dos, un aviso «no tests found» y el paso pasa.
+
+  Una prueba roja tumba el job. Con `node --test`, cada una sale además como
+  anotación pública vía `tap-annotate.mjs` (el log del job solo lo bajan los
+  admins del repo); con `npm test`, una anotación con el código de salida. En
+  `module-release` el paso va antes de reescribir `module.json` y de armar el
+  ZIP, en modo público y protegido: una etiqueta con una prueba roja no
+  publica. El reporte TAP va a `RUNNER_TEMP`, fuera de lo que se empaca. Un
+  módulo lo recibe al resincronizar con una etiqueta del core que lo traiga
+  (posterior a v1.3.0).
 - Por eso **solo sirven a un módulo que ya vendoriza el core**: sin
   `baron-core.lock.json` fallan de inmediato, aunque `check-module` local pase
   (sin copia ni lock, [e] y [f] se saltan). Un módulo existente que todavía no
@@ -307,7 +334,10 @@ que instala el complemento no tiene de dónde bajar la base.
    etiquetar. Un `TODO-HUMANO:` pendiente (revisión `n`), un campo de la ORC sin
    llenar o un `PENDIENTE:` en `NOTICE.md` (revisión `l`) solo avisan en el push
    y aquí fallan.
-3. `release-manifest.mjs --mode protected` reescribe `module.json`:
+3. Las pruebas del módulo, las mismas que en cada push (ver
+   [Workflows reutilizables](#workflows-reutilizables)): una prueba roja
+   detiene la etiqueta antes de tocar `module.json`.
+4. `release-manifest.mjs --mode protected` reescribe `module.json`:
    `"protected": true`, sin `download`, `manifest` =
    `https://r2.foundryvtt.com/packages-public/<id>/module.json` (el que sirve
    Foundry), `url` = `landingUrl` y la versión de la etiqueta. Falla si
@@ -318,13 +348,13 @@ que instala el complemento no tiene de dónde bajar la base.
    una dependencia en `relationships` también falla, aunque su repo sea
    público: Foundry encuentra por su id una dependencia publicada en
    foundryvtt.com, así que se quita (ver el requisito de la base, arriba).
-4. ZIP `<id>-<tag>.zip` con la carpeta `<id>/`, igual que en modo público.
-5. Release **en el propio repo privado** con el ZIP y ese `module.json`
+5. ZIP `<id>-<tag>.zip` con la carpeta `<id>/`, igual que en modo público.
+6. Release **en el propio repo privado** con el ZIP y ese `module.json`
    (prerelease si la etiqueta no es `vX.Y.Z`): solo lo ven sus colaboradores.
    Una prerelease solo comprueba que el paquete se arma: nunca se sube a
    Foundry (ver abajo).
-6. Nunca toca el canal `dev`.
-7. Deja en el resumen del run la lista de abajo, con el id, la versión y la
+7. Nunca toca el canal `dev`.
+8. Deja en el resumen del run la lista de abajo, con el id, la versión y la
    compatibilidad ya escritos; en una prerelease, en su lugar, por qué no se
    sube y cómo probar.
 
@@ -375,7 +405,10 @@ node --test test/*.test.mjs test/tools/*.test.mjs
   de SWE v0.12.0 en `test/legacy/`.
 - `test/tools/*.test.mjs`: `sync-core`, `check-module` y `release-manifest`. Arman repos de git
   temporales (un core falso etiquetado y un módulo con pins), así que necesitan
-  `git` en el PATH.
+  `git` en el PATH. También `.github/scripts/run-module-tests.mjs`, contra
+  módulos temporales (sin pruebas, en verde, en rojo, con `npm test`, el
+  `tests/` de SWE, solo `fixtures/`) y contra el orden de los pasos de los dos
+  workflows reutilizables; los casos de `npm test` necesitan `npm` en el PATH.
 - `test/fixtures/valid-module/` es el módulo mínimo que pasa todo;
   `test/fixtures/negative/*.json` describe cada caso roto como ese módulo más un
   cambio (ver su README).
