@@ -80,7 +80,7 @@ un clon normal trae las etiquetas que necesita `--online`.
 
 ```sh
 # Vendorizar una versión publicada (etiqueta) o un commit concreto
-node ../pf2e-baron-core/tools/sync-core.mjs --ref v1.3.0
+node ../pf2e-baron-core/tools/sync-core.mjs --ref v1.4.0
 
 # Desarrollo en vivo: copia el core de tu copia de trabajo en cada guardado
 # (deja el lock en "dev"; check-module lo rechaza hasta que corras --ref)
@@ -222,7 +222,7 @@ jobs:
   un servidor abierto lo tumba ahí, no a las 6 h. El reporte TAP va a
   `RUNNER_TEMP`, fuera de lo que se empaca. Un
   módulo lo recibe al resincronizar con una etiqueta del core que lo traiga
-  (posterior a v1.3.0).
+  (v1.4.0 o posterior).
 - Por eso **solo sirven a un módulo que ya vendoriza el core**: sin
   `baron-core.lock.json` fallan de inmediato, aunque `check-module` local pase
   (sin copia ni lock, [e] y [f] se saltan). Un módulo existente que todavía no

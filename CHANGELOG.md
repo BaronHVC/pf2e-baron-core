@@ -8,6 +8,8 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-12
+
 ### Added
 
 - `module-check.yml` (cada push) y `module-release.yml` (cada etiqueta, público
@@ -305,7 +307,8 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - Workflows reutilizables `module-check.yml` y `module-release.yml` (modo
   público; el protegido falla a propósito porque aún no existe).
 
-[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.1.0...v1.1.1
