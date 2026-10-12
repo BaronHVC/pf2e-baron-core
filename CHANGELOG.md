@@ -8,6 +8,14 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Fixed
+
+- Prueba intermitente de `sync-core --watch` en la CI de Linux: los archivos
+  copiados se veían antes de que la línea del log llegara por el pipe del
+  proceso, y la prueba exigía las dos cosas a la vez. Ahora espera también el
+  log. Era la causa del rojo de las etiquetas `v1.1.0` y `v1.1.1`; la
+  herramienta no cambia, así que ningún módulo necesita resincronizar.
+
 ## [1.1.1] - 2026-10-11
 
 ### Fixed

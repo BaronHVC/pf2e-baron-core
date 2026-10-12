@@ -251,7 +251,10 @@ test("sync-core --watch mirrors the core working tree and marks the lock dev", a
   fs.writeFileSync(path.join(core, "baron-core.js"), edited);
   const editedLf = edited.replace(/\r\n/g, "\n");
   assert.ok(await waitFor(() => dev(editedLf)), `edit not mirrored\n${watcher.output()}`);
-  assert.match(watcher.output(), /copied baron-core\.js \(CORE_VERSION 1\.3\.0-dev/);
+  // The copied files can be visible here before the child's log line has come
+  // through its stdout pipe (seen on Linux CI), so the log gets its own wait.
+  const logged = /copied baron-core\.js \(CORE_VERSION 1\.3\.0-dev/;
+  assert.ok(await waitFor(() => logged.test(watcher.output())), `copy not logged\n${watcher.output()}`);
   await watcher.stop();
 
   // A dev lock never passes check-module.
