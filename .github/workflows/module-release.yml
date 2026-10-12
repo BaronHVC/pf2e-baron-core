@@ -45,6 +45,11 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        # Sin el token en .git/config: las pruebas del modulo (y sus
+        # dependencias npm) corren en este checkout. Los pasos que publican
+        # reciben el token por GH_TOKEN, solo ellos.
+        with:
+          persist-credentials: false
 
       # El contexto github es el del modulo que llama: el evento push de su
       # etiqueta dice si su repo es privado.
@@ -150,6 +155,18 @@ jobs:
       - name: Pruebas del modulo
         timeout-minutes: 15
         run: node .baron-core/.github/scripts/run-module-tests.mjs .
+
+      # Las pruebas corren en el mismo checkout que despues se empaca: si una
+      # prueba o una dependencia cambio o creo algo de lo que va en el ZIP
+      # (misma lista que "Armar el ZIP"), el release se detiene.
+      - name: Comprobar que las pruebas no tocaron lo que se empaca
+        run: |
+          cambios="$(git status --porcelain --untracked-files=all --ignored -- module.json scripts styles templates lang packs LICENSE NOTICE.md)"
+          if [ -n "$cambios" ]; then
+            echo "$cambios"
+            echo "::error title=module tests::las pruebas cambiaron archivos que irian en el ZIP: $(echo "$cambios" | paste -sd ' ' -)"
+            exit 1
+          fi
 
       - name: Leer la version desde la etiqueta
         id: v

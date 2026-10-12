@@ -29,7 +29,11 @@ tengan que resincronizar.
   minutos: una prueba que deja un timer abierto ya no cuelga el job 6 h. En
   `module-release` el paso va antes de reescribir `module.json` y de armar el
   ZIP, así que una etiqueta con una prueba roja no publica. Un `package.json`
-  que no se puede leer falla el paso en vez de saltarse las pruebas. Un módulo
+  que no se puede leer falla el paso en vez de saltarse las pruebas. Ni las
+  pruebas ni sus dependencias ven el token: el checkout del módulo va con
+  `persist-credentials: false`, `npm ci`/`npm install` llevan
+  `--ignore-scripts`, y en `module-release` un paso nuevo detiene el release
+  si las pruebas cambiaron o crearon algo de lo que va en el ZIP. Un módulo
   lo recibe al resincronizar con la próxima etiqueta del core; las funciones
   de `baron-core.js` no cambian.
 

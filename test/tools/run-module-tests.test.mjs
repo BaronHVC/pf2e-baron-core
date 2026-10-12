@@ -107,11 +107,12 @@ test("planTests: a package.json test script wins over test files", (t) => {
 test("planTests: npm installs only when package.json declares dependencies", (t) => {
   const pkg = (extra) => JSON.stringify({ scripts: { test: "node --test" }, ...extra });
   const plan = (files) => planTests(makeModule(t, files));
-  assert.deepEqual(plan({ "package.json": pkg({ devDependencies: { x: "1.0.0" } }), "package-lock.json": "{}" }), { kind: "npm", install: ["ci"] });
-  assert.deepEqual(plan({ "package.json": pkg({ dependencies: { x: "1.0.0" } }), "npm-shrinkwrap.json": "{}" }), { kind: "npm", install: ["ci"] });
+  // --ignore-scripts always: a dependency's install script never runs in CI.
+  assert.deepEqual(plan({ "package.json": pkg({ devDependencies: { x: "1.0.0" } }), "package-lock.json": "{}" }), { kind: "npm", install: ["ci", "--ignore-scripts"] });
+  assert.deepEqual(plan({ "package.json": pkg({ dependencies: { x: "1.0.0" } }), "npm-shrinkwrap.json": "{}" }), { kind: "npm", install: ["ci", "--ignore-scripts"] });
   assert.deepEqual(plan({ "package.json": pkg({ dependencies: { x: "1.0.0" } }) }), {
     kind: "npm",
-    install: ["install", "--no-audit", "--no-fund"],
+    install: ["install", "--ignore-scripts", "--no-audit", "--no-fund"],
   });
   // A lockfile alone, or empty dependency maps, install nothing.
   assert.deepEqual(plan({ "package.json": pkg({ dependencies: {}, devDependencies: {} }), "package-lock.json": "{}" }), { kind: "npm", install: null });
@@ -350,4 +351,20 @@ test("module-release.yml runs the module tests after check-module and before mod
     const at = indexOf(list, later);
     assert.ok(at > tests, `${later} at step ${at}, tests at ${tests}`);
   }
+});
+
+test("the module checkout keeps no token, and module-release stops if the tests touched what it packs", () => {
+  for (const wf of ["module-check.yml", "module-release.yml"]) {
+    const list = steps(wf);
+    const checkout = indexOf(list, /uses: actions\/checkout@v4/);
+    assert.match(list[checkout], /^ {10}persist-credentials: false$/m, wf);
+  }
+  const list = steps("module-release.yml");
+  const PACKED = "module.json scripts styles templates lang packs LICENSE NOTICE.md";
+  const tests = indexOf(list, RUN_TESTS);
+  const guard = indexOf(list, /git status --porcelain --untracked-files=all --ignored -- /);
+  assert.equal(guard, tests + 1, `guard step ${guard}, tests step ${tests}`);
+  assert.ok(list[guard].includes(`--ignored -- ${PACKED})`), "the guard checks the same paths the ZIP packs");
+  assert.ok(list[indexOf(list, /zip -r/)].includes(`for p in ${PACKED}; do`), "the ZIP step packs that list");
+  assert.doesNotMatch(list[guard], /^ {8}if:|continue-on-error/m);
 });

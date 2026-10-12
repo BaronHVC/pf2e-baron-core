@@ -24,6 +24,10 @@ jobs:
     steps:
       - name: Checkout del modulo
         uses: actions/checkout@v4
+        # Sin el token en .git/config: las pruebas del modulo (y sus
+        # dependencias npm) corren en este checkout y no lo necesitan.
+        with:
+          persist-credentials: false
 
       - name: Leer el commit del core en baron-core.lock.json
         id: lock

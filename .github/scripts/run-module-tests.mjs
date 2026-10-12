@@ -8,7 +8,9 @@
 // What runs, first match wins:
 //   1. package.json with a non-empty "test" script: `npm test`. Before it,
 //      only when package.json declares dependencies or devDependencies:
-//      `npm ci` with a lockfile, `npm install --no-audit --no-fund` without.
+//      `npm ci` with a lockfile, `npm install --no-audit --no-fund` without,
+//      both with --ignore-scripts: a dependency's install script never runs
+//      in the release job.
 //      The placeholder `npm init` writes (`echo "Error: no test specified" &&
 //      exit 1`) is no test script: a ::notice:: and on to 2.
 //   2. Files named *.test.mjs or *.test.js anywhere under test/ or tests/:
@@ -103,7 +105,9 @@ export function planTests(root) {
     if (typeof script === "string" && script.trim() !== "" && !placeholder) {
       let install = null;
       if (hasEntries(pkg.dependencies) || hasEntries(pkg.devDependencies)) {
-        install = LOCKFILES.some((f) => fs.existsSync(path.join(root, f))) ? ["ci"] : ["install", "--no-audit", "--no-fund"];
+        install = LOCKFILES.some((f) => fs.existsSync(path.join(root, f)))
+          ? ["ci", "--ignore-scripts"]
+          : ["install", "--ignore-scripts", "--no-audit", "--no-fund"];
       }
       return { kind: "npm", install };
     }
