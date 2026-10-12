@@ -44,7 +44,7 @@ tiempo no pueden usar el mismo. Esta tabla es la fuente de verdad.
 |---|---|---|---|---|---|---|---|
 | `pf2e-simple-weapon-editor` | `SWE` | `swe-editor` / `swe-open` | `SWE:`, `swe-cond`, `swe-x-`, `swe-s-`, `swe-p-`, `swe-a-` | `swe-adopted`, `swe-gated`, `swe-pick`, `swe-pick-made`, `swe-atk`, `swe-rider`, `swe-react`, `swe-dmg:` | `sweEq` | ninguno | `CharacterPF2e#prepareStrike`, `CharacterPF2e#prepareAreaAttack`, `ActorPF2e#applyDamage` (a mano) |
 | `baron-traps` | `baron-traps` | `btrap-app` / `btrap-open` | `btrap-` | `btrap-` | `btrap` | ninguno | ninguno |
-| `baron-cover` | `baron-cover` | `bcover-app` / `bcover-open` | `bcover-` | `bcover-` | `bcover` | ninguno | `game.pf2e.Check.roll` (lib-wrapper si está activo; si no, a mano) |
+| `baron-cover` | `baron-cover` | `bcover-app` / `bcover-open` | `bcover-` (reservado) | `bcover-` (reservado) | `bcover` | ninguno | `game.pf2e.Check.roll` (lib-wrapper si está activo; si no, a mano) |
 
 ### Notas por módulo
 
@@ -63,4 +63,6 @@ funciones para el complemento acepta los tipos `resolver`, `visual`, `detector` 
 **baron-cover** (base gratuita de un freemium, ORC). Guarda la clave `attack` bajo
 su scope en los ChatMessage y registra los ajustes `attackCover`, `creatureCover`
 e `ignoreDefeated`. Envuelve `game.pf2e.Check.roll`: con lib-wrapper si está
-activo y, si no, a mano, con la bandera `_bcoverWrappedRoll`.
+activo y, si no, a mano, con la bandera `_bcoverWrappedRoll`. No crea slugs de
+reglas ni roll options propios: usa los del sistema (`target:cover-level:*`,
+`target:cover-bonus:*`). `bcover-` queda reservado por si algún día los necesita.
