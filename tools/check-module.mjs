@@ -2,10 +2,12 @@
 // check-module: static checks for a BaronHVC Foundry module, run locally
 // before tagging and by the reusable module-check / module-release workflows.
 //
-//   node <core>/tools/check-module.mjs [moduleDir=cwd] [--core-repo <path>] [--online] [--parity warn|error]
+//   node <core>/tools/check-module.mjs [moduleDir=cwd] [--core-repo <path>] [--online] [--parity warn|error] [--release]
 //
 // Every check prints PASS / FAIL / WARN / NOTICE; under GitHub Actions the
 // findings are also emitted as annotations. Exit code 1 on any FAIL.
+// --release is for the tag build: what a push may still carry (text waiting
+// for a person to write it) fails instead of warning.
 //
 //   [a] declared files exist      [g] imports stay inside the module, no top-level await
 //   [b] scripts parse as ESM      [h] static i18n keys exist in lang/en.json
@@ -15,6 +17,7 @@
 //   [f] lock vs core repo (--online)
 //   [l] Paizo license: baron.json "paizo" agrees with the mode and with NOTICE.md
 //   [m] protected packaging: a paid module has a landing page, requires its free base and never links to GitHub
+//   [n] human text: no "TODO-HUMANO:" value left in lang files or module.json title/description (FAIL with --release)
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -38,7 +41,7 @@ import {
   workflowFiles,
 } from "./shared.mjs";
 
-const USAGE = "usage: node check-module.mjs [moduleDir] [--core-repo <path>] [--online] [--parity warn|error]";
+const USAGE = "usage: node check-module.mjs [moduleDir] [--core-repo <path>] [--online] [--parity warn|error] [--release]";
 const PLACEHOLDER_RE = /__[A-Z][A-Z0-9_]*__/g;
 const SHA1_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -48,10 +51,11 @@ const SHA256_RE = /^[0-9a-f]{64}$/;
  * -------------------------------------------------------------------------- */
 
 function parseArgs(argv) {
-  const opts = { moduleDir: null, coreRepo: null, online: false, parity: null };
+  const opts = { moduleDir: null, coreRepo: null, online: false, parity: null, release: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--online") opts.online = true;
+    else if (a === "--release") opts.release = true;
     else if (a === "--core-repo") {
       opts.coreRepo = argv[++i];
       if (!opts.coreRepo) usage("--core-repo needs a path");
@@ -830,6 +834,47 @@ function checkProtectedPackaging(ctx, c) {
   c.detail(`landing page ${landing}, requires ${bases.join(", ")}`);
 }
 
+// Foundry's AI policy wants UI labels and listing text written by a person.
+// A Claude session never writes that text: it adds the key with the value
+// "TODO-HUMANO: <what it should say>" and the author fills it in. Only a value
+// that starts with the marker is a placeholder; text that quotes it
+// mid-sentence is real text, and "todo-humano:" is not the marker.
+const HUMAN_MARKER = "TODO-HUMANO:";
+// Fields of module.json that the package listing shows as prose.
+const LISTING_FIELDS = ["title", "description"];
+
+/** Key paths (dotted, as Foundry flattens them) of the string values that start with the marker. */
+function humanPlaceholders(value, prefix = "", out = []) {
+  if (typeof value === "string") {
+    if (value.trimStart().startsWith(HUMAN_MARKER)) out.push(prefix);
+  } else if (Array.isArray(value)) {
+    value.forEach((v, i) => humanPlaceholders(v, `${prefix}[${i}]`, out));
+  } else if (value && typeof value === "object") {
+    for (const [k, v] of Object.entries(value)) humanPlaceholders(v, prefix ? `${prefix}.${k}` : k, out);
+  }
+  return out;
+}
+
+// A push only warns, so work in progress stays green; the tag build passes
+// --release and refuses to publish a placeholder.
+function checkHumanText(ctx, c) {
+  const sources = [...ctx.langJson.values()].filter((f) => f.data !== undefined);
+  if (ctx.module) {
+    const listing = Object.fromEntries(LISTING_FIELDS.filter((k) => Object.hasOwn(ctx.module, k)).map((k) => [k, ctx.module[k]]));
+    sources.unshift({ rel: "module.json", data: listing });
+  }
+  for (const { rel, data } of sources) {
+    const keys = humanPlaceholders(data);
+    if (!keys.length) continue;
+    const sample = keys.slice(0, 5).join(", ") + (keys.length > 5 ? `, ... +${keys.length - 5} more` : "");
+    const what = `${keys.length} value(s) still start with "${HUMAN_MARKER}" (${sample})`;
+    if (ctx.opts.release) c.fail(`${what}: Foundry's AI policy wants UI and listing text written by a person; write them and tag again`, { file: rel });
+    else c.warn(`${what}: a person writes them before tagging, the release refuses them (Foundry's AI policy)`, { file: rel });
+  }
+  const langs = sources.length - (ctx.module ? 1 : 0);
+  c.detail(`no TODO-HUMANO placeholders in ${langs} language file(s)${ctx.module ? " or in module.json title and description" : ""}`);
+}
+
 /* ----------------------------------------------------------------------------
  * Main
  * -------------------------------------------------------------------------- */
@@ -842,7 +887,7 @@ function main() {
   const ctx = loadModule(root, opts);
   const r = new Reporter({ root, annotate: !!process.env.GITHUB_ACTIONS });
   const stats = {};
-  console.log(`check-module: ${ctx.module?.id ?? path.basename(root)} (${root})${opts.online ? " --online" : ""}`);
+  console.log(`check-module: ${ctx.module?.id ?? path.basename(root)} (${root})${opts.online ? " --online" : ""}${opts.release ? " --release" : ""}`);
 
   r.check("a", "declared files", (c) => checkDeclaredFiles(ctx, c));
   r.check("b", "script syntax", (c) => checkSyntax(ctx, c));
@@ -857,6 +902,7 @@ function main() {
   r.check("k", "placeholders", (c) => checkPlaceholders(ctx, c));
   r.check("l", "paizo license", (c) => checkPaizoLicense(ctx, c));
   r.check("m", "protected packaging", (c) => checkProtectedPackaging(ctx, c));
+  r.check("n", "human text", (c) => checkHumanText(ctx, c));
 
   const { passed, warnings, failed } = r.counts;
   console.log(`check-module: ${passed} passed, ${warnings} warnings, ${failed} failed`);

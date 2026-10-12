@@ -8,6 +8,24 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/check-module.mjs`: revisión `[n] human text` y opción `--release`
+  (decisión 15 de la familia: la política de IA de Foundry pide que las
+  etiquetas de la interfaz y el texto preparado los escriba una persona). Una
+  sesión de Claude deja `TODO-HUMANO: <qué debe decir>` como valor y el autor lo
+  llena. La revisión busca valores de texto que *empiezan* con `TODO-HUMANO:`
+  (tras quitar los espacios iniciales; mayúsculas exactas) en los archivos de
+  idioma, planos o anidados, y en el `title` y la `description` de
+  `module.json`; un texto que lo cita a media frase no cuenta. Sin `--release`
+  da un WARN por archivo con cuántos son y hasta cinco claves; con `--release`,
+  FAIL con el mismo detalle. Sin pendientes, PASS.
+- `module-release.yml` corre `check-module --online --release` (público y
+  protegido): una etiqueta con un `TODO-HUMANO:` pendiente no publica.
+  `module-check.yml`, en cada push, no lo pasa: ahí solo avisa. Un módulo lo
+  recibe al resincronizar con la próxima etiqueta del core (el pin de sus
+  workflows es el commit del lock); las funciones de `baron-core.js` no cambian.
+
 ### Fixed
 
 - Prueba intermitente de `sync-core --watch` en la CI de Linux: los archivos

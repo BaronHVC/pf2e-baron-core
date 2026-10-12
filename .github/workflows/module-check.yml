@@ -77,6 +77,9 @@ jobs:
         with:
           node-version: 22
 
+      # Sin --release: un valor que empieza con TODO-HUMANO: (texto que falta
+      # escribir a mano, revision n) solo avisa en cada push; module-release
+      # lo rechaza al etiquetar.
       - name: check-module --online
         if: steps.lock.outputs.run == 'true'
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online

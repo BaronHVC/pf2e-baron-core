@@ -6,12 +6,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  REPO,
   VALID_MODULE,
   checkModule,
   childEnv,
   materialize,
   negativeCases,
   parseReport,
+  readText,
 } from "./helpers.mjs";
 
 test("the valid fixture passes every check", () => {
@@ -20,8 +22,8 @@ test("the valid fixture passes every check", () => {
   assert.equal(res.status, 0, res.out);
   assert.deepEqual([...r.fail], [], res.out);
   assert.deepEqual([...r.warn], [], res.out);
-  assert.deepEqual([...r.pass].sort(), ["a", "b", "c", "d", "g", "h", "i", "j", "k", "l"], res.out);
-  assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed");
+  assert.deepEqual([...r.pass].sort(), ["a", "b", "c", "d", "g", "h", "i", "j", "k", "l", "n"], res.out);
+  assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed");
   // It does not vendor core: [e] says so and [f] stays silent.
   assert.ok(r.lines.some((l) => l.startsWith("NOTICE [e]") && l.includes("module does not vendor baron-core")), res.out);
   assert.ok(!r.lines.some((l) => l.includes("[f]")), res.out);
@@ -115,7 +117,7 @@ test("CRLF sources (git archive on Windows with autocrlf) check the same as LF",
   }
   const res = checkModule([dir]);
   assert.equal(res.status, 0, res.out);
-  assert.equal(parseReport(res.out).summary, "check-module: 10 passed, 0 warnings, 0 failed");
+  assert.equal(parseReport(res.out).summary, "check-module: 11 passed, 0 warnings, 0 failed");
 });
 
 test("usage errors exit 1 with a message", () => {
@@ -125,6 +127,10 @@ test("usage errors exit 1 with a message", () => {
   const unknown = checkModule([VALID_MODULE, "--frobnicate"]);
   assert.equal(unknown.status, 1);
   assert.match(unknown.stderr, /unknown option --frobnicate/);
+  // --release is a plain switch: it takes no value.
+  const valued = checkModule([VALID_MODULE, "--release=yes"]);
+  assert.equal(valued.status, 1);
+  assert.match(valued.stderr, /unknown option --release=yes/);
   const missing = checkModule([path.join(VALID_MODULE, "does-not-exist")]);
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /is not a folder/);
@@ -212,7 +218,7 @@ test("[l] without a paizo key only notices, needs no NOTICE.md and is not counte
   assert.deepEqual(lLines(r, "NOTICE"), [
     'NOTICE [l] paizo license: baron.json does not declare "paizo" ("cup" or "orc"): the Paizo license and NOTICE.md are not checked',
   ]);
-  assert.equal(r.summary, "check-module: 9 passed, 0 warnings, 0 failed");
+  assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 0 failed");
 });
 
 test("[l] a protected module without a paizo key still only notices, but is told it needs orc", (t) => {
@@ -240,7 +246,7 @@ test("[l] an ORC module with a complete notice passes, public (freemium base) or
     assert.equal(res.status, 0, res.out);
     assert.deepEqual(lLines(r, "PASS"), ['PASS   [l] paizo license: paizo "orc", NOTICE.md carries the ORC Notice with every template field filled'], res.out);
     // Rule [m] only counts for the protected one.
-    assert.equal(r.summary, `check-module: ${mode === "protected" ? 11 : 10} passed, 0 warnings, 0 failed`, res.out);
+    assert.equal(r.summary, `check-module: ${mode === "protected" ? 12 : 11} passed, 0 warnings, 0 failed`, res.out);
   }
 });
 
@@ -258,7 +264,7 @@ test("[l] each unfilled field of the template's ORC block is reported on its lin
     warn("[nombres, logos, arte e identidad comercial de Baron Fixture]", "[nombres,"),
     warn("[ninguno]", "[ninguno]"),
   ]);
-  assert.equal(r.summary, "check-module: 9 passed, 1 warnings, 0 failed");
+  assert.equal(r.summary, "check-module: 10 passed, 1 warnings, 0 failed");
 
   // Under GitHub Actions each line becomes a warning annotation on NOTICE.md.
   const ci = checkModule(["."], { cwd: dir, env: childEnv({ GITHUB_ACTIONS: "true" }) });
@@ -324,7 +330,7 @@ test("[l] the notice is matched as GitHub shows it: quote markers, emphasis and 
   for (const [name, notice] of Object.entries(shown)) {
     const res = run(notice);
     assert.equal(res.status, 0, `${name}\n${res.out}`);
-    assert.equal(parseReport(res.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", `${name}\n${res.out}`);
+    assert.equal(parseReport(res.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", `${name}\n${res.out}`);
   }
   const hidden = run(ORC_FILLED.replace(ORC_SENTENCE, `<!-- ${ORC_SENTENCE} -->`));
   assert.equal(hidden.status, 1, hidden.out);
@@ -380,11 +386,11 @@ test("[l] Paizo or one of its games in the id or title warns under orc, never un
   // Neither the fixture's own id and title nor a word that merely contains
   // the letters (Baron, Fixture) set it off.
   const plain = orc({});
-  assert.equal(parseReport(plain.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", plain.out);
+  assert.equal(parseReport(plain.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", plain.out);
 
   const cup = checkModule([materialize(t, { merge: { "module.json": { id: "pf2e-fixture", title: "PF2e Baron Fixture" } } })]);
   assert.equal(cup.status, 0, cup.out);
-  assert.equal(parseReport(cup.out).summary, "check-module: 10 passed, 0 warnings, 0 failed", cup.out);
+  assert.equal(parseReport(cup.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", cup.out);
 });
 
 test("[l] NOTICE.md must have that exact name: Linux hosts and GitHub links are case-sensitive", (t) => {
@@ -432,7 +438,7 @@ const paidAddon = (t, { baron = {}, moduleJson = {} } = {}) =>
 test("[m] a public module prints nothing for it and is not counted, whatever its landingUrl", (t) => {
   const valid = checkModule([VALID_MODULE]);
   assert.ok(!valid.out.includes("[m]"), valid.out);
-  assert.equal(parseReport(valid.out).summary, "check-module: 10 passed, 0 warnings, 0 failed");
+  assert.equal(parseReport(valid.out).summary, "check-module: 11 passed, 0 warnings, 0 failed");
   // The template gives every module "landingUrl": "", and a public one never uses it.
   for (const landingUrl of ["", "http://www.example.com", "https://github.com/BaronHVC/baron-fixture"]) {
     const res = checkModule([materialize(t, { merge: { "baron.json": { landingUrl } } })]);
@@ -446,7 +452,7 @@ test("[m] a paid add-on with an https landing page that requires its base passes
   const r = parseReport(res.out);
   assert.equal(res.status, 0, res.out);
   assert.deepEqual(mLines(r, "PASS"), [`PASS   [m] protected packaging: landing page ${LANDING_URL}, requires baron-fixture-base`], res.out);
-  assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
+  assert.equal(r.summary, "check-module: 12 passed, 0 warnings, 0 failed", res.out);
 });
 
 test("[m] a missing, empty, malformed, non-https or GitHub landingUrl fails on baron.json", (t) => {
@@ -498,7 +504,7 @@ test("[m] without a module in relationships.requires it only warns: a freemium a
 
   // Without "type" an entry is a module, Foundry's default.
   const untyped = checkModule([paidAddon(t, { moduleJson: { relationships: { requires: [{ id: "baron-fixture-base" }] } } })]);
-  assert.equal(parseReport(untyped.out).summary, "check-module: 11 passed, 0 warnings, 0 failed", untyped.out);
+  assert.equal(parseReport(untyped.out).summary, "check-module: 12 passed, 0 warnings, 0 failed", untyped.out);
 });
 
 test("[m] GitHub links the protected release would refuse fail with their JSON paths; url, manifest and download do not", (t) => {
@@ -533,4 +539,148 @@ test("[m] the base's GitHub manifest in requires fails on its own terms: list th
   assert.deepEqual(mLines(r, "FAIL"), [
     "FAIL   [m] protected packaging: relationships.requires[0].manifest link to GitHub: the protected release refuses every GitHub link, a dependency's manifest included; remove it and list that module on foundryvtt.com, where Foundry finds a dependency by its id alone (module.json)",
   ]);
+});
+
+/* ----------------------------------------------------------------------------
+ * [n] human text. Foundry's AI policy wants UI labels and listing text written
+ * by a person: a Claude session leaves "TODO-HUMANO: <what it should say>" as
+ * the value, every push warns and the tag build (--release) fails.
+ * -------------------------------------------------------------------------- */
+
+const nLines = (r, level) => r.lines.filter((l) => l.startsWith(`${level.padEnd(6)} [n]`));
+const todo = (what) => `TODO-HUMANO: ${what}`;
+const PUSH_REASON = "a person writes them before tagging, the release refuses them (Foundry's AI policy)";
+const RELEASE_REASON = "Foundry's AI policy wants UI and listing text written by a person; write them and tag again";
+const nLine = (level, count, keys, reason, file) =>
+  `${level.padEnd(6)} [n] human text: ${count} value(s) still start with "TODO-HUMANO:" (${keys}): ${reason} (${file})`;
+
+// Placeholders in both language files and in the listing fields, one of them
+// indented and one after a newline and a tab: leading whitespace is trimmed.
+const HUMAN_SPEC = {
+  merge: {
+    "module.json": { title: todo("module name"), description: `  ${todo("one-sentence summary for the package listing")}` },
+    "lang/en.json": { "baron-fixture.Open": todo("label of the button that opens the panel"), "baron-fixture.Notice": `\n\t${todo("notice")}` },
+    "lang/es.json": { "baron-fixture.Open": todo("traducir la etiqueta de en.json") },
+  },
+};
+
+test("[n] a module without placeholders passes, with or without --release", () => {
+  for (const args of [[VALID_MODULE], [VALID_MODULE, "--release"]]) {
+    const res = checkModule(args);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 0, res.out);
+    assert.deepEqual(nLines(r, "PASS"), ["PASS   [n] human text: no TODO-HUMANO placeholders in 2 language file(s) or in module.json title and description"], res.out);
+    assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
+  }
+});
+
+test("[n] placeholders in lang files and in module.json warn on a push, one line per file", (t) => {
+  const res = checkModule([materialize(t, HUMAN_SPEC)]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  assert.deepEqual([...r.fail], [], res.out);
+  assert.deepEqual([...r.warn], ["n"], res.out);
+  assert.deepEqual(nLines(r, "WARN"), [
+    nLine("WARN", 2, "title, description", PUSH_REASON, "module.json"),
+    nLine("WARN", 2, "baron-fixture.Open, baron-fixture.Notice", PUSH_REASON, "lang/en.json"),
+    nLine("WARN", 1, "baron-fixture.Open", PUSH_REASON, "lang/es.json"),
+  ]);
+  assert.equal(r.summary, "check-module: 10 passed, 1 warnings, 0 failed", res.out);
+});
+
+test("[n] --release turns the same placeholders into failures", (t) => {
+  const res = checkModule([materialize(t, HUMAN_SPEC), "--release"]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["n"], res.out);
+  assert.deepEqual([...r.warn], [], res.out);
+  assert.deepEqual(nLines(r, "FAIL"), [
+    nLine("FAIL", 2, "title, description", RELEASE_REASON, "module.json"),
+    nLine("FAIL", 2, "baron-fixture.Open, baron-fixture.Notice", RELEASE_REASON, "lang/en.json"),
+    nLine("FAIL", 1, "baron-fixture.Open", RELEASE_REASON, "lang/es.json"),
+  ]);
+  assert.equal(r.summary, "check-module: 10 passed, 0 warnings, 1 failed", res.out);
+  assert.ok(r.lines[0].endsWith(" --release"), r.lines[0]);
+});
+
+test("[n] under GitHub Actions each file becomes a warning annotation on a push and an error with --release", (t) => {
+  const dir = materialize(t, HUMAN_SPEC);
+  const env = childEnv({ GITHUB_ACTIONS: "true" });
+  const annotations = (out, command) => out.split(/\r?\n/).filter((l) => l.startsWith(`::${command} `) && l.includes("[n]"));
+
+  const push = checkModule(["."], { cwd: dir, env });
+  assert.equal(push.status, 0, push.out);
+  assert.deepEqual(annotations(push.out, "warning"), [
+    `::warning file=module.json,title=check-module [n] human text::2 value(s) still start with "TODO-HUMANO:" (title, description): ${PUSH_REASON}`,
+    `::warning file=lang/en.json,title=check-module [n] human text::2 value(s) still start with "TODO-HUMANO:" (baron-fixture.Open, baron-fixture.Notice): ${PUSH_REASON}`,
+    `::warning file=lang/es.json,title=check-module [n] human text::1 value(s) still start with "TODO-HUMANO:" (baron-fixture.Open): ${PUSH_REASON}`,
+  ]);
+
+  const release = checkModule([".", "--release"], { cwd: dir, env });
+  assert.equal(release.status, 1, release.out);
+  assert.equal(annotations(release.out, "error").length, 3, release.out);
+  assert.ok(annotations(release.out, "error")[0].startsWith("::error file=module.json,title=check-module [n] human text::2 value(s)"), release.out);
+  assert.deepEqual(annotations(release.out, "warning"), [], release.out);
+});
+
+test("[n] nested language objects are scanned and report the dotted key Foundry flattens them to", (t) => {
+  const nested = (open, line) =>
+    JSON.stringify(
+      {
+        "baron-fixture": {
+          Title: "Baron Fixture",
+          Open: open,
+          Notice: "Notice",
+          Kind_a: "Kind A",
+          Kind_b: "Kind B",
+          Unused: "Never referenced",
+          Help: { Deep: { Line: line } },
+        },
+      },
+      null,
+      2,
+    ) + "\n";
+  const dir = materialize(t, { write: { "lang/en.json": nested(todo("button label"), todo("help line")), "lang/es.json": nested("Abrir", "Ayuda") } });
+  const res = checkModule([dir, "--release"]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 1, res.out);
+  assert.deepEqual([...r.fail], ["n"], res.out);
+  assert.deepEqual(nLines(r, "FAIL"), [nLine("FAIL", 2, "baron-fixture.Open, baron-fixture.Help.Deep.Line", RELEASE_REASON, "lang/en.json")]);
+});
+
+test("[n] only a value that starts with the marker counts: mid-text or lowercase is real text", (t) => {
+  const dir = materialize(t, {
+    merge: {
+      "module.json": { description: `Leave ${todo("what it should say")} as the value and a person writes it.` },
+      "lang/en.json": { "baron-fixture.Open": "todo-humano: lowercase is not the marker", "baron-fixture.Notice": `Notice ${todo("quoted")}` },
+    },
+  });
+  for (const args of [[dir], [dir, "--release"]]) {
+    const res = checkModule(args);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 0, res.out);
+    assert.equal(nLines(r, "PASS").length, 1, res.out);
+    assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
+  }
+});
+
+test("[n] a file with more than five placeholders names five keys and counts the rest", (t) => {
+  const keys = ["A", "B", "C", "D", "E", "F", "G"].map((k) => `baron-fixture.Extra${k}`);
+  const dir = materialize(t, {
+    merge: {
+      "lang/en.json": Object.fromEntries(keys.map((k) => [k, todo(k)])),
+      "lang/es.json": Object.fromEntries(keys.map((k) => [k, "Texto"])),
+    },
+  });
+  const res = checkModule([dir]);
+  const sample = `${keys.slice(0, 5).join(", ")}, ... +2 more`;
+  assert.deepEqual(nLines(parseReport(res.out), "WARN"), [nLine("WARN", 7, sample, PUSH_REASON, "lang/en.json")], res.out);
+});
+
+test("[n] the release workflow runs check-module with --release, the push workflow without it", () => {
+  const runs = (wf) => readText(REPO, ".github", "workflows", wf).split(/\r?\n/).filter((l) => /^\s*run:.*\/check-module\.mjs\b/.test(l));
+  const release = runs("module-release.yml");
+  assert.ok(release.length && release.every((l) => /\s--release(?:\s|$)/.test(l)), release.join("\n"));
+  const push = runs("module-check.yml");
+  assert.ok(push.length && push.every((l) => !l.includes("--release")), push.join("\n"));
 });

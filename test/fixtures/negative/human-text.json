@@ -1,0 +1,6 @@
+{
+  "description": "a lang value is still a TODO-HUMANO placeholder (a push only warns; --release fails)",
+  "warns": "n",
+  "message": "1 value(s) still start with \"TODO-HUMANO:\" (baron-fixture.Notice)",
+  "merge": { "lang/en.json": { "baron-fixture.Notice": "TODO-HUMANO: notice shown in the panel" } }
+}

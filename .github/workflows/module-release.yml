@@ -131,9 +131,12 @@ jobs:
       # check-module: copia del core contra el lock, imports, claves i18n,
       # identificadores persistidos, placeholders, la licencia de Paizo
       # (baron.json paizo contra el modo y NOTICE.md) y, en mode protected, la
-      # landingUrl y el requires a la base gratuita (revision m).
-      - name: Validar que las fuentes no esten rotas (check-module --online)
-        run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online
+      # landingUrl y el requires a la base gratuita (revision m). Con --release,
+      # un valor de lang/*.json o el title/description de module.json que
+      # todavia empieza con TODO-HUMANO: falla (revision n): la politica de IA
+      # de Foundry pide texto escrito por una persona. En cada push solo avisa.
+      - name: Validar que las fuentes no esten rotas (check-module --online --release)
+        run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online --release
 
       - name: Leer la version desde la etiqueta
         id: v

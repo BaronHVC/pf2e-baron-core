@@ -87,6 +87,7 @@ node ../pf2e-baron-core/tools/sync-core.mjs --watch
 node ../pf2e-baron-core/tools/check-module.mjs
 node ../pf2e-baron-core/tools/check-module.mjs --online     # además compara el lock con este repo
 node ../pf2e-baron-core/tools/check-module.mjs --parity warn
+node ../pf2e-baron-core/tools/check-module.mjs --online --release   # lo mismo que la CI de la etiqueta
 
 # Lo que module-release escribiría en module.json. Reescribe el archivo que le
 # pasas: úsalo sobre una copia (en CI lo corre el workflow)
@@ -124,9 +125,25 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
 | l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, aviso por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta) y aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`) |
 | m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a GitHub (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto ni clave de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona GitHub (FAIL: el release protegido lo rechazaría de todos modos, así que falla ya en cada push y no hasta la etiqueta). GitHub es `github.com` y sus subdominios, `githubusercontent.com` (archivos crudos y adjuntos de releases) y `github.io` (Pages), también con escapes `%2E`: todos pueden nombrar el repo privado. En un módulo `public` no imprime nada |
+| n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
+
+`--release` es para el build de la etiqueta: lo que un push todavía puede
+llevar pasa de WARN a FAIL. Hoy es solo la revisión `n`. `module-release` lo
+pasa (público y protegido); `module-check`, en cada push, no.
+
+**Textos humanos (`n`).** La política de IA de Foundry pide que las etiquetas
+de la interfaz y el texto preparado los escriba una persona. Una sesión de
+Claude nunca escribe valores de `lang/*.json`, texto de chat, la descripción de
+`module.json` ni el texto del listado: agrega la clave con el valor
+`TODO-HUMANO: <qué debe decir>` y el autor lo llena. Cuenta solo un valor que
+*empieza* con `TODO-HUMANO:` (tras quitar los espacios iniciales; con
+mayúsculas exactas): un texto que lo cita a media frase es texto real. Cada
+archivo con pendientes da una línea con cuántos son y hasta cinco claves
+(`baron-fixture.Open`, `title`, `description`), con la ruta anidada aplanada
+con puntos como lo hace Foundry.
 
 ## Workflows reutilizables
 
@@ -153,7 +170,9 @@ jobs:
 - El pin es un commit completo, el mismo de `baron-core.lock.json`: nada se mueve
   bajo un módulo. Recibir un arreglo del pipeline = resincronizar el core.
 - Ambos workflows hacen checkout de este repo **en el commit del lock** (con
-  etiquetas) y corren `check-module --online` antes de cualquier otra cosa.
+  etiquetas) y corren `check-module --online` antes de cualquier otra cosa;
+  `module-release` le agrega `--release`, así que un `TODO-HUMANO:` que en cada
+  push solo avisa (revisión `n`) detiene la etiqueta.
 - Por eso **solo sirven a un módulo que ya vendoriza el core**: sin
   `baron-core.lock.json` fallan de inmediato, aunque `check-module` local pase
   (sin copia ni lock, [e] y [f] se saltan). Un módulo existente que todavía no
@@ -264,9 +283,11 @@ que instala el complemento no tiene de dónde bajar la base.
 1. `Leer baron.json` falla si el repo no es privado
    (`github.event.repository.private`): los archivos de un release de un repo
    público los descarga cualquiera.
-2. `check-module --online`, con la revisión `m` (`landingUrl`, la base en
-   `requires`, ningún enlace a GitHub). La misma revisión corre en cada push, así
-   que lo que haría fallar el release ya sale en rojo antes de etiquetar.
+2. `check-module --online --release`, con la revisión `m` (`landingUrl`, la
+   base en `requires`, ningún enlace a GitHub). La misma revisión corre en cada
+   push, así que lo que haría fallar el release ya sale en rojo antes de
+   etiquetar. Un `TODO-HUMANO:` pendiente (revisión `n`) solo avisa en el push y
+   aquí falla.
 3. `release-manifest.mjs --mode protected` reescribe `module.json`:
    `"protected": true`, sin `download`, `manifest` =
    `https://r2.foundryvtt.com/packages-public/<id>/module.json` (el que sirve
