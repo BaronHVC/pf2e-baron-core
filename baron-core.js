@@ -26,7 +26,7 @@
  * `version` field of the consuming module's baron-core.lock.json.
  * @type {string}
  */
-export const CORE_VERSION = "1.2.0";
+export const CORE_VERSION = "1.3.0";
 
 /* -------------------------------------------------------------------------- */
 /*  i18n                                                                      */
