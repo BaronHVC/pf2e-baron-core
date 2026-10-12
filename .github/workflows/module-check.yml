@@ -94,7 +94,10 @@ jobs:
       # "node --test" a secas, que tambien cargaria fixtures y helpers. Sin
       # pruebas, solo un aviso. Una prueba roja tumba el job y sale como
       # anotacion publica: el log del job solo lo bajan los admins del repo.
+      # Con tope de 15 minutos: una prueba que deja un timer o un servidor
+      # abierto nunca termina, y sin tope el job esperaria las 6 h de GitHub.
       # module-release corre el mismo paso antes de publicar.
       - name: Pruebas del modulo
         if: steps.lock.outputs.run == 'true'
+        timeout-minutes: 15
         run: node .baron-core/.github/scripts/run-module-tests.mjs .

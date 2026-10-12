@@ -9,9 +9,13 @@
 //   1. package.json with a non-empty "test" script: `npm test`. Before it,
 //      only when package.json declares dependencies or devDependencies:
 //      `npm ci` with a lockfile, `npm install --no-audit --no-fund` without.
+//      The placeholder `npm init` writes (`echo "Error: no test specified" &&
+//      exit 1`) is no test script: a ::notice:: and on to 2.
 //   2. Files named *.test.mjs or *.test.js anywhere under test/ or tests/:
 //      `node --test` with that explicit list. A bare `node --test` would also
-//      load fixtures and helpers.
+//      load fixtures and helpers. Node 22+ reads each argument as a glob, so a
+//      path with a glob character (* ? [ ] { } ( ) ! + @ \) could match nothing
+//      and pass with 0 tests: such a path fails the run and asks for a rename.
 //   3. Neither: a ::notice:: and exit 0.
 //
 // Tests run in the module folder, so `../scripts/*.js` imports (the vendored
@@ -32,9 +36,16 @@ const TEST_DIRS = ["test", "tests"];
 const TEST_FILE = /\.test\.m?js$/;
 const LOCKFILES = ["package-lock.json", "npm-shrinkwrap.json"];
 const TITLE = "module tests";
+// What node --test's glob could read as a pattern instead of a literal path:
+// wildcards, classes, braces, extglobs such as +(x) @(x) !(x), and the escape.
+const GLOB_CHAR = /[*?[\]{}()!+@\\]/;
+// The "test" script `npm init` (and `pnpm init`) writes: a script that only fails.
+const NPM_PLACEHOLDER = /^echo ["']?Error: no test specified["']? && exit 1$/;
 
-// Workflow commands treat %, CR and LF specially in the message part.
+// Workflow commands treat %, CR and LF specially in the message part, and
+// also : and , in a property such as file=.
 const esc = (s) => String(s).replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+const escProp = (s) => esc(s).replace(/:/g, "%3A").replace(/,/g, "%2C");
 
 /**
  * Test files under test/ and tests/ of `root`, as sorted forward-slash paths
@@ -71,11 +82,14 @@ const hasEntries = (v) => v !== null && typeof v === "object" && !Array.isArray(
  *   { kind: "npm", install: null | string[] }  npm test, after `npm <install>`
  *   { kind: "node", files: string[] }          node --test <files>
  *   { kind: "none" }
+ * The last two carry `placeholder: true` when package.json's "test" is npm's
+ * placeholder, which is ignored.
  * Throws when package.json exists but is not a JSON object: without reading it
  * there is no way to know whether the module declares its own test command.
  */
 export function planTests(root) {
   const pkgPath = path.join(root, "package.json");
+  let placeholder = false;
   if (fs.existsSync(pkgPath)) {
     let pkg;
     try {
@@ -85,7 +99,8 @@ export function planTests(root) {
     }
     if (pkg === null || typeof pkg !== "object" || Array.isArray(pkg)) throw new Error("package.json is not a JSON object");
     const script = pkg.scripts?.test;
-    if (typeof script === "string" && script.trim() !== "") {
+    placeholder = typeof script === "string" && NPM_PLACEHOLDER.test(script.trim());
+    if (typeof script === "string" && script.trim() !== "" && !placeholder) {
       let install = null;
       if (hasEntries(pkg.dependencies) || hasEntries(pkg.devDependencies)) {
         install = LOCKFILES.some((f) => fs.existsSync(path.join(root, f))) ? ["ci"] : ["install", "--no-audit", "--no-fund"];
@@ -94,7 +109,8 @@ export function planTests(root) {
     }
   }
   const files = findTestFiles(root);
-  return files.length ? { kind: "node", files } : { kind: "none" };
+  const plan = files.length ? { kind: "node", files } : { kind: "none" };
+  return placeholder ? { ...plan, placeholder } : plan;
 }
 
 /**
@@ -123,6 +139,9 @@ function npm(args, cwd, env) {
 /** Runs `plan` in `root` and returns the exit code. */
 export function runPlan(plan, root, { tap } = {}) {
   const env = childEnv();
+  if (plan.placeholder) {
+    console.log(`::notice file=package.json,title=${TITLE}::the "test" script of package.json is the placeholder npm init writes, which only fails; ignored as if there were no "test" script`);
+  }
   if (plan.kind === "none") {
     console.log(`::notice title=${TITLE}::no tests found: package.json has no "test" script and there is no *.test.mjs or *.test.js under test/ or tests/`);
     return 0;
@@ -141,6 +160,11 @@ export function runPlan(plan, root, { tap } = {}) {
     if (status !== 0) console.log(`::error file=package.json,title=${TITLE}::npm test failed with exit code ${status}`);
     return status;
   }
+  const globby = plan.files.filter((f) => GLOB_CHAR.test(f));
+  for (const f of globby) {
+    console.log(`::error file=${escProp(f)},title=${TITLE}::${esc(`node --test reads ${f} as a glob pattern, which may match nothing and pass with 0 tests; rename it without * ? [ ] { } ( ) ! + @ or \\`)}`);
+  }
+  if (globby.length) return 1;
   const own = !tap;
   const tapFile = tap ?? path.join(process.env.RUNNER_TEMP || os.tmpdir(), `module-tests-${process.pid}.tap`);
   console.log(`run-module-tests: node --test on ${plan.files.length} file(s): ${plan.files.join(" ")}`);

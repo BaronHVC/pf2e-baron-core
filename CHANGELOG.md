@@ -16,16 +16,31 @@ tengan que resincronizar.
   checkout del módulo (los `import` de `../scripts/*.js` resuelven como en
   local). Corre lo primero que encuentre: el script `test` de `package.json`
   con `npm test` (antes `npm ci` con lockfile o `npm install --no-audit
-  --no-fund` sin él, solo si declara `dependencies` o `devDependencies`); si
-  no, `node --test` con la lista explícita de `*.test.mjs` y `*.test.js` bajo
-  `test/` y `tests/` (nunca a secas: no carga `fixtures/` ni `helpers/`); sin
-  ninguno, un aviso «no tests found» y pasa. Una prueba roja tumba el job y,
-  con `node --test`, sale como anotación pública vía `tap-annotate.mjs`. En
+  --no-fund` sin él, solo si declara `dependencies` o `devDependencies`; el
+  `echo "Error: no test specified" && exit 1` que deja `npm init` cuenta como
+  si no hubiera script, con un aviso); si no, `node --test` con la lista
+  explícita de `*.test.mjs` y `*.test.js` bajo `test/` y `tests/` (nunca a
+  secas: de `fixtures/` y `helpers/` solo corre lo que termina en `.test.mjs`
+  o `.test.js`); sin ninguno, un aviso «no tests found» y pasa. Node 22+ lee
+  esa lista como globs, así que un archivo de prueba con `* ? [ ] { } ( ) ! +
+  @` o `\` en la ruta falla el paso y pide renombrarlo, en vez de pasar con 0
+  pruebas. Una prueba roja tumba el job y, con `node --test`, sale como
+  anotación pública vía `tap-annotate.mjs`. El paso tiene un tope de 15
+  minutos: una prueba que deja un timer abierto ya no cuelga el job 6 h. En
   `module-release` el paso va antes de reescribir `module.json` y de armar el
   ZIP, así que una etiqueta con una prueba roja no publica. Un `package.json`
   que no se puede leer falla el paso en vez de saltarse las pruebas. Un módulo
   lo recibe al resincronizar con la próxima etiqueta del core; las funciones
   de `baron-core.js` no cambian.
+
+### Changed
+
+- `tap-annotate.mjs`: la anotación de una prueba roja se corta en el fin de su
+  bloque YAML (ya no arrastra el plan ni el resumen del TAP) y, cuando un
+  archivo de prueba no carga o truena fuera de una prueba (solo dice `'test
+  failed'`), agrega lo que el archivo imprimió, sin los marcos internos de
+  node: la causa, como `ERR_MODULE_NOT_FOUND`, ya no se queda en el log que
+  solo bajan los admins.
 
 ## [1.3.0] - 2026-10-11
 

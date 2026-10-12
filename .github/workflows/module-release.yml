@@ -146,8 +146,9 @@ jobs:
       # reescribir module.json y de armar el ZIP: una etiqueta con una prueba
       # roja no publica, ni en mode public ni en protected. Corren sobre el
       # checkout tal cual esta en la etiqueta, y su reporte TAP va a
-      # RUNNER_TEMP, fuera de lo que se empaca.
+      # RUNNER_TEMP, fuera de lo que se empaca. El mismo tope de 15 minutos.
       - name: Pruebas del modulo
+        timeout-minutes: 15
         run: node .baron-core/.github/scripts/run-module-tests.mjs .
 
       - name: Leer la version desde la etiqueta

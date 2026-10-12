@@ -202,12 +202,15 @@ jobs:
   1. un script `test` en `package.json`: `npm test`. Antes, solo si
      `package.json` declara `dependencies` o `devDependencies`, `npm ci` (con
      `package-lock.json` o `npm-shrinkwrap.json`) o `npm install --no-audit
-     --no-fund` (sin lockfile);
+     --no-fund` (sin lockfile). El `echo "Error: no test specified" && exit 1`
+     que deja `npm init` no cuenta: un aviso y sigue con el punto 2;
   2. si no, `node --test` con la lista explícita de los `*.test.mjs` y
      `*.test.js` bajo `test/` y `tests/`, a cualquier profundidad (sin
      `node_modules` ni carpetas con punto). Nunca un `node --test` a secas, que
      también cargaría `fixtures/` y `helpers/`: lo que no termina en `.test.mjs`
-     o `.test.js` no corre;
+     o `.test.js` no corre. Node 22+ lee cada ruta como glob, así que una con
+     `* ? [ ] { } ( ) ! + @` o `\` podría no encontrar nada y pasar con 0
+     pruebas: el paso falla y pide renombrar ese archivo;
   3. si no hay ninguno de los dos, un aviso «no tests found» y el paso pasa.
 
   Una prueba roja tumba el job. Con `node --test`, cada una sale además como
@@ -215,7 +218,9 @@ jobs:
   admins del repo); con `npm test`, una anotación con el código de salida. En
   `module-release` el paso va antes de reescribir `module.json` y de armar el
   ZIP, en modo público y protegido: una etiqueta con una prueba roja no
-  publica. El reporte TAP va a `RUNNER_TEMP`, fuera de lo que se empaca. Un
+  publica. El paso tiene un tope de 15 minutos: una prueba que deja un timer o
+  un servidor abierto lo tumba ahí, no a las 6 h. El reporte TAP va a
+  `RUNNER_TEMP`, fuera de lo que se empaca. Un
   módulo lo recibe al resincronizar con una etiqueta del core que lo traiga
   (posterior a v1.3.0).
 - Por eso **solo sirven a un módulo que ya vendoriza el core**: sin

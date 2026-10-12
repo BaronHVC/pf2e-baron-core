@@ -126,6 +126,19 @@ test("planTests: a package.json without a usable test script falls back to the t
   }
 });
 
+test("planTests: the placeholder test script of npm init counts as no script", (t) => {
+  const pkg = (test) => JSON.stringify({ name: "m", scripts: { test } });
+  const npmInit = 'echo "Error: no test specified" && exit 1';
+  assert.deepEqual(planTests(makeModule(t, { "package.json": pkg(npmInit), "test/a.test.mjs": "" })), {
+    kind: "node",
+    files: ["test/a.test.mjs"],
+    placeholder: true,
+  });
+  assert.deepEqual(planTests(makeModule(t, { "package.json": pkg(` ${npmInit} `) })), { kind: "none", placeholder: true });
+  // Anything else is the module's own command, even if it echoes and exits.
+  assert.deepEqual(planTests(makeModule(t, { "package.json": pkg('echo "no tests yet" && exit 1') })), { kind: "npm", install: null });
+});
+
 test("planTests: an unreadable package.json is an error, not a silent skip", (t) => {
   assert.throws(() => planTests(makeModule(t, { "package.json": "{ nope" })), /cannot parse package\.json/);
   assert.throws(() => planTests(makeModule(t, { "package.json": "[]" })), /not a JSON object/);
@@ -177,14 +190,44 @@ test("a failing test fails the run and becomes an annotation", (t) => {
   assert.equal(errors.length, 1, res.stdout);
   assert.match(errors[0], /^::error title=FAIL add is wrong on purpose::/);
   assert.match(errors[0], /test\/math\.test\.mjs/);
+  // Only that test's YAML block: not the TAP plan or summary after it.
+  assert.doesNotMatch(errors[0], /%0A1\.\.\d|# tests \d/);
   assert.deepEqual(fs.readdirSync(res.runnerTemp), []);
 });
 
-test("a test file that does not load fails the run too", (t) => {
+test("a test file that does not load fails the run, and the annotation says why", (t) => {
   const dir = makeModule(t, { ...SCRIPTS, "test/broken.test.mjs": 'import { nope } from "../scripts/missing.js";\n' });
   const res = runIn(t, dir);
   assert.equal(res.status, 1, res.out);
-  assert.match(res.stdout, /^::error /m);
+  const errors = res.stdout.split(/\r?\n/).filter((l) => l.startsWith("::error"));
+  assert.equal(errors.length, 1, res.stdout);
+  assert.match(errors[0], /^::error title=FAIL test.+broken\.test\.mjs::/);
+  assert.match(errors[0], /ERR_MODULE_NOT_FOUND/);
+  assert.match(errors[0], /missing\.js/);
+  assert.doesNotMatch(errors[0], /node:internal\/modules\/esm\/loader|# tests \d/);
+});
+
+test("a *.test.mjs under test/fixtures does run, and a throw outside any test shows in the annotation", (t) => {
+  const dir = makeModule(t, { ...SCRIPTS, "test/fixtures/sample.test.mjs": 'throw new Error("fixture loaded as a test");\n' });
+  const res = runIn(t, dir);
+  assert.equal(res.status, 1, res.out);
+  assert.match(res.stdout, /node --test on 1 file\(s\): test\/fixtures\/sample\.test\.mjs/);
+  assert.match(res.stdout, /^::error title=FAIL .*fixture loaded as a test/m);
+});
+
+test("a test file whose path node --test would read as a glob fails the run instead of passing with 0 tests", (t) => {
+  // Node 22+ globs each argument: test/x+(y).test.mjs matches nothing, so the
+  // failing test inside would never run and the run would pass.
+  for (const name of ["test/x+(y).test.mjs", "test/@(x).test.mjs", "test/[a].test.mjs", "test/{a,b}.test.mjs", "test/old (1)/a.test.mjs"]) {
+    const dir = makeModule(t, { ...SCRIPTS, "test/math.test.mjs": PASSING, [name]: FAILING });
+    const res = runIn(t, dir);
+    assert.equal(res.status, 1, `${name}\n${res.out}`);
+    assert.doesNotMatch(res.stdout, /node --test on/, name);
+    const errors = res.stdout.split(/\r?\n/).filter((l) => l.startsWith("::error"));
+    assert.equal(errors.length, 1, `${name}\n${res.stdout}`);
+    assert.ok(errors[0].startsWith(`::error file=${name.replace(/,/g, "%2C")},title=module tests::`), errors[0]);
+    assert.match(errors[0], /rename it/);
+  }
 });
 
 test("--tap keeps the TAP report where asked", (t) => {
@@ -234,6 +277,19 @@ test("a package.json test script runs with npm test, instead of the test files",
   assert.doesNotMatch(res.stdout, /node --test on/);
 });
 
+test("the placeholder test script of npm init is ignored with a notice, and the test files run", (t) => {
+  const dir = makeModule(t, {
+    ...SCRIPTS,
+    "package.json": JSON.stringify({ name: "fixture-mod", scripts: { test: 'echo "Error: no test specified" && exit 1' } }),
+    "test/math.test.mjs": PASSING,
+  });
+  const res = runIn(t, dir);
+  assert.equal(res.status, 0, res.out);
+  assert.match(res.stdout, /^::notice file=package\.json,title=module tests::the "test" script of package\.json is the placeholder npm init writes/m);
+  assert.match(res.stdout, /node --test on 1 file\(s\): test\/math\.test\.mjs/);
+  assert.doesNotMatch(res.stdout, /run-module-tests: npm test|^::error/m);
+});
+
 test("a failing npm test fails the run with an annotation", (t) => {
   const dir = makeModule(t, {
     ...SCRIPTS,
@@ -277,6 +333,7 @@ test("module-check.yml runs the module tests right after check-module, with the 
   const tests = indexOf(list, RUN_TESTS);
   assert.ok(check >= 0 && tests === check + 1, `check-module step ${check}, tests step ${tests}`);
   assert.match(list[tests], /^ {8}if: steps\.lock\.outputs\.run == 'true'$/m);
+  assert.match(list[tests], /^ {8}timeout-minutes: 15$/m);
   assert.doesNotMatch(list[tests], /continue-on-error/);
 });
 
@@ -287,6 +344,8 @@ test("module-release.yml runs the module tests after check-module and before mod
   assert.ok(check >= 0 && tests === check + 1, `check-module step ${check}, tests step ${tests}`);
   // Unconditional: public and protected alike, and never allowed to fail.
   assert.doesNotMatch(list[tests], /^ {8}if:|continue-on-error/m);
+  // A test that leaves a handle open ends here, not at GitHub's 6 h.
+  assert.match(list[tests], /^ {8}timeout-minutes: 15$/m);
   for (const later of [/release-manifest\.mjs/, /zip -r/, /gh release/, /GITHUB_REF_NAME/]) {
     const at = indexOf(list, later);
     assert.ok(at > tests, `${later} at step ${at}, tests at ${tests}`);
