@@ -1,6 +1,6 @@
-// Helpers shared by sync-core.mjs, check-module.mjs and release-manifest.mjs.
-// Node built-ins and git only: the tools run on a dev's Windows box and on the
-// Linux CI runner, with no npm install in between.
+// Helpers shared by sync-core.mjs, check-module.mjs, release-manifest.mjs and
+// sign-text.mjs. Node built-ins and git only: the tools run on a dev's Windows
+// box and on the Linux CI runner, with no npm install in between.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -418,6 +418,38 @@ export function signatureStatus(texts, signed) {
     else status = recorded === null ? "unsigned" : "changed";
     return { ...t, status };
   });
+}
+
+/**
+ * Signatures for a file and key that no longer hold a text.
+ * @param {{ file: string, key: string }[]} texts
+ * @param {object} signed
+ * @returns {{ file: string, key: string }[]}
+ */
+export function staleSignatures(texts, signed) {
+  const live = new Set(texts.map((t) => JSON.stringify([t.file, t.key])));
+  return Object.entries(signed).flatMap(([file, keys]) =>
+    Object.keys(keys).filter((key) => !live.has(JSON.stringify([file, key]))).map((key) => ({ file, key })),
+  );
+}
+
+/**
+ * human-text.json text: keys sorted at every level, 2-space indent, LF and a
+ * trailing newline, so signing the same texts again produces no diff. Written
+ * by hand rather than with JSON.stringify(obj, null, 2), which would put a key
+ * that looks like an array index ("2", "10") first whatever the sort says.
+ * @param {object} signed file -> key -> sha256
+ * @returns {string}
+ */
+export function signaturesText(signed) {
+  const write = (value, indent) => {
+    if (!isPlainObject(value)) return JSON.stringify(value);
+    const keys = Object.keys(value).sort();
+    if (!keys.length) return "{}";
+    const inner = `${indent}  `;
+    return `{\n${keys.map((k) => `${inner}${JSON.stringify(k)}: ${write(value[k], inner)}`).join(",\n")}\n${indent}}`;
+  };
+  return `${write({ version: HUMAN_TEXT_VERSION, signed }, "")}\n`;
 }
 
 const REGEX_KEYWORDS = new Set([
