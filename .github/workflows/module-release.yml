@@ -223,7 +223,8 @@ jobs:
           # Solo lo que Foundry carga, mas la licencia y los avisos legales, y
           # solo lo que este modulo tenga. MIT y ORC exigen que el aviso viaje
           # con cada copia, y el ZIP es la copia que reciben los usuarios. Nunca
-          # entran .baron-core, tools, baron.json, baron-core.lock.json ni .github;
+          # entran .baron-core, tools, baron.json, baron-core.lock.json, .github
+          # ni human-text.json (las firmas de los textos, solo para check-module);
           # la copia del core viaja dentro de scripts/.
           PARTS=()
           for p in module.json scripts styles templates lang packs LICENSE NOTICE.md; do

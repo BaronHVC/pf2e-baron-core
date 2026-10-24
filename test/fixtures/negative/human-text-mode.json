@@ -1,0 +1,6 @@
+{
+  "description": "baron.json humanText is a typo: it fails instead of switching the human-text lock off",
+  "fails": "c",
+  "message": "humanText must be \"markers\" or \"signed\", not \"Signed\"",
+  "merge": { "baron.json": { "humanText": "Signed" } }
+}

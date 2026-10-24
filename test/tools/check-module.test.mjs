@@ -2,6 +2,7 @@
 // negative case fails (or warns) on exactly the check it targets.
 
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
@@ -851,4 +852,220 @@ test("[n] the release workflow runs check-module with --release, the push workfl
   assert.ok(release.length && release.every((l) => /\s--release(?:\s|$)/.test(l)), release.join("\n"));
   const push = runs("module-check.yml");
   assert.ok(push.length && push.every((l) => !l.includes("--release")), push.join("\n"));
+});
+
+/* ----------------------------------------------------------------------------
+ * [n] with baron.json "humanText": "signed": every text of the declared
+ * language files and the module.json title and description needs the author's
+ * signature in human-text.json (tools/sign-text.mjs). Without the field, or
+ * with "markers", nothing changes.
+ * -------------------------------------------------------------------------- */
+
+// Independent oracle: sha256 of the exact UTF-8 bytes.
+const textHash = (s) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
+
+/** human-text.json signing every text of `dir` as it is now, then `edit(signed)`. */
+function signFixture(dir, edit = () => {}) {
+  const json = (...p) => JSON.parse(fs.readFileSync(path.join(dir, ...p), "utf8"));
+  const m = json("module.json");
+  const files = { "module.json": { title: m.title, description: m.description }, "lang/en.json": json("lang", "en.json"), "lang/es.json": json("lang", "es.json") };
+  const signed = Object.fromEntries(
+    Object.entries(files).map(([f, keys]) => [f, Object.fromEntries(Object.entries(keys).filter(([, v]) => typeof v === "string").map(([k, v]) => [k, textHash(v)]))]),
+  );
+  edit(signed);
+  fs.writeFileSync(path.join(dir, "human-text.json"), JSON.stringify({ version: 1, signed }, null, 2) + "\n");
+  return dir;
+}
+
+const locked = (t, spec = {}) => materialize(t, { ...spec, merge: { ...(spec.merge ?? {}), "baron.json": { humanText: "signed" } } });
+const LOCK_PUSH = "the author rewrites each one from scratch and signs it at a terminal with sign-text --sign before tagging; the release refuses them (Foundry's AI policy)";
+const LOCK_RELEASE = "the release does not publish text that a person has not written and signed (Foundry's AI policy); rewrite each one from scratch, sign it with sign-text --sign and tag again";
+const lockHead = (level, count, reason, missing = false) =>
+  `${level.padEnd(6)} [n] human text: ${count} text(s) lack a valid signature in human-text.json${missing ? " (there is no such file yet)" : ""}: ${reason}`;
+const lockLine = (level, what, key, file) => `${level.padEnd(6)} [n] human text: ${what}: ${key} (${file})`;
+const PASS_N = "PASS   [n] human text: no TODO-HUMANO placeholders in 2 language file(s) or in module.json title and description";
+// The output without its first line, which names the temp folder.
+const body = (out) => out.split(/\r?\n/).slice(1).join("\n");
+
+test('[n] without humanText, or with "markers", the output is what it always was, whatever human-text.json holds', (t) => {
+  for (const args of [[], ["--release"]]) {
+    for (const spec of [{}, HUMAN_SPEC]) {
+      const plain = checkModule([materialize(t, spec), ...args]);
+      for (const extra of [
+        { merge: { "baron.json": { humanText: "markers" } } },
+        { write: { "human-text.json": "{ not json" } },
+        { merge: { "baron.json": { humanText: "markers" } }, write: { "human-text.json": '{"version": 9}' } },
+      ]) {
+        const res = checkModule([materialize(t, { ...spec, ...extra, merge: { ...spec.merge, ...extra.merge } }), ...args]);
+        assert.equal(res.status, plain.status, res.out);
+        assert.equal(body(res.out), body(plain.out), `${JSON.stringify(extra)} ${args}\n${res.out}`);
+      }
+    }
+  }
+  // And the plain fixture still prints the PASS line it always printed.
+  assert.ok(checkModule([VALID_MODULE]).out.split(/\r?\n/).includes(PASS_N));
+});
+
+test("[n] with every text signed passes, with or without --release, and says how many are signed", (t) => {
+  const dir = signFixture(locked(t));
+  for (const args of [[dir], [dir, "--release"]]) {
+    const res = checkModule(args);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 0, res.out);
+    assert.deepEqual(nLines(r, "PASS"), [`${PASS_N}; 14 text(s) signed in human-text.json`], res.out);
+    assert.equal(r.summary, "check-module: 11 passed, 0 warnings, 0 failed", res.out);
+  }
+});
+
+test("[n] an unsigned text and one changed after signing warn on a push, naming file and key; --release fails them", (t) => {
+  const dir = signFixture(locked(t, { merge: { "lang/es.json": { "baron-fixture.Open": "Abrir el panel" } } }), (signed) => {
+    delete signed["module.json"].description;
+    signed["lang/es.json"]["baron-fixture.Open"] = textHash("Abrir");
+  });
+  const push = checkModule([dir]);
+  const pr = parseReport(push.out);
+  assert.equal(push.status, 0, push.out);
+  assert.deepEqual([...pr.warn], ["n"], push.out);
+  assert.deepEqual(nLines(pr, "WARN"), [
+    lockHead("WARN", 2, LOCK_PUSH),
+    lockLine("WARN", "unsigned", "description", "module.json"),
+    lockLine("WARN", "changed since it was signed", "baron-fixture.Open", "lang/es.json"),
+  ]);
+  assert.equal(pr.summary, "check-module: 10 passed, 1 warnings, 0 failed", push.out);
+
+  const release = checkModule([dir, "--release"]);
+  const rr = parseReport(release.out);
+  assert.equal(release.status, 1, release.out);
+  assert.deepEqual([...rr.fail], ["n"], release.out);
+  assert.deepEqual(nLines(rr, "WARN"), [], release.out);
+  assert.deepEqual(nLines(rr, "FAIL"), [
+    lockHead("FAIL", 2, LOCK_RELEASE),
+    lockLine("FAIL", "unsigned", "description", "module.json"),
+    lockLine("FAIL", "changed since it was signed", "baron-fixture.Open", "lang/es.json"),
+  ]);
+  assert.equal(rr.summary, "check-module: 10 passed, 0 warnings, 1 failed", release.out);
+});
+
+test("[n] a signature is for the exact value: an added space, a CRLF or another case needs a new one", (t) => {
+  for (const changed of ["Open ", " Open", "Open\r\n", "open"]) {
+    const dir = signFixture(locked(t, { merge: { "lang/en.json": { "baron-fixture.Open": changed } } }), (signed) => {
+      signed["lang/en.json"]["baron-fixture.Open"] = textHash("Open");
+    });
+    const r = parseReport(checkModule([dir]).out);
+    assert.deepEqual(nLines(r, "WARN").slice(1), [lockLine("WARN", "changed since it was signed", "baron-fixture.Open", "lang/en.json")], JSON.stringify(changed));
+  }
+});
+
+test("[n] without human-text.json every text counts as unsigned, and the list stops at ten", (t) => {
+  const dir = locked(t);
+  for (const [args, level, reason] of [
+    [[dir], "WARN", LOCK_PUSH],
+    [[dir, "--release"], "FAIL", LOCK_RELEASE],
+  ]) {
+    const res = checkModule(args);
+    const lines = nLines(parseReport(res.out), level);
+    assert.equal(res.status, level === "FAIL" ? 1 : 0, res.out);
+    assert.equal(lines.length, 12, res.out);
+    assert.equal(lines[0], lockHead(level, 14, reason, true));
+    assert.equal(lines[1], lockLine(level, "unsigned", "title", "module.json"));
+    assert.equal(lines[10], lockLine(level, "unsigned", "baron-fixture.Open", "lang/es.json"));
+    assert.equal(lines[11], `${level.padEnd(6)} [n] human text: and 4 more`);
+    assert.ok(!res.out.includes("internal error"), res.out);
+  }
+});
+
+test("[n] a malformed human-text.json fails on every push, not only with --release", (t) => {
+  const h = textHash("x");
+  for (const [text, reason] of [
+    ["{ not json", "human-text.json is not valid JSON"],
+    [`${String.fromCharCode(0xfeff)}{"version": 1, "signed": {}}`, "(the file starts with a UTF-8 BOM)"],
+    ["[]", "human-text.json must hold a JSON object"],
+    ['{"signed": {}}', 'human-text.json has "version" undefined: it must be 1'],
+    ['{"version": 2, "signed": {}}', 'human-text.json has "version" 2: it must be 1'],
+    ['{"version": 1, "signed": []}', 'human-text.json needs "signed" to be an object of files'],
+    ['{"version": 1, "signed": {}, "by": "me"}', 'human-text.json has unknown key(s) "by"'],
+    [`{"version": 1, "signed": {"lang/en.json": {"baron-fixture.Open": "${h.toUpperCase()}"}}}`, 'human-text.json has signed["lang/en.json"]["baron-fixture.Open"] that is not a sha256'],
+  ]) {
+    const res = checkModule([locked(t, { write: { "human-text.json": text } })]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 1, res.out);
+    assert.deepEqual([...r.fail], ["n"], res.out);
+    const fails = nLines(r, "FAIL");
+    assert.equal(fails.length, 1, res.out);
+    assert.ok(fails[0].includes(reason) && fails[0].endsWith("restore it from git, or delete it and sign every text again (human-text.json)"), `${reason}\n${res.out}`);
+  }
+});
+
+test("[n] an invalid humanText fails [c] and never switches the lock off", (t) => {
+  for (const value of ["Signed", "sign", "", true, null, 1, ["signed"], { mode: "signed" }]) {
+    const res = checkModule([materialize(t, { merge: { "baron.json": { humanText: value } } })]);
+    const r = parseReport(res.out);
+    assert.equal(res.status, 1, res.out);
+    assert.deepEqual([...r.fail], ["c"], res.out);
+    const want = `FAIL   [c] JSON files: humanText must be "markers" or "signed", not ${JSON.stringify(value)}: a misspelt value must not switch off the human-text lock of rule [n] (baron.json)`;
+    assert.ok(r.lines.includes(want), `${want}\n${res.out}`);
+    // The lock still applies: the unsigned texts are still reported.
+    assert.equal(nLines(r, "WARN")[0], lockHead("WARN", 14, LOCK_PUSH, true), res.out);
+  }
+});
+
+test("[n] under the lock the TODO-HUMANO lines stay as they are, and those texts are still to write", (t) => {
+  const plain = parseReport(checkModule([materialize(t, HUMAN_SPEC)]).out);
+  const res = checkModule([signFixture(locked(t, HUMAN_SPEC))]);
+  const r = parseReport(res.out);
+  assert.equal(res.status, 0, res.out);
+  const markers = nLines(plain, "WARN");
+  assert.equal(markers.length, 3);
+  assert.deepEqual(nLines(r, "WARN").slice(0, 3), markers, res.out);
+  const toWrite = "still to write (empty or TODO-HUMANO:)";
+  assert.deepEqual(nLines(r, "WARN").slice(3), [
+    lockHead("WARN", 5, LOCK_PUSH),
+    lockLine("WARN", toWrite, "title", "module.json"),
+    lockLine("WARN", toWrite, "description", "module.json"),
+    lockLine("WARN", toWrite, "baron-fixture.Open", "lang/en.json"),
+    lockLine("WARN", toWrite, "baron-fixture.Notice", "lang/en.json"),
+    lockLine("WARN", toWrite, "baron-fixture.Open", "lang/es.json"),
+  ]);
+});
+
+test("[n] the lock covers the languages module.json declares, nested keys and lists included", (t) => {
+  const dir = signFixture(
+    locked(t, {
+      write: { "lang/fr.json": '{ "baron-fixture.Open": "Ouvrir" }\n' },
+      merge: { "lang/en.json": { "baron-fixture.Help": { Deep: "Help" }, "baron-fixture.Lines": ["one", "two"] } },
+    }),
+    (signed) => {
+      delete signed["lang/en.json"]["baron-fixture.Help"];
+    },
+  );
+  const res = checkModule([dir]);
+  // lang/fr.json is not declared, so Foundry never loads it: nothing to sign
+  // there. The two new en.json keys are reported by their flattened key.
+  assert.deepEqual(nLines(parseReport(res.out), "WARN"), [
+    lockHead("WARN", 2, LOCK_PUSH),
+    lockLine("WARN", "unsigned", "baron-fixture.Help.Deep", "lang/en.json"),
+    lockLine("WARN", "a list, not a string: cannot be signed", "baron-fixture.Lines", "lang/en.json"),
+  ], res.out);
+});
+
+test("[n] under GitHub Actions each text of the lock becomes an annotation on its file", (t) => {
+  const dir = signFixture(locked(t), (signed) => delete signed["lang/en.json"]["baron-fixture.Notice"]);
+  const env = childEnv({ GITHUB_ACTIONS: "true" });
+  const push = checkModule(["."], { cwd: dir, env });
+  const ann = push.out.split(/\r?\n/).filter((l) => l.startsWith("::") && l.includes("[n]"));
+  assert.deepEqual(ann, [
+    `::warning title=check-module [n] human text::1 text(s) lack a valid signature in human-text.json: ${LOCK_PUSH}`,
+    "::warning file=lang/en.json,title=check-module [n] human text::unsigned: baron-fixture.Notice",
+  ]);
+  const release = checkModule([".", "--release"], { cwd: dir, env });
+  assert.equal(release.status, 1, release.out);
+  assert.ok(release.out.includes("::error file=lang/en.json,title=check-module [n] human text::unsigned: baron-fixture.Notice"), release.out);
+});
+
+test("[n] human-text.json stays in the repo: the release ZIP packs a fixed list that leaves it out", () => {
+  const release = readText(REPO, ".github", "workflows", "module-release.yml");
+  const lists = [...release.matchAll(/^ *for p in ([^;\n]+); do$/gm)].map((m) => m[1].trim().split(/\s+/));
+  assert.equal(lists.length, 1, "module-release.yml picks what it packs in one for p in ... loop");
+  assert.deepEqual(lists[0], ["module.json", "scripts", "styles", "templates", "lang", "packs", "LICENSE", "NOTICE.md"]);
+  assert.ok(!release.includes('cp -r . ') && !/zip -r\s+\S+\s+\.\s*$/m.test(release), "nothing packs the whole module folder");
 });

@@ -256,7 +256,7 @@ export function languageEntries(root, module) {
  * may be nested objects or flat dotted strings; both mean the same key, so a
  * nested key is joined with dots. Anything that is not a plain object (a
  * string, an array, a number) is a leaf. check-module's key parity [d] and key
- * lookups [h] use the keys.
+ * lookups [h] use the keys; the human-text signatures use keys and values.
  * @param {unknown} obj
  * @returns {[string, unknown][]}
  */
@@ -267,6 +267,157 @@ export function flattenLang(obj, prefix = "", out = []) {
     else out.push([key, v]);
   }
   return out;
+}
+
+/* ----------------------------------------------------------------------------
+ * Human text: Foundry's AI policy (publisher handbook 4.1) wants UI labels and
+ * prepared text written by a person. check-module rule [n] reports the
+ * placeholder marker always and, with baron.json "humanText": "signed", every
+ * text that the author has not signed with sign-text.mjs.
+ * -------------------------------------------------------------------------- */
+
+/** Value of a text nobody has written yet: "TODO-HUMANO: <what it should say>". */
+export const HUMAN_MARKER = "TODO-HUMANO:";
+/** Fields of module.json that the package listing shows as prose. */
+export const LISTING_FIELDS = ["title", "description"];
+/** baron.json "humanText": absent or "markers" = the marker only; "signed" = the signature lock. */
+export const HUMAN_TEXT_MODES = ["markers", "signed"];
+/** The signatures, at the module root. The release ZIP never packs it. */
+export const HUMAN_TEXT_FILE = "human-text.json";
+export const HUMAN_TEXT_VERSION = 1;
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
+const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const hasString = (v) => typeof v === "string" || (v !== null && typeof v === "object" && Object.values(v).some(hasString));
+
+/**
+ * Whether a value is still the placeholder. Only a value that starts with the
+ * marker counts (after leading whitespace): text that quotes it mid-sentence is
+ * real text, and "todo-humano:" is not the marker.
+ * @param {string} value
+ */
+export const isHumanPlaceholder = (value) => value.trimStart().startsWith(HUMAN_MARKER);
+
+/**
+ * sha256 of the exact string, as UTF-8: no trim, no line-ending or Unicode
+ * normalization, so any change to the text needs a new signature.
+ * @param {string} value
+ * @returns {string} lowercase hex
+ */
+export function hashText(value) {
+  return createHash("sha256").update(Buffer.from(value, "utf8")).digest("hex");
+}
+
+/**
+ * The texts the lock covers: the module.json title and description, then every
+ * value of each language file, keyed as flattenLang() keys them.
+ * @param {object|null} module parsed module.json
+ * @param {{ rel: string, data: unknown }[]} langFiles parsed language files
+ * @returns {{ file: string, key: string, value: unknown }[]} a value is a string,
+ *   or an array that holds strings (which cannot be signed)
+ */
+export function humanTexts(module, langFiles) {
+  const out = [];
+  if (isPlainObject(module)) {
+    for (const key of LISTING_FIELDS) {
+      if (Object.hasOwn(module, key) && typeof module[key] === "string") out.push({ file: "module.json", key, value: module[key] });
+    }
+  }
+  for (const { rel, data } of langFiles) {
+    const seen = new Set();
+    for (const [key, value] of flattenLang(data)) {
+      if (typeof value !== "string" && !(Array.isArray(value) && hasString(value))) continue;
+      // The same key and value both nested and dotted is one text.
+      const id = JSON.stringify([key, value]);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push({ file: rel, key, value });
+    }
+  }
+  return out;
+}
+
+/**
+ * Why `data` is not a valid human-text.json, or null:
+ * { "version": 1, "signed": { "<file>": { "<key>": "<sha256 hex>" } } }.
+ * @param {unknown} data
+ * @returns {string|null}
+ */
+export function signaturesProblem(data) {
+  const show = (v) => String(JSON.stringify(v));
+  if (!isPlainObject(data)) return "must hold a JSON object";
+  const extra = Object.keys(data).filter((k) => k !== "version" && k !== "signed");
+  if (extra.length) return `has unknown key(s) ${extra.map(show).join(", ")}: only "version" and "signed" are allowed`;
+  if (data.version !== HUMAN_TEXT_VERSION) return `has "version" ${show(data.version)}: it must be ${HUMAN_TEXT_VERSION}`;
+  if (!isPlainObject(data.signed)) return 'needs "signed" to be an object of files';
+  for (const [file, keys] of Object.entries(data.signed)) {
+    if (!isPlainObject(keys)) return `has signed[${show(file)}] that is not an object of keys`;
+    for (const [key, hash] of Object.entries(keys)) {
+      if (typeof hash !== "string" || !SHA256_HEX_RE.test(hash)) {
+        return `has signed[${show(file)}][${show(key)}] that is not a sha256 (64 lowercase hex characters)`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads human-text.json from the module folder.
+ * @param {string} root
+ * @returns {{ missing: true, signed: object } | { error: string } | { signed: object }}
+ *   `signed` is the file's "signed" map ({} when there is no file)
+ */
+export function readSignatures(root) {
+  const file = path.join(root, HUMAN_TEXT_FILE);
+  if (!fs.existsSync(file)) return { missing: true, signed: {} };
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    return { error: `cannot be read: ${err.message}` };
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    const bom = text.charCodeAt(0) === 0xfeff ? " (the file starts with a UTF-8 BOM)" : "";
+    return { error: `is not valid JSON: ${err.message}${bom}` };
+  }
+  const problem = signaturesProblem(data);
+  return problem ? { error: problem } : { signed: data.signed };
+}
+
+/**
+ * Each text with its signature status against `signed`, the "signed" map of
+ * human-text.json:
+ *   "signed"     the hash of the current value is recorded
+ *   "unsigned"   no signature for this file and key
+ *   "changed"    a signature exists, for another value
+ *   "unwritten"  empty, or still a TODO-HUMANO: placeholder: nothing to sign yet
+ *   "conflict"   the file defines the key twice (nested and dotted) with different values
+ *   "list"       an array holds the text: only a string value can be signed
+ * @param {{ file: string, key: string, value: unknown }[]} texts from humanTexts()
+ * @param {object} signed
+ * @returns {{ file: string, key: string, value: unknown, status: string }[]}
+ */
+export function signatureStatus(texts, signed) {
+  const values = new Map();
+  for (const t of texts) {
+    const id = JSON.stringify([t.file, t.key]);
+    values.set(id, [...(values.get(id) ?? []), t.value]);
+  }
+  return texts.map((t) => {
+    const all = values.get(JSON.stringify([t.file, t.key]));
+    const keys = Object.hasOwn(signed, t.file) ? signed[t.file] : null;
+    const recorded = keys && Object.hasOwn(keys, t.key) ? keys[t.key] : null;
+    let status;
+    if (typeof t.value !== "string") status = "list";
+    else if (all.some((v) => v !== t.value)) status = "conflict";
+    else if (!t.value.trim() || isHumanPlaceholder(t.value)) status = "unwritten";
+    else if (recorded === hashText(t.value)) status = "signed";
+    else status = recorded === null ? "unsigned" : "changed";
+    return { ...t, status };
+  });
 }
 
 const REGEX_KEYWORDS = new Set([

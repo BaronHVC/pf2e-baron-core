@@ -1,0 +1,7 @@
+{
+  "description": "the module signs its texts but human-text.json is not valid JSON (fails on a push too, not only with --release)",
+  "fails": "n",
+  "message": "human-text.json is not valid JSON",
+  "merge": { "baron.json": { "humanText": "signed" } },
+  "write": { "human-text.json": "{ \"version\": 1, \"signed\": {\n" }
+}

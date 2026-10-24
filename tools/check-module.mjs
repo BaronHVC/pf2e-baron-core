@@ -20,6 +20,8 @@
 //       ORC field and no "PENDIENTE:" line left in NOTICE.md (FAIL with --release)
 //   [m] protected packaging: a paid module has a landing page, requires its free base and never links to GitHub
 //   [n] human text: no "TODO-HUMANO:" value left in lang files or module.json title/description (FAIL with --release)
+//       and, with baron.json "humanText": "signed", every such text signed by its author in human-text.json
+//       (sign-text.mjs; FAIL with --release, a malformed file FAILs always)
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -27,6 +29,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   CORE_DIR,
+  HUMAN_MARKER,
+  HUMAN_TEXT_FILE,
+  HUMAN_TEXT_MODES,
+  LISTING_FIELDS,
   LOCK_FILE,
   VENDORED_PATH,
   coreFileAt,
@@ -35,11 +41,15 @@ import {
   githubPaths,
   gitTry,
   httpsUrlProblem,
+  humanTexts,
+  isHumanPlaceholder,
   languageEntries,
   mentionsGitHub,
   readCoreVersion,
+  readSignatures,
   scanJs,
   sha256Lf,
+  signatureStatus,
   splitGitHubPaths,
   toLf,
   walk,
@@ -220,6 +230,7 @@ function loadModule(root, opts) {
 
   // Languages Foundry will load: the manifest's list, else every lang/*.json.
   const langEntries = languageEntries(root, ctx.module);
+  ctx.langEntries = langEntries;
   ctx.langFiles = [...new Set([...langEntries.map((l) => l.rel), ...walk(root, "lang", (n) => n.endsWith(".json"))])];
   ctx.langJson = new Map(ctx.langFiles.map((rel) => [rel, readJson(root, rel)]));
   ctx.langKeys = new Map(); // lang code -> Set of keys (several files per code merge, as in Foundry)
@@ -343,6 +354,10 @@ function checkJson(ctx, c) {
       if (b.langParity !== undefined && !["error", "warn"].includes(b.langParity)) c.fail(`langParity must be "error" or "warn", not ${JSON.stringify(b.langParity)}`, loc);
       if (b.persisted !== undefined && (!Array.isArray(b.persisted) || b.persisted.some((s) => typeof s !== "string" || !s))) {
         c.fail("persisted must be an array of non-empty strings", loc);
+      }
+      // A typo must fail, not quietly turn the human-text lock off.
+      if (b.humanText !== undefined && !HUMAN_TEXT_MODES.includes(b.humanText)) {
+        c.fail(`humanText must be ${HUMAN_TEXT_MODES.map((m) => `"${m}"`).join(" or ")}, not ${JSON.stringify(b.humanText)}: a misspelt value must not switch off the human-text lock of rule [n]`, loc);
       }
     }
   }
@@ -863,18 +878,15 @@ function checkProtectedPackaging(ctx, c) {
 }
 
 // Foundry's AI policy wants UI labels and listing text written by a person.
-// A Claude session never writes that text: it adds the key with the value
-// "TODO-HUMANO: <what it should say>" and the author fills it in. Only a value
-// that starts with the marker is a placeholder; text that quotes it
-// mid-sentence is real text, and "todo-humano:" is not the marker.
-const HUMAN_MARKER = "TODO-HUMANO:";
-// Fields of module.json that the package listing shows as prose.
-const LISTING_FIELDS = ["title", "description"];
+// A text nobody has written yet holds "TODO-HUMANO: <what it should say>"
+// (HUMAN_MARKER, shared.mjs) until the author writes it. Only a value that
+// starts with the marker is a placeholder; text that quotes it mid-sentence is
+// real text, and "todo-humano:" is not the marker.
 
 /** Key paths (dotted, as Foundry flattens them) of the string values that start with the marker. */
 function humanPlaceholders(value, prefix = "", out = []) {
   if (typeof value === "string") {
-    if (value.trimStart().startsWith(HUMAN_MARKER)) out.push(prefix);
+    if (isHumanPlaceholder(value)) out.push(prefix);
   } else if (Array.isArray(value)) {
     value.forEach((v, i) => humanPlaceholders(v, `${prefix}[${i}]`, out));
   } else if (value && typeof value === "object") {
@@ -900,7 +912,55 @@ function checkHumanText(ctx, c) {
     else c.warn(`${what}: a person writes them before tagging, the release refuses them (Foundry's AI policy)`, { file: rel });
   }
   const langs = sources.length - (ctx.module ? 1 : 0);
-  c.detail(`no TODO-HUMANO placeholders in ${langs} language file(s)${ctx.module ? " or in module.json title and description" : ""}`);
+  const markers = `no TODO-HUMANO placeholders in ${langs} language file(s)${ctx.module ? " or in module.json title and description" : ""}`;
+  // Only "markers" (or no humanText) turns the lock off. Any other value is
+  // already a FAIL in [c]; the lock still applies, so a typo never disables it.
+  const mode = ctx.baron.humanText;
+  if (mode === undefined || mode === "markers") return c.detail(markers);
+  const signed = checkSignatures(ctx, c);
+  if (signed !== null) c.detail(`${markers}; ${signed} text(s) signed in ${HUMAN_TEXT_FILE}`);
+}
+
+// The labels of the texts the lock reports, by signatureStatus() status.
+const SIGNATURE_PROBLEMS = {
+  unsigned: "unsigned",
+  changed: "changed since it was signed",
+  unwritten: "still to write (empty or TODO-HUMANO:)",
+  conflict: "defined twice with different values",
+  list: "a list, not a string: cannot be signed",
+};
+const SIGNATURE_DETAIL_CAP = 10;
+
+/**
+ * baron.json "humanText": "signed": every text of the declared language files
+ * and the module.json title and description needs the author's signature in
+ * human-text.json, the sha256 of the exact value, which only sign-text --sign
+ * records, at a terminal. A push warns, --release fails, and a malformed file
+ * fails always. Returns how many texts are signed, or null when the file is
+ * malformed.
+ */
+function checkSignatures(ctx, c) {
+  const read = readSignatures(ctx.root);
+  if (read.error) {
+    c.fail(`${HUMAN_TEXT_FILE} ${read.error}: only sign-text writes it; restore it from git, or delete it and sign every text again`, { file: HUMAN_TEXT_FILE });
+    return null;
+  }
+  const rels = [...new Set(ctx.langEntries.map((l) => l.rel))];
+  const langFiles = rels.map((rel) => ctx.langJson.get(rel)).filter((f) => f && f.data !== undefined);
+  const texts = signatureStatus(humanTexts(ctx.module, langFiles), read.signed);
+  const open = texts.filter((t) => t.status !== "signed");
+  if (open.length) {
+    const what = `${open.length} text(s) lack a valid signature in ${HUMAN_TEXT_FILE}${read.missing ? " (there is no such file yet)" : ""}`;
+    const report = ctx.opts.release ? c.fail : c.warn;
+    if (ctx.opts.release) {
+      report(`${what}: the release does not publish text that a person has not written and signed (Foundry's AI policy); rewrite each one from scratch, sign it with sign-text --sign and tag again`);
+    } else {
+      report(`${what}: the author rewrites each one from scratch and signs it at a terminal with sign-text --sign before tagging; the release refuses them (Foundry's AI policy)`);
+    }
+    for (const t of open.slice(0, SIGNATURE_DETAIL_CAP)) report(`${SIGNATURE_PROBLEMS[t.status]}: ${t.key}`, { file: t.file });
+    if (open.length > SIGNATURE_DETAIL_CAP) report(`and ${open.length - SIGNATURE_DETAIL_CAP} more`);
+  }
+  return texts.length - open.length;
 }
 
 /* ----------------------------------------------------------------------------
