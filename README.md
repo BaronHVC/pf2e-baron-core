@@ -135,7 +135,7 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
 | l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, un hallazgo por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta): WARN en cada push, FAIL con `--release`. Con cualquier licencia, lo mismo por cada renglón con el marcador `PENDIENTE:` (ver *Pendientes legales*). Con `orc`, aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar; sigue siendo WARN con `--release`, porque es una pregunta legal abierta y no un campo por llenar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`), más los renglones con `PENDIENTE:` si hay `NOTICE.md`: el release lo empaca sea cual sea la licencia |
 | m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a GitHub (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto ni clave de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona GitHub (FAIL: el release protegido lo rechazaría de todos modos, así que falla ya en cada push y no hasta la etiqueta). GitHub es `github.com` y sus subdominios, `githubusercontent.com` (archivos crudos y adjuntos de releases) y `github.io` (Pages), también con escapes `%2E`: todos pueden nombrar el repo privado. En un módulo `public` no imprime nada |
-| n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. Con `"humanText": "signed"` en `baron.json`, además cada valor de texto de los idiomas que declara `module.json` y el `title` y la `description` tienen la firma de su autor en `human-text.json`: uno sin firma, cambiado después de firmarse, vacío o todavía con `TODO-HUMANO:` es un hallazgo, con un renglón por texto que nombra archivo y clave (los primeros 10 y luego `and N more`). WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta. Un `human-text.json` mal formado falla siempre |
+| n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. Con `"humanText": "signed"` en `baron.json`, además cada valor de texto de los idiomas que declara `module.json` (si no declara ninguno, cada `lang/*.json`, como en `d` y `h`) y el `title` y la `description` tienen la firma de su autor en `human-text.json`: uno sin firma, cambiado después de firmarse, vacío, todavía con `TODO-HUMANO:` o con un surrogate UTF-16 suelto es un hallazgo, con un renglón por texto que nombra archivo y clave (los primeros 10 y luego `and N more`, con el comando de `sign-text` que los lista todos). También lo es cada `lang/*.json` que `module.json` no declara: viaja en el ZIP y sus textos no se pueden firmar. WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta. Un `human-text.json` mal formado falla siempre |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
@@ -186,11 +186,21 @@ marcador.
 
 Con `"humanText": "signed"` en `baron.json` (los módulos nuevos ya lo traen),
 la revisión `n` pide la firma del autor para cada texto: cada valor de texto de
-los archivos de idioma que declara `module.json` (con las claves anidadas
-aplanadas con puntos, igual que en las revisiones `d` y `h`) y el `title` y la
-`description` de `module.json`. La firma es el sha256 del valor exacto, tal
-como sale del JSON: sin recortar espacios ni normalizar saltos de línea o
-acentos, así que cualquier cambio, aunque sea un espacio, pide firmar otra vez.
+los archivos de idioma que declara `module.json` (si no declara ninguno, cada
+`lang/*.json`; con las claves anidadas aplanadas con puntos, igual que en las
+revisiones `d` y `h`) y el `title` y la `description` de `module.json`. La
+firma es el sha256 del valor exacto, tal como sale del JSON: sin recortar
+espacios ni normalizar saltos de línea o acentos, así que cualquier cambio,
+aunque sea un espacio, pide firmar otra vez. Un valor con un surrogate UTF-16
+suelto (un escape de JSON a medias) nunca se firma: en UTF-8 se vuelve U+FFFD
+y su hash no lo distinguiría de otro valor. Un `lang/*.json` que `module.json`
+no declara viaja en el ZIP (que empaca `lang/` entero) con textos que nadie
+puede firmar, así que también es un hallazgo: se declara o se saca de `lang/`.
+
+El candado no ve las etiquetas de compendios (`packs[].label`,
+`packFolders[].name`), el texto fijo de `templates/*.hbs` ni el texto de chat
+armado en `scripts/`: esos los escribe una persona desde el principio, sin
+borrador de IA.
 
 Las firmas viven en `human-text.json`, en la raíz del módulo, y van al repo
 con el resto del código. El ZIP del release nunca lo lleva (solo empaca
@@ -221,27 +231,44 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
 - **Sin `--sign`** solo lista y sale con 0: cada texto sin firma o cambiado
   desde que se firmó, con su archivo, su clave y su valor, y la cuenta. Como
   información, los textos que faltan escribir (vacíos o con `TODO-HUMANO:`) y
-  las firmas de claves que ya no existen.
-- **Con `--sign`** muestra archivo, clave y valor completo de cada texto
+  las firmas de claves que ya no existen (una por renglón, las primeras 10).
+  Si algo falta firmar, el último renglón (`next:`) da el comando que lo firma.
+- **Con `--sign`** explica antes de la primera pregunta qué hace cada
+  respuesta. Luego muestra archivo, clave y valor completo de cada texto
   pendiente y pregunta «¿Escribiste tú este texto desde cero? [s/N/q]»: `s` lo
   firma, `N` o Enter lo salta, `q` termina y guarda lo firmado hasta ahí; otra
   respuesta vuelve a preguntar. Nunca firma un valor vacío ni uno que empieza
   con `TODO-HUMANO:`: los muestra como textos por escribir. Escribe
   `human-text.json` una sola vez, al final o con `q` (en un archivo temporal que
-  luego renombra), y de paso quita las firmas de claves que ya no existen; un
-  Ctrl+C antes de eso lo deja intacto.
+  luego renombra), y de paso quita las firmas de claves que ya no existen. Un
+  Ctrl+C o el fin de la entrada (Ctrl+D) antes de eso lo deja intacto y dice
+  cuántas firmas de esa corrida se perdieron: para conservarlas, se contesta
+  `q`. Si otro programa (un editor, un cliente de sincronización, el
+  antivirus) tiene abierto `human-text.json`, reintenta el renombrado unos 2
+  segundos; si no puede, deja las firmas en el archivo temporal y dice dónde
+  está.
 - **La firma la da el autor, a mano.** Contestar `s` dice «este texto lo escribí
   yo desde cero»: revisar o retocar un texto de IA no basta. Por eso `--sign`
   exige que stdin y stdout sean una terminal (TTY) y no hay `--yes` ni otra
   forma de firmar sin preguntar. Una sesión de Claude nunca corre `--sign` ni
   edita `human-text.json`. Una traducción hecha con IA cuenta solo cuando la
-  revisa una persona que domina el idioma, y es esa persona quien la firma.
-- **En Windows**, córrelo en PowerShell o en Windows Terminal. En Git Bash
-  (mintty) node no recibe una TTY y `--sign` se niega; ahí se corre con
+  revisa, línea por línea contra su original humano, una persona que domina el
+  idioma, y es esa persona quien la firma: en una traducción, su `s` dice
+  «domino este idioma y revisé esta traducción», y así lo explica `--sign`
+  antes de la primera pregunta.
+- **Es un compromiso, no una prueba.** El sha256 no lleva llave: un programa
+  puede escribir `human-text.json`, y quitar `humanText` de `baron.json` apaga
+  el candado. Lo que lo sostiene es revisar quién hace commit de esos dos
+  archivos.
+- **En Windows**, córrelo en una ventana de terminal: PowerShell, Windows
+  Terminal o Git Bash, sin tubería ni redirección (nada de `|`, `>`,
+  `Tee-Object` ni `more`): con una, stdin o stdout deja de ser una TTY y
+  `--sign` se niega, y el mensaje dice cuál. Solo con un Git for Windows
+  anterior a 2.54, Git Bash (mintty) no le da una TTY a node; ahí se corre con
   `winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign`.
 
-En `check-module`, un texto sin firma, cambiado, vacío o con `TODO-HUMANO:` da
-un WARN en cada push y un FAIL con `--release`, así que la etiqueta no publica
+En `check-module`, un texto sin firma, cambiado, vacío o con `TODO-HUMANO:`, y
+un `lang/*.json` sin declarar, dan un WARN en cada push y un FAIL con `--release`, así que la etiqueta no publica
 un texto que una persona no firmó. Sin `human-text.json`, todos cuentan como
 sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma, otra
 `version`) falla siempre, también en un push: se restaura desde git, o se borra
@@ -518,9 +545,10 @@ node --test test/*.test.mjs test/tools/*.test.mjs
   a mano en Git Bash).
 - `sync-core --watch` funciona aunque la ruta llegue en formato corto 8.3
   (`C:\Users\NOMBRE~1\...`).
-- `sign-text --sign` necesita una terminal de verdad: PowerShell o Windows
-  Terminal. En Git Bash (mintty) node no ve una TTY y se niega a firmar; ahí,
-  `winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign`.
+- `sign-text --sign` necesita una terminal de verdad: PowerShell, Windows
+  Terminal o Git Bash, sin tubería ni redirección (`|`, `>`, `Tee-Object`). Solo
+  con un Git for Windows anterior a 2.54, Git Bash (mintty) no le da una TTY a
+  node; ahí, `winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign`.
 
 ## Licencia
 

@@ -82,9 +82,12 @@ jobs:
           node-version: 22
 
       # Sin --release: un valor que empieza con TODO-HUMANO: (texto que falta
-      # escribir a mano, revision n), un campo de la ORC sin llenar o un
-      # renglon con PENDIENTE: en NOTICE.md (revision l) solo avisan en cada
-      # push; module-release los rechaza al etiquetar.
+      # escribir a mano, revision n), con "humanText": "signed" en baron.json
+      # un texto sin firma o cambiado en human-text.json o un lang/*.json sin
+      # declarar (revision n), un campo de la ORC sin llenar o un renglon con
+      # PENDIENTE: en NOTICE.md (revision l) solo avisan en cada push;
+      # module-release los rechaza al etiquetar. Un human-text.json mal
+      # formado ya falla aqui.
       - name: check-module --online
         if: steps.lock.outputs.run == 'true'
         run: node .baron-core/tools/check-module.mjs . --core-repo .baron-core --online

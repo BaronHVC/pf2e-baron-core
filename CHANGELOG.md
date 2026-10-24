@@ -17,27 +17,39 @@ tengan que resincronizar.
   (`"Signed"`, `true`, `null`…) falla siempre, y la revisión `[n]` sigue
   aplicando el candado, así que un error de dedo nunca lo apaga.
 - `tools/check-module.mjs`, revisión `[n]` con `"humanText": "signed"`: cada
-  valor de texto de los idiomas que declara `module.json` (claves aplanadas con
-  puntos, como en `[d]` y `[h]`) y el `title` y la `description` de
-  `module.json` necesitan su firma en `human-text.json`, el sha256 del valor
-  exacto (sin recortar ni normalizar). Uno sin firma, cambiado después de
-  firmarse, vacío o con `TODO-HUMANO:` da un WARN en cada push y un FAIL con
-  `--release`: un renglón de encabezado y uno por texto con archivo y clave
-  (los primeros 10 y luego `and N more`). Sin `human-text.json` todos cuentan
-  como sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma,
+  valor de texto de los idiomas que declara `module.json` (si no declara
+  ninguno, cada `lang/*.json`, como en `[d]` y `[h]`; claves aplanadas con
+  puntos) y el `title` y la `description` de `module.json` necesitan su firma
+  en `human-text.json`, el sha256 del valor exacto (sin recortar ni
+  normalizar). Uno sin firma, cambiado después de firmarse, vacío, con
+  `TODO-HUMANO:` o con un surrogate UTF-16 suelto (que en UTF-8 se confundiría
+  con otro valor) da un WARN en cada push y un FAIL con `--release`: un renglón
+  de encabezado y uno por texto con archivo y clave (los primeros 10 y luego
+  `and N more`, con el comando que los lista todos). Lo mismo cada
+  `lang/*.json` que `module.json` no declara: viaja en el ZIP y sus textos no
+  se pueden firmar. Sin `human-text.json` todos cuentan como sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma,
   otra `version`) falla siempre. El PASS dice cuántos textos están firmados.
   Las revisiones de `TODO-HUMANO:` no cambian. `human-text.json` no va en el
   ZIP del release.
 - `tools/sign-text.mjs [<carpeta del módulo>]`: sin bandera, lista cada texto
   sin firma o cambiado (archivo, clave y valor), la cuenta, los que faltan
-  escribir y las firmas de claves que ya no existen, y sale con 0. Con
-  `--sign` pregunta por cada texto pendiente «¿Escribiste tú este texto desde
-  cero? [s/N/q]» y escribe `human-text.json` una sola vez, al final o con `q`
-  (archivo temporal y renombrado; un Ctrl+C antes lo deja intacto), sin las
-  firmas de claves que ya no existen. Se niega a firmar sin una terminal
-  (stdin y stdout TTY; en Git Bash, `winpty node …`), nunca firma un valor
-  vacío o con `TODO-HUMANO:` y no tiene `--yes`. Exporta `signTexts({ dir,
-  sign, isTTY, ask })` para las pruebas.
+  escribir y las firmas de claves que ya no existen (las primeras 10, una por
+  renglón), cierra con el comando que los firma y sale con 0. Con `--sign`
+  explica primero cada respuesta (en una traducción, `s` dice que quien firma
+  domina el idioma y la revisó línea por línea contra su original humano),
+  pregunta por cada texto pendiente «¿Escribiste tú este texto desde cero?
+  [s/N/q]» y escribe `human-text.json` una sola vez, al final o con `q`
+  (archivo temporal y renombrado, reintentado unos 2 segundos si otro programa
+  lo tiene abierto; si no se puede, las firmas quedan en el temporal y el
+  mensaje dice dónde), sin las firmas de claves que ya no existen. Un Ctrl+C
+  o un Ctrl+D antes lo deja intacto, sale (130 o 1) y dice cuántas firmas de
+  la corrida se perdieron. Se niega a firmar sin una terminal (stdin y stdout
+  TTY; el mensaje dice cuál de los dos es una tubería o una redirección, y
+  `winpty node …` solo hace falta en Git Bash con un Git for Windows anterior
+  a 2.54), nunca firma un valor vacío, con `TODO-HUMANO:` o con un surrogate
+  suelto y no tiene `--yes`. Exporta `signTexts({ dir, sign, isTTY, ask })`
+  para las pruebas (`isTTY` acepta también `{ stdin, stdout }`),
+  `noTtyMessage`, `DEFAULT_COMMAND` y `LEGEND`.
 - `tools/shared.mjs`: `walk`, `languageEntries` y `flattenLang` (salen de
   `check-module`, sin cambiar sus resultados) y lo del candado:
   `HUMAN_MARKER`, `LISTING_FIELDS`, `HUMAN_TEXT_MODES`, `HUMAN_TEXT_FILE`,
