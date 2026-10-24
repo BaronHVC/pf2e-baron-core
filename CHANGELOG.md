@@ -8,6 +8,48 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- Candado de textos humanos para toda la familia (política de IA de Foundry,
+  manual del publicador 4.1). `baron.json` acepta `"humanText"`: sin el campo
+  o con `"markers"`, todo sigue igual; con `"signed"`, cada texto necesita la
+  firma de su autor. `check-module`, revisión `[c]`: cualquier otro valor
+  (`"Signed"`, `true`, `null`…) falla siempre, y la revisión `[n]` sigue
+  aplicando el candado, así que un error de dedo nunca lo apaga.
+- `tools/check-module.mjs`, revisión `[n]` con `"humanText": "signed"`: cada
+  valor de texto de los idiomas que declara `module.json` (claves aplanadas con
+  puntos, como en `[d]` y `[h]`) y el `title` y la `description` de
+  `module.json` necesitan su firma en `human-text.json`, el sha256 del valor
+  exacto (sin recortar ni normalizar). Uno sin firma, cambiado después de
+  firmarse, vacío o con `TODO-HUMANO:` da un WARN en cada push y un FAIL con
+  `--release`: un renglón de encabezado y uno por texto con archivo y clave
+  (los primeros 10 y luego `and N more`). Sin `human-text.json` todos cuentan
+  como sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma,
+  otra `version`) falla siempre. El PASS dice cuántos textos están firmados.
+  Las revisiones de `TODO-HUMANO:` no cambian. `human-text.json` no va en el
+  ZIP del release.
+- `tools/sign-text.mjs [<carpeta del módulo>]`: sin bandera, lista cada texto
+  sin firma o cambiado (archivo, clave y valor), la cuenta, los que faltan
+  escribir y las firmas de claves que ya no existen, y sale con 0. Con
+  `--sign` pregunta por cada texto pendiente «¿Escribiste tú este texto desde
+  cero? [s/N/q]» y escribe `human-text.json` una sola vez, al final o con `q`
+  (archivo temporal y renombrado; un Ctrl+C antes lo deja intacto), sin las
+  firmas de claves que ya no existen. Se niega a firmar sin una terminal
+  (stdin y stdout TTY; en Git Bash, `winpty node …`), nunca firma un valor
+  vacío o con `TODO-HUMANO:` y no tiene `--yes`. Exporta `signTexts({ dir,
+  sign, isTTY, ask })` para las pruebas.
+- `tools/shared.mjs`: `walk`, `languageEntries` y `flattenLang` (salen de
+  `check-module`, sin cambiar sus resultados) y lo del candado:
+  `HUMAN_MARKER`, `LISTING_FIELDS`, `HUMAN_TEXT_MODES`, `HUMAN_TEXT_FILE`,
+  `HUMAN_TEXT_VERSION`, `isHumanPlaceholder`, `hashText`, `humanTexts`,
+  `signaturesProblem`, `readSignatures`, `signatureStatus`, `staleSignatures`
+  y `signaturesText`.
+
+Un módulo recibe el candado en su CI al resincronizar con la próxima etiqueta
+del core; mientras tanto lo revisa el `check-module` de un clon local. Un
+módulo que no declara `humanText` se revisa exactamente igual que con v1.4.0.
+Las funciones de `baron-core.js` no cambian.
+
 ## [1.4.0] - 2026-10-12
 
 ### Added

@@ -17,8 +17,9 @@ hooks, settings, helpers and sockets stay in each module's own entry files.*
   se llama una de sus funciones, y no registra nada (ni hooks, ni settings, ni
   helpers de Handlebars, ni sockets, ni elementos personalizados). Todo lo que
   identifica a un módulo (id, prefijo i18n, clases CSS) entra como parámetro.
-- **`tools/`**: `sync-core.mjs`, `check-module.mjs` y `release-manifest.mjs`
-  (la reescritura de `module.json` que corre `module-release`), más
+- **`tools/`**: `sync-core.mjs`, `check-module.mjs`, `release-manifest.mjs`
+  (la reescritura de `module.json` que corre `module-release`) y
+  `sign-text.mjs` (la firma del autor sobre los textos humanos), más
   `shared.mjs`, lo que comparten. Solo usan módulos de Node y `git`; corren
   igual en Windows y en Linux, sin `npm install`.
 - **`.github/workflows/`**: la CI de este repo (`ci.yml`) y los dos workflows
@@ -39,6 +40,7 @@ mi-modulo/
   module.json             sin "requires" al core; baron-core.js NO va en esmodules
   baron.json              configuración de la familia (ver abajo)
   baron-core.lock.json    { version, commit, sha256 }: qué copia del core lleva
+  human-text.json         con "humanText": "signed", la firma del autor en cada texto; no va en el ZIP
   scripts/
     main.js               import { createI18n, isSoleExecutor } from "./baron-core.js";
     baron-core.js         copia exacta del core; nunca se edita a mano
@@ -67,6 +69,7 @@ mi-modulo/
 | `i18nPrefix` | texto                    | prefijo de las claves de idioma; en módulos nuevos es el id del módulo               |
 | `langParity` | `"error"`, `"warn"`      | qué pasa si `en.json` y `es.json` no tienen las mismas claves                        |
 | `persisted`  | lista de textos          | identificadores guardados en mundos (scope de flags, slugs, roll options) que nunca pueden desaparecer de `scripts/` |
+| `humanText`  | `"markers"`, `"signed"`  | candado de textos humanos de la revisión `n`. Sin el campo o con `"markers"`, solo se busca el marcador `TODO-HUMANO:`, como siempre. Con `"signed"`, además cada texto necesita la firma de su autor en `human-text.json` (ver [Firmar los textos humanos](#firmar-los-textos-humanos)). Cualquier otro valor (un error de dedo, otras mayúsculas, otro tipo) falla la revisión `c`, y el candado sigue puesto: nunca se apaga en silencio. Los módulos nuevos nacen con `"signed"` |
 
 Sin `baron.json`, `check-module` usa `{"mode":"public","devChannel":true,"i18nPrefix":<id>,"langParity":"error","persisted":[]}` y lo avisa. Sin `paizo`, la revisión `l` no revisa nada y solo lo avisa.
 
@@ -92,14 +95,18 @@ node ../pf2e-baron-core/tools/check-module.mjs --online     # además compara el
 node ../pf2e-baron-core/tools/check-module.mjs --parity warn
 node ../pf2e-baron-core/tools/check-module.mjs --online --release   # lo mismo que la CI de la etiqueta
 
+# Textos humanos (con "humanText": "signed"): qué falta firmar, y firmarlo en tu terminal
+node ../pf2e-baron-core/tools/sign-text.mjs .
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+
 # Lo que module-release escribiría en module.json. Reescribe el archivo que le
 # pasas: úsalo sobre una copia (en CI lo corre el workflow)
 node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.0 --repo BaronHVC/<id> --channel stable
 node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.0 --repo BaronHVC/<id> --channel stable --mode protected --landing-url https://www.patreon.com/<tú>
 ```
 
-`sync-core` y `check-module` aceptan la carpeta del módulo como primer argumento
-(por defecto, la carpeta actual).
+`sync-core`, `check-module` y `sign-text` aceptan la carpeta del módulo como
+primer argumento (por defecto, la carpeta actual).
 
 **`sync-core --ref`** lee `baron-core.js` con `git show <commit>:baron-core.js`
 (nunca hace checkout), lo normaliza a LF, verifica la línea
@@ -128,27 +135,37 @@ falló. En GitHub Actions los hallazgos salen además como anotaciones.
 | k   | sin placeholders `__ALGO__` sobrantes del template (también en `NOTICE.md`)                                     |
 | l   | `paizo` de `baron.json` es `cup` u `orc` y no es `cup` con `mode: protected`; `NOTICE.md` existe, trae el aviso de esa licencia (`used under Paizo's Community Use Policy` / `licensed under the ORC License`) y no trae el de la otra. El aviso se busca como lo muestra GitHub: partido en renglones, citado con `>`, con énfasis o como enlace cuenta; dentro de un comentario HTML no. Con `orc`, un hallazgo por cada renglón donde empieza un campo del template sin llenar (`[Title of Work]`, `[Copyright Notice]`, `[Author Credit Information]`, `[nombres, logos, …]`, `[ninguno]`, aunque esté partido en renglones; un enlace con ese texto no cuenta): WARN en cada push, FAIL con `--release`. Con cualquier licencia, lo mismo por cada renglón con el marcador `PENDIENTE:` (ver *Pendientes legales*). Con `orc`, aviso si el id o el título nombran a Paizo o sus juegos (PF2e, Pathfinder, Starfinder, Golarion): la ORC nunca licencia marcas de Paizo y el id no se puede cambiar; sigue siendo WARN con `--release`, porque es una pregunta legal abierta y no un campo por llenar. Sin `paizo`, solo un NOTICE (que a un módulo `protected` le dice que necesita `orc`), más los renglones con `PENDIENTE:` si hay `NOTICE.md`: el release lo empaca sea cual sea la licencia |
 | m   | solo con `mode: protected`: `landingUrl` de `baron.json` es una URL `https` sin espacios que no apunta a GitHub (FAIL); `relationships.requires` de `module.json` lista al menos un módulo que no sea pf2e-baron-core, la base gratuita (WARN); y ningún otro texto ni clave de `module.json` fuera de `url`, `manifest` y `download` (que el release reescribe) menciona GitHub (FAIL: el release protegido lo rechazaría de todos modos, así que falla ya en cada push y no hasta la etiqueta). GitHub es `github.com` y sus subdominios, `githubusercontent.com` (archivos crudos y adjuntos de releases) y `github.io` (Pages), también con escapes `%2E`: todos pueden nombrar el repo privado. En un módulo `public` no imprime nada |
-| n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta |
+| n   | ningún valor de texto de los archivos de idioma (planos o anidados, a cualquier profundidad) ni el `title` o la `description` de `module.json` empieza con `TODO-HUMANO:`, el marcador de un texto que falta escribir a mano. Con `"humanText": "signed"` en `baron.json`, además cada valor de texto de los idiomas que declara `module.json` y el `title` y la `description` tienen la firma de su autor en `human-text.json`: uno sin firma, cambiado después de firmarse, vacío o todavía con `TODO-HUMANO:` es un hallazgo, con un renglón por texto que nombra archivo y clave (los primeros 10 y luego `and N more`). WARN en cada push; FAIL con `--release`, que pasa el workflow de la etiqueta. Un `human-text.json` mal formado falla siempre |
 
 `--online` usa el repo indicado con `--core-repo <ruta>`; sin esa opción usa el
 repo donde viven las propias herramientas.
 
 `--release` es para el build de la etiqueta: lo que un push todavía puede
-llevar pasa de WARN a FAIL. Hoy son la revisión `n` y, en la `l`, los campos
+llevar pasa de WARN a FAIL. Hoy son la revisión `n` (los `TODO-HUMANO:` y, con
+`"humanText": "signed"`, los textos sin firma) y, en la `l`, los campos
 de la ORC sin llenar y los renglones con `PENDIENTE:` de `NOTICE.md`; el aviso
 de marcas de la `l` sigue siendo WARN. `module-release` lo pasa (público y
 protegido); `module-check`, en cada push, no.
 
-**Textos humanos (`n`).** La política de IA de Foundry pide que las etiquetas
-de la interfaz y el texto preparado los escriba una persona. Una sesión de
-Claude nunca escribe valores de `lang/*.json`, texto de chat, la descripción de
-`module.json` ni el texto del listado: agrega la clave con el valor
-`TODO-HUMANO: <qué debe decir>` y el autor lo llena. Cuenta solo un valor que
-*empieza* con `TODO-HUMANO:` (tras quitar los espacios iniciales; con
-mayúsculas exactas): un texto que lo cita a media frase es texto real. Cada
-archivo con pendientes da una línea con cuántos son y hasta cinco claves
-(`baron-fixture.Open`, `title`, `description`), con la ruta anidada aplanada
-con puntos como lo hace Foundry.
+**Textos humanos (`n`).** La política de IA de Foundry (manual del publicador,
+4.1) pide que las etiquetas de la interfaz y el texto preparado (valores de
+`lang/*.json`, texto de chat, el `title` y la `description` de `module.json`,
+el texto del listado) los escriba una persona. La IA solo puede corregir o dar
+formato a un texto humano, o traducirlo con la revisión de alguien que domine
+el idioma; un texto de IA que una persona retoca probablemente no cumple: se
+reescribe desde cero. Un texto que nadie ha escrito todavía lleva el valor
+`TODO-HUMANO: <qué debe decir>`. Cuenta solo un valor que *empieza* con
+`TODO-HUMANO:` (tras quitar los espacios iniciales; con mayúsculas exactas): un
+texto que lo cita a media frase es texto real. Cada archivo con pendientes da
+una línea con cuántos son y hasta cinco claves (`baron-fixture.Open`, `title`,
+`description`), con la ruta anidada aplanada con puntos como lo hace Foundry.
+
+El marcador solo protege lo que nadie escribió. Un módulo con
+`"humanText": "signed"` puede llevar además, durante el desarrollo, textos de
+trabajo escritos por IA en `lang/*.json`, porque el candado no los deja llegar
+a un release: antes de etiquetar, el autor reescribe cada uno desde cero y lo
+firma (ver [Firmar los textos humanos](#firmar-los-textos-humanos)). Sin el
+candado, un texto de IA olvidado se publicaría.
 
 **Pendientes legales (`l`).** `PENDIENTE:` es el marcador de la familia para un
 dato legal de `NOTICE.md` que espera la firma del autor: una atribución sin
@@ -164,6 +181,74 @@ en mayúsculas y seguido de dos puntos: «pendiente:» en la prosa es texto. Cad
 renglón con el marcador da un WARN en cada push y un FAIL con `--release`, así
 que la etiqueta no publica un aviso sin firmar; al resolverlo, se borra el
 marcador.
+
+## Firmar los textos humanos
+
+Con `"humanText": "signed"` en `baron.json` (los módulos nuevos ya lo traen),
+la revisión `n` pide la firma del autor para cada texto: cada valor de texto de
+los archivos de idioma que declara `module.json` (con las claves anidadas
+aplanadas con puntos, igual que en las revisiones `d` y `h`) y el `title` y la
+`description` de `module.json`. La firma es el sha256 del valor exacto, tal
+como sale del JSON: sin recortar espacios ni normalizar saltos de línea o
+acentos, así que cualquier cambio, aunque sea un espacio, pide firmar otra vez.
+
+Las firmas viven en `human-text.json`, en la raíz del módulo, y van al repo
+con el resto del código. El ZIP del release nunca lo lleva (solo empaca
+`module.json`, `scripts`, `styles`, `templates`, `lang`, `packs`, `LICENSE` y
+`NOTICE.md`). Lo escribe solo `sign-text`, con las claves ordenadas, sangría de
+dos espacios y LF:
+
+```json
+{
+  "signed": {
+    "lang/en.json": { "<clave>": "<sha256 del valor>" },
+    "module.json": { "description": "<sha256>", "title": "<sha256>" }
+  },
+  "version": 1
+}
+```
+
+Desde la carpeta del módulo:
+
+```sh
+# Lista lo que falta firmar: archivo, clave y valor de cada texto sin firma o cambiado
+node ../pf2e-baron-core/tools/sign-text.mjs .
+
+# Firma, una pregunta por cada texto pendiente
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+```
+
+- **Sin `--sign`** solo lista y sale con 0: cada texto sin firma o cambiado
+  desde que se firmó, con su archivo, su clave y su valor, y la cuenta. Como
+  información, los textos que faltan escribir (vacíos o con `TODO-HUMANO:`) y
+  las firmas de claves que ya no existen.
+- **Con `--sign`** muestra archivo, clave y valor completo de cada texto
+  pendiente y pregunta «¿Escribiste tú este texto desde cero? [s/N/q]»: `s` lo
+  firma, `N` o Enter lo salta, `q` termina y guarda lo firmado hasta ahí; otra
+  respuesta vuelve a preguntar. Nunca firma un valor vacío ni uno que empieza
+  con `TODO-HUMANO:`: los muestra como textos por escribir. Escribe
+  `human-text.json` una sola vez, al final o con `q` (en un archivo temporal que
+  luego renombra), y de paso quita las firmas de claves que ya no existen; un
+  Ctrl+C antes de eso lo deja intacto.
+- **La firma la da el autor, a mano.** Contestar `s` dice «este texto lo escribí
+  yo desde cero»: revisar o retocar un texto de IA no basta. Por eso `--sign`
+  exige que stdin y stdout sean una terminal (TTY) y no hay `--yes` ni otra
+  forma de firmar sin preguntar. Una sesión de Claude nunca corre `--sign` ni
+  edita `human-text.json`. Una traducción hecha con IA cuenta solo cuando la
+  revisa una persona que domina el idioma, y es esa persona quien la firma.
+- **En Windows**, córrelo en PowerShell o en Windows Terminal. En Git Bash
+  (mintty) node no recibe una TTY y `--sign` se niega; ahí se corre con
+  `winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign`.
+
+En `check-module`, un texto sin firma, cambiado, vacío o con `TODO-HUMANO:` da
+un WARN en cada push y un FAIL con `--release`, así que la etiqueta no publica
+un texto que una persona no firmó. Sin `human-text.json`, todos cuentan como
+sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma, otra
+`version`) falla siempre, también en un push: se restaura desde git, o se borra
+y se firma todo otra vez. Las firmas de claves que ya no existen no cuentan, y
+el siguiente `--sign` las quita. Sin `humanText` (o con `"markers"`) nada de
+esto corre y `human-text.json` se ignora: los módulos que no lo piden se
+revisan como antes.
 
 ## Workflows reutilizables
 
@@ -191,9 +276,10 @@ jobs:
   bajo un módulo. Recibir un arreglo del pipeline = resincronizar el core.
 - Ambos workflows hacen checkout de este repo **en el commit del lock** (con
   etiquetas) y corren `check-module --online` antes de cualquier otra cosa;
-  `module-release` le agrega `--release`, así que un `TODO-HUMANO:` (revisión
-  `n`), un campo de la ORC sin llenar o un `PENDIENTE:` en `NOTICE.md`
-  (revisión `l`), que en cada push solo avisan, detienen la etiqueta.
+  `module-release` le agrega `--release`, así que un `TODO-HUMANO:` o, con
+  `"humanText": "signed"`, un texto sin firma (revisión `n`), un campo de la
+  ORC sin llenar o un `PENDIENTE:` en `NOTICE.md` (revisión `l`), que en cada
+  push solo avisan, detienen la etiqueta.
 - Después de `check-module`, los dos corren **las pruebas de node del propio
   módulo** con `.github/scripts/run-module-tests.mjs`, en el checkout del módulo
   (no en `.baron-core`): un `import` de `../scripts/*.js`, la copia vendorizada
@@ -336,9 +422,9 @@ que instala el complemento no tiene de dónde bajar la base.
 2. `check-module --online --release`, con la revisión `m` (`landingUrl`, la
    base en `requires`, ningún enlace a GitHub). La misma revisión corre en cada
    push, así que lo que haría fallar el release ya sale en rojo antes de
-   etiquetar. Un `TODO-HUMANO:` pendiente (revisión `n`), un campo de la ORC sin
-   llenar o un `PENDIENTE:` en `NOTICE.md` (revisión `l`) solo avisan en el push
-   y aquí fallan.
+   etiquetar. Un `TODO-HUMANO:` pendiente o un texto sin firma (revisión `n`),
+   un campo de la ORC sin llenar o un `PENDIENTE:` en `NOTICE.md` (revisión `l`)
+   solo avisan en el push y aquí fallan.
 3. Las pruebas del módulo, las mismas que en cada push (ver
    [Workflows reutilizables](#workflows-reutilizables)): una prueba roja
    detiene la etiqueta antes de tocar `module.json`.
@@ -408,12 +494,17 @@ node --test test/*.test.mjs test/tools/*.test.mjs
 
 - `test/*.test.mjs`: los exports del core, incluida la paridad contra la copia
   de SWE v0.12.0 en `test/legacy/`.
-- `test/tools/*.test.mjs`: `sync-core`, `check-module` y `release-manifest`. Arman repos de git
-  temporales (un core falso etiquetado y un módulo con pins), así que necesitan
-  `git` en el PATH. También `.github/scripts/run-module-tests.mjs`, contra
+- `test/tools/*.test.mjs`: `sync-core`, `check-module`, `release-manifest` y
+  `sign-text` (este con una terminal falsa: la bandera TTY y las respuestas se
+  inyectan). Arman repos de git temporales (un core falso etiquetado y un
+  módulo con pins), así que necesitan `git` en el PATH. También
+  `.github/scripts/run-module-tests.mjs`, contra
   módulos temporales (sin pruebas, en verde, en rojo, con `npm test`, el
   `tests/` de SWE, solo `fixtures/`) y contra el orden de los pasos de los dos
   workflows reutilizables; los casos de `npm test` necesitan `npm` en el PATH.
+  `init-module.test.mjs` corre el `tools/init-module.mjs` de
+  pf2e-module-template sobre una copia de ese repo si está clonado al lado (o
+  donde diga `BARON_TEMPLATE_DIR`); si no, como en la CI de este repo, se salta.
 - `test/fixtures/valid-module/` es el módulo mínimo que pasa todo;
   `test/fixtures/negative/*.json` describe cada caso roto como ese módulo más un
   cambio (ver su README).
@@ -427,6 +518,9 @@ node --test test/*.test.mjs test/tools/*.test.mjs
   a mano en Git Bash).
 - `sync-core --watch` funciona aunque la ruta llegue en formato corto 8.3
   (`C:\Users\NOMBRE~1\...`).
+- `sign-text --sign` necesita una terminal de verdad: PowerShell o Windows
+  Terminal. En Git Bash (mintty) node no ve una TTY y se niega a firmar; ahí,
+  `winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign`.
 
 ## Licencia
 
