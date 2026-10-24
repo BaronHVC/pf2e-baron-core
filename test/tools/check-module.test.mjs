@@ -883,6 +883,8 @@ const LOCK_RELEASE = "the release does not publish text that a person has not wr
 const lockHead = (level, count, reason, missing = false) =>
   `${level.padEnd(6)} [n] human text: ${count} text(s) lack a valid signature in human-text.json${missing ? " (there is no such file yet)" : ""}: ${reason}`;
 const lockLine = (level, what, key, file) => `${level.padEnd(6)} [n] human text: ${what}: ${key} (${file})`;
+const undeclaredLine = (level, file) =>
+  `${level.padEnd(6)} [n] human text: ${file} ships in the release ZIP (lang/ is packed whole), but module.json "languages" does not declare it, so its texts cannot be signed: declare it and sign them, or move it out of lang/ (${file})`;
 const PASS_N = "PASS   [n] human text: no TODO-HUMANO placeholders in 2 language file(s) or in module.json title and description";
 // The output without its first line, which names the temp folder.
 const body = (out) => out.split(/\r?\n/).slice(1).join("\n");
@@ -969,7 +971,8 @@ test("[n] without human-text.json every text counts as unsigned, and the list st
     assert.equal(lines[0], lockHead(level, 14, reason, true));
     assert.equal(lines[1], lockLine(level, "unsigned", "title", "module.json"));
     assert.equal(lines[10], lockLine(level, "unsigned", "baron-fixture.Open", "lang/es.json"));
-    assert.equal(lines[11], `${level.padEnd(6)} [n] human text: and 4 more`);
+    // The last line names the tool that prints the whole list.
+    assert.equal(lines[11], `${level.padEnd(6)} [n] human text: and 4 more (node ../pf2e-baron-core/tools/sign-text.mjs . lists them all)`);
     assert.ok(!res.out.includes("internal error"), res.out);
   }
 });
@@ -1039,13 +1042,48 @@ test("[n] the lock covers the languages module.json declares, nested keys and li
     },
   );
   const res = checkModule([dir]);
-  // lang/fr.json is not declared, so Foundry never loads it: nothing to sign
-  // there. The two new en.json keys are reported by their flattened key.
+  // lang/fr.json is not declared, so Foundry never loads it and none of its
+  // keys is a text to sign; but lang/ ships whole, so the file itself is
+  // reported. The two new en.json keys are reported by their flattened key.
   assert.deepEqual(nLines(parseReport(res.out), "WARN"), [
     lockHead("WARN", 2, LOCK_PUSH),
     lockLine("WARN", "unsigned", "baron-fixture.Help.Deep", "lang/en.json"),
     lockLine("WARN", "a list, not a string: cannot be signed", "baron-fixture.Lines", "lang/en.json"),
+    undeclaredLine("WARN", "lang/fr.json"),
   ], res.out);
+});
+
+test("[n] under the lock a lang/ file that module.json does not declare blocks the release, even with every text signed", (t) => {
+  const fr = { write: { "lang/fr.json": `{ "baron-fixture.Open": "Ouvrir" }${String.fromCharCode(10)}` } };
+  const dir = signFixture(locked(t, fr));
+  const push = checkModule([dir]);
+  assert.equal(push.status, 0, push.out);
+  assert.deepEqual(nLines(parseReport(push.out), "WARN"), [undeclaredLine("WARN", "lang/fr.json")], push.out);
+  const release = checkModule([dir, "--release"]);
+  assert.equal(release.status, 1, release.out);
+  assert.deepEqual(nLines(parseReport(release.out), "FAIL"), [undeclaredLine("FAIL", "lang/fr.json")], release.out);
+  // Without the lock the same file is not reported, as before.
+  const plain = checkModule([materialize(t, fr), "--release"]);
+  assert.equal(plain.status, 0, plain.out);
+  assert.deepEqual([...parseReport(plain.out).warn, ...parseReport(plain.out).fail], [], plain.out);
+});
+
+test("[n] a value with a lone UTF-16 surrogate is never signed: UTF-8 would hash it like another value", (t) => {
+  // Two different strings with the same UTF-8 bytes: each lone surrogate becomes U+FFFD.
+  const signedValue = `Open${String.fromCharCode(0xd800)}`;
+  const shipped = `Open${String.fromCharCode(0xdfff)}`;
+  assert.equal(textHash(signedValue), textHash(shipped));
+  const dir = signFixture(locked(t, { merge: { "lang/en.json": { "baron-fixture.Open": shipped } } }), (signed) => {
+    signed["lang/en.json"]["baron-fixture.Open"] = textHash(signedValue);
+  });
+  // On disk the value is a JSON escape of half a pair, as JSON.stringify writes it.
+  assert.ok(fs.readFileSync(path.join(dir, "lang", "en.json"), "utf8").includes(JSON.stringify(shipped)));
+  const what = "holds a lone UTF-16 surrogate (half of an escaped pair): cannot be signed";
+  const push = checkModule([dir]);
+  assert.deepEqual(nLines(parseReport(push.out), "WARN"), [lockHead("WARN", 1, LOCK_PUSH), lockLine("WARN", what, "baron-fixture.Open", "lang/en.json")], push.out);
+  const release = checkModule([dir, "--release"]);
+  assert.equal(release.status, 1, release.out);
+  assert.deepEqual(nLines(parseReport(release.out), "FAIL"), [lockHead("FAIL", 1, LOCK_RELEASE), lockLine("FAIL", what, "baron-fixture.Open", "lang/en.json")], release.out);
 });
 
 test("[n] under GitHub Actions each text of the lock becomes an annotation on its file", (t) => {

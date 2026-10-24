@@ -15,7 +15,7 @@ const INIT_REL = path.join("tools", "init-module.mjs");
 const skip = fs.existsSync(path.join(TEMPLATE, INIT_REL)) ? false : `no pf2e-module-template with ${INIT_REL} at ${TEMPLATE}`;
 
 /** The template's working tree copied to a folder named like the new id, then initialized. */
-function initModule(t, id, extra = [], { oldBaronJson = false } = {}) {
+function initModule(t, id, extra = [], { oldBaronJson = false, lockVersion } = {}) {
   const dir = path.join(tempDir(t, "init"), id);
   // Init skips these folders too; .git would point the copy at the template's remote.
   const SKIP = new Set([".git", "node_modules", ".baron-core", ".code-review-graph"]);
@@ -25,6 +25,12 @@ function initModule(t, id, extra = [], { oldBaronJson = false } = {}) {
     const baron = readJson(dir, "baron.json");
     delete baron.humanText;
     fs.writeFileSync(path.join(dir, "baron.json"), JSON.stringify(baron, null, 2) + "\n");
+  }
+  if (lockVersion !== undefined) {
+    // The core the module's CI will run, as sync-core would pin it.
+    const lock = readJson(dir, "baron-core.lock.json");
+    lock.version = lockVersion;
+    fs.writeFileSync(path.join(dir, "baron-core.lock.json"), JSON.stringify(lock, null, 2) + "\n");
   }
   const res = runNode(path.join(dir, INIT_REL), ["--id", id, "--title", "Init Fixture", "--description", "A module made by the init test.", "--author", "BaronHVC", "--prefix", "bif", ...extra], { cwd: dir });
   assert.equal(res.status, 0, res.out);
@@ -65,4 +71,24 @@ test("a freshly initialized module is held by the lock until its author signs ev
   assert.deepEqual(nOf(signed, "FAIL"), [], signed.out);
   const pass = nOf(signed, "PASS")[0] ?? "";
   assert.ok(pass.endsWith(`; ${res.signed} text(s) signed in human-text.json`), signed.out);
+});
+
+test("init-module warns while the pinned core's CI does not check the signatures yet", { skip }, (t) => {
+  const WARN = "OJO: baron-core.lock.json fija";
+  for (const [version, warns] of [
+    ["1.4.0", true],
+    ["1.3.0", true],
+    ["1.4.0-rc.1", true],
+    ["1.4.1", false],
+    ["1.5.0-rc.1", false],
+    ["1.5.0", false],
+    ["2.0.0", false],
+  ]) {
+    const { out } = initModule(t, `baron-init-v${version.replace(/[.]/g, "-")}`, ["--mode", "public"], { lockVersion: version });
+    assert.equal(out.includes(WARN), warns, `${version}${String.fromCharCode(10)}${out}`);
+    if (warns) {
+      assert.ok(out.includes(`${WARN} v${version}, y la CI de ese nucleo no revisa las firmas`), out);
+      assert.ok(out.includes("un texto nuevo lleva el marcador TODO-HUMANO: (regla 15 del CLAUDE.md)"), out);
+    }
+  }
 });

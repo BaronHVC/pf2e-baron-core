@@ -21,7 +21,7 @@
 //   [m] protected packaging: a paid module has a landing page, requires its free base and never links to GitHub
 //   [n] human text: no "TODO-HUMANO:" value left in lang files or module.json title/description (FAIL with --release)
 //       and, with baron.json "humanText": "signed", every such text signed by its author in human-text.json
-//       (sign-text.mjs; FAIL with --release, a malformed file FAILs always)
+//       and no undeclared lang/ file (sign-text.mjs; FAIL with --release, a malformed file FAILs always)
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -928,16 +928,21 @@ const SIGNATURE_PROBLEMS = {
   unwritten: "still to write (empty or TODO-HUMANO:)",
   conflict: "defined twice with different values",
   list: "a list, not a string: cannot be signed",
+  illformed: "holds a lone UTF-16 surrogate (half of an escaped pair): cannot be signed",
 };
 const SIGNATURE_DETAIL_CAP = 10;
+// For the person reading the capped list: the tool that prints all of it.
+const SIGN_TEXT_LIST = "node ../pf2e-baron-core/tools/sign-text.mjs . lists them all";
 
 /**
  * baron.json "humanText": "signed": every text of the declared language files
  * and the module.json title and description needs the author's signature in
  * human-text.json, the sha256 of the exact value, which only sign-text --sign
  * records, at a terminal. A push warns, --release fails, and a malformed file
- * fails always. Returns how many texts are signed, or null when the file is
- * malformed.
+ * fails always. A lang/ file that module.json does not declare ships in the
+ * release ZIP (lang/ is packed whole) with texts nobody can sign, so it is
+ * reported the same way. Returns how many texts are signed, or null when the
+ * file is malformed.
  */
 function checkSignatures(ctx, c) {
   const read = readSignatures(ctx.root);
@@ -949,16 +954,19 @@ function checkSignatures(ctx, c) {
   const langFiles = rels.map((rel) => ctx.langJson.get(rel)).filter((f) => f && f.data !== undefined);
   const texts = signatureStatus(humanTexts(ctx.module, langFiles), read.signed);
   const open = texts.filter((t) => t.status !== "signed");
+  const report = ctx.opts.release ? c.fail : c.warn;
   if (open.length) {
     const what = `${open.length} text(s) lack a valid signature in ${HUMAN_TEXT_FILE}${read.missing ? " (there is no such file yet)" : ""}`;
-    const report = ctx.opts.release ? c.fail : c.warn;
     if (ctx.opts.release) {
       report(`${what}: the release does not publish text that a person has not written and signed (Foundry's AI policy); rewrite each one from scratch, sign it with sign-text --sign and tag again`);
     } else {
       report(`${what}: the author rewrites each one from scratch and signs it at a terminal with sign-text --sign before tagging; the release refuses them (Foundry's AI policy)`);
     }
     for (const t of open.slice(0, SIGNATURE_DETAIL_CAP)) report(`${SIGNATURE_PROBLEMS[t.status]}: ${t.key}`, { file: t.file });
-    if (open.length > SIGNATURE_DETAIL_CAP) report(`and ${open.length - SIGNATURE_DETAIL_CAP} more`);
+    if (open.length > SIGNATURE_DETAIL_CAP) report(`and ${open.length - SIGNATURE_DETAIL_CAP} more (${SIGN_TEXT_LIST})`);
+  }
+  for (const rel of ctx.langFiles.filter((f) => !rels.includes(f))) {
+    report(`${rel} ships in the release ZIP (lang/ is packed whole), but module.json "languages" does not declare it, so its texts cannot be signed: declare it and sign them, or move it out of lang/`, { file: rel });
   }
   return texts.length - open.length;
 }

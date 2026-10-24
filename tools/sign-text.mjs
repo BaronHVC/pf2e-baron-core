@@ -10,19 +10,22 @@
 // of the exact value the author says he wrote from scratch, so any later change
 // to that value needs a new one. The texts are the module.json title and
 // description and every string value of the language files module.json
-// declares.
+// declares (every lang/*.json when it declares none, as rules [d] and [h] read
+// them).
 //
 // Without --sign it only lists: every text that is unsigned or changed since it
-// was signed, with its file, key and value, then a count; texts still to write
-// (empty or TODO-HUMANO:) and signatures whose key is gone, as information.
-// Exits 0.
+// was signed, with its file, key and value, then a count and the command that
+// signs them; texts still to write (empty or TODO-HUMANO:) and signatures whose
+// key is gone, as information. Exits 0.
 //
 // --sign asks a person at a terminal about each of those texts: "s" signs it,
-// "n" or Enter skips it, "q" stops and keeps what was signed so far. It refuses
-// to run unless stdin and stdout are a TTY, and there is no flag that answers
-// for the person. human-text.json is written once, at the end or on "q",
-// through a temporary file and a rename, without the signatures whose key is
-// gone; Ctrl+C before that leaves it untouched.
+// "n" or Enter skips it, "q" stops and keeps what was signed so far. For a
+// translation, "s" means the signer is fluent in its language and checked it
+// line by line against its human-written source. It refuses to run unless
+// stdin and stdout are a TTY, and there is no flag that answers for the
+// person. human-text.json is written once, at the end or on "q", through a
+// temporary file and a rename, without the signatures whose key is gone;
+// Ctrl+C or the end of input before that leaves it untouched.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -45,13 +48,41 @@ const USAGE = "usage: node sign-text.mjs [moduleDir] [--sign]";
 // stays ASCII: the inverted question mark and the accented u.
 export const QUESTION = `${String.fromCharCode(0xbf)}Escribiste t${String.fromCharCode(0xfa)} este texto desde cero? [s/N/q] `;
 
-export const NO_TTY_MESSAGE = [
-  "sign-text: --sign must be run by a person at a terminal: each signature says that you wrote that text yourself, from scratch, so nothing may answer for you (stdin and stdout must both be a TTY).",
-  "Run it in PowerShell or Windows Terminal, from the module folder:",
-  "  node ../pf2e-baron-core/tools/sign-text.mjs . --sign",
-  "Git Bash (mintty) does not give node a TTY; there, run it as:",
-  "  winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign",
-].join("\n");
+/** How the tool is run from the module folder, as the docs write it. */
+export const DEFAULT_COMMAND = "node ../pf2e-baron-core/tools/sign-text.mjs .";
+
+/**
+ * Why --sign refuses, and where it works.
+ * @param {{ stdin?: boolean, stdout?: boolean, command?: string }} [tty]
+ *   which stream is a terminal, when known, and the command that ran the tool
+ */
+export function noTtyMessage({ stdin, stdout, command = DEFAULT_COMMAND } = {}) {
+  const lines = [
+    "sign-text: --sign must be run by a person at a terminal: each signature says that you wrote that text yourself, from scratch, so nothing may answer for you (stdin and stdout must both be a TTY).",
+  ];
+  const notTty = [stdin === false && "stdin", stdout === false && "stdout"].filter(Boolean);
+  if (notTty.length) {
+    lines.push(`Here ${notTty.join(" and ")} ${notTty.length > 1 ? "are" : "is"} not a terminal: run it without a pipe or a redirection (no |, <, >, Tee-Object or more).`);
+  }
+  lines.push(
+    "Run it yourself in a terminal window (PowerShell, Windows Terminal or Git Bash):",
+    `  ${command} --sign`,
+    "Only with Git for Windows older than 2.54 does Git Bash (mintty) not give node a TTY; there, run it as:",
+    `  winpty ${command} --sign`,
+  );
+  return lines.join("\n");
+}
+export const NO_TTY_MESSAGE = noTtyMessage();
+
+/** Printed before the first question: what each answer does. */
+export const LEGEND = [
+  "Answer each question yourself:",
+  "  s           you wrote this text yourself, from scratch; for a translation: you are fluent in its",
+  "              language and checked it line by line against its human-written source",
+  "  N or Enter  skip it",
+  "  q           stop, and save the signatures given so far",
+  "  Ctrl+C      stop without saving any signature of this run",
+];
 
 // How each status reads in the listing; the first two are what --sign asks about.
 const LABELS = {
@@ -60,8 +91,16 @@ const LABELS = {
   unwritten: "to write",
   conflict: "conflict",
   list: "list",
+  illformed: "broken",
 };
 const TO_SIGN = new Set(["unsigned", "changed"]);
+// The listing shows at most this many stale signatures, as check-module caps its lines.
+const STALE_CAP = 10;
+// On Windows an editor, a sync client or an antivirus scan may hold
+// human-text.json open for a moment; the rename is tried again before giving up.
+const RENAME_RETRY = new Set(["EPERM", "EACCES", "EBUSY"]);
+const RENAME_TRIES = 10;
+const RENAME_WAIT_MS = 200;
 
 /** A problem with the module that stops the tool (exit 1), never a crash. */
 export class SignTextError extends Error {}
@@ -114,24 +153,42 @@ function copySigned(signed) {
   return out;
 }
 
+/** Whether `isTTY` (a boolean, or { stdin, stdout }) says both streams are a terminal. */
+const bothTty = (isTTY) => (isTTY !== null && typeof isTTY === "object" ? isTTY.stdin === true && isTTY.stdout === true : isTTY === true);
+
+/** Renames the temporary file over the target, trying again while another program holds it. */
+async function replaceFile(tmp, file) {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      fs.renameSync(tmp, file);
+      return;
+    } catch (err) {
+      if (!RENAME_RETRY.has(err?.code) || attempt >= RENAME_TRIES) throw err;
+      await new Promise((resolve) => setTimeout(resolve, RENAME_WAIT_MS));
+    }
+  }
+}
+
 /**
  * Lists the texts that need a signature or, with `sign`, asks about each one
  * and writes human-text.json. The CLI wraps it; tests pass `isTTY` and `ask`.
  * @param {{
  *   dir?: string,
  *   sign?: boolean,
- *   isTTY?: boolean,                         stdin and stdout are both a terminal
- *   ask?: (question: string) => Promise<string>,  one answer per call; a rejection (Ctrl+C) aborts without writing
+ *   isTTY?: boolean | { stdin: boolean, stdout: boolean },  stdin and stdout are both a terminal
+ *   ask?: (question: string) => Promise<string>,  one answer per call; a rejection (Ctrl+C) aborts without
+ *                                                 writing, and gets `signedBeforeStop`, the answers it threw away
+ *   command?: string,                        how the person ran the tool, for the hints
  *   log?: (line: string) => void,
  *   logError?: (line: string) => void,
  * }} opts
  * @returns {Promise<{ code: number, pending: number, signed: number, skipped: number, stale: number, wrote: boolean }>}
- * @throws {SignTextError} when the module cannot be read
+ * @throws {SignTextError} when the module cannot be read, or human-text.json cannot be written
  */
-export async function signTexts({ dir = process.cwd(), sign = false, isTTY = false, ask, log = console.log, logError = console.error } = {}) {
+export async function signTexts({ dir = process.cwd(), sign = false, isTTY = false, ask, command = DEFAULT_COMMAND, log = console.log, logError = console.error } = {}) {
   const result = { code: 0, pending: 0, signed: 0, skipped: 0, stale: 0, wrote: false };
-  if (sign && !isTTY) {
-    logError(NO_TTY_MESSAGE);
+  if (sign && !bothTty(isTTY)) {
+    logError(noTtyMessage({ ...(isTTY !== null && typeof isTTY === "object" ? isTTY : {}), command }));
     return { ...result, code: 1 };
   }
   if (sign && typeof ask !== "function") throw new TypeError("signTexts: --sign needs an ask() function");
@@ -144,7 +201,8 @@ export async function signTexts({ dir = process.cwd(), sign = false, isTTY = fal
   result.stale = stale.length;
 
   log(`sign-text: ${module?.id ?? path.basename(root)} (${root})${sign ? " --sign" : ""}`);
-  if (mode === undefined || mode === "markers") {
+  const off = mode === undefined || mode === "markers";
+  if (off) {
     log('note: baron.json does not say "humanText": "signed", so check-module does not ask for these signatures yet');
   } else if (mode !== "signed") {
     // check-module fails the value in [c] and keeps the lock on: a typo never switches it off.
@@ -159,7 +217,12 @@ export async function signTexts({ dir = process.cwd(), sign = false, isTTY = fal
     log(`sign-text: ${pending.length} text(s) need a signature (${unsigned} unsigned, ${pending.length - unsigned} changed since signed); ${done} of ${texts.length} signed`);
     reportBlocked(blocked, log);
     if (stale.length) {
-      log(`info: ${stale.length} signature(s) for keys that no longer exist; --sign removes them: ${stale.map((s) => `${s.file} ${s.key}`).join(", ")}`);
+      log(`info: ${stale.length} signature(s) for keys that no longer exist; --sign removes them:`);
+      for (const s of stale.slice(0, STALE_CAP)) log(`${"stale".padEnd(9)} ${s.file}  ${s.key}`);
+      if (stale.length > STALE_CAP) log(`and ${stale.length - STALE_CAP} more`);
+    }
+    if (pending.length) {
+      log(`next: rewrite each of these yourself, from scratch, then sign them in your terminal: ${command} --sign${off ? ' (check-module asks for them once baron.json says "humanText": "signed")' : ""}`);
     }
     return result;
   }
@@ -169,6 +232,10 @@ export async function signTexts({ dir = process.cwd(), sign = false, isTTY = fal
     delete next[file][key];
     if (!Object.keys(next[file]).length) delete next[file];
   }
+  if (pending.length) {
+    log("");
+    for (const line of LEGEND) log(line);
+  }
   let stopped = false;
   for (const [i, t] of pending.entries()) {
     log("");
@@ -176,7 +243,13 @@ export async function signTexts({ dir = process.cwd(), sign = false, isTTY = fal
     log(`  ${JSON.stringify(t.value)}`);
     let answer;
     for (;;) {
-      answer = String(await ask(QUESTION)).trim().toLowerCase();
+      try {
+        answer = String(await ask(QUESTION)).trim().toLowerCase();
+      } catch (err) {
+        // Ctrl+C or the end of input: nothing is written, so say what is lost.
+        if (err !== null && typeof err === "object") err.signedBeforeStop = result.signed;
+        throw err;
+      }
       if (["s", "n", "", "q"].includes(answer)) break;
       log('  answer "s" (you wrote it from scratch: sign it), "n" or Enter (skip it) or "q" (stop and keep what you signed)');
     }
@@ -199,10 +272,22 @@ export async function signTexts({ dir = process.cwd(), sign = false, isTTY = fal
     const tmp = path.join(root, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`);
     try {
       fs.writeFileSync(tmp, text);
-      fs.renameSync(tmp, file);
     } catch (err) {
-      fs.rmSync(tmp, { force: true });
-      throw err;
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        // the message below is what matters
+      }
+      throw new SignTextError(`could not write ${tmp} (${err.code ?? err.message}): ${HUMAN_TEXT_FILE} is unchanged, and the ${result.signed} signature(s) given in this run were not saved`);
+    }
+    try {
+      await replaceFile(tmp, file);
+    } catch (err) {
+      // The answers are in the temporary file: keep it, so they are not lost.
+      throw new SignTextError(
+        `could not replace ${file} (${err.code ?? err.message}: another program may have it open, such as an editor, a sync client or an antivirus scan). ` +
+          `The ${result.signed} signature(s) given in this run are in ${tmp}: close that program and rename that file over ${HUMAN_TEXT_FILE}, or run --sign again`,
+      );
     }
     result.wrote = true;
   }
@@ -223,6 +308,9 @@ function reportBlocked(blocked, log) {
   if (count("unwritten")) log(`info: ${count("unwritten")} text(s) still to write (empty or TODO-HUMANO:): write them yourself, then sign them`);
   if (count("conflict")) log(`info: ${count("conflict")} value(s) of keys defined twice with different values (nested and dotted): keep one, then sign it`);
   if (count("list")) log(`info: ${count("list")} list value(s): only a string value can be signed`);
+  if (count("illformed")) {
+    log(`info: ${count("illformed")} value(s) hold a lone UTF-16 surrogate (half of an escaped pair, from a broken JSON escape): fix the value, then sign it`);
+  }
 }
 
 /* ----------------------------------------------------------------------------
@@ -288,13 +376,16 @@ async function main(argv) {
     const { code } = await signTexts({
       dir: dir ?? process.cwd(),
       sign,
-      isTTY: Boolean(process.stdin.isTTY && process.stdout.isTTY),
+      isTTY: { stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true },
       ask: (question) => (term ??= terminal()).ask(question),
+      command: commandLine(dir),
     });
     return code;
   } catch (err) {
     if (err instanceof Interrupted) {
-      console.error(`\nsign-text: stopped (${err.message}): ${HUMAN_TEXT_FILE} is unchanged`);
+      const n = err.signedBeforeStop ?? 0;
+      const lost = n ? `; the ${n} signature(s) given in this run were not saved (answer q to stop and keep them)` : "";
+      console.error(`\nsign-text: stopped (${err.message}): ${HUMAN_TEXT_FILE} is unchanged${lost}`);
       return err.code;
     }
     if (err instanceof SignTextError) {
@@ -303,8 +394,25 @@ async function main(argv) {
     }
     throw err;
   } finally {
-    term?.close();
+    if (term) {
+      term.close();
+      // Ctrl+D closes readline from inside its own keypress handler, and stdin
+      // starts reading again afterwards: without this the process never exits.
+      process.stdin.destroy();
+    }
   }
+}
+
+/**
+ * The command as the person typed it, for the hints: this script relative to
+ * the current folder (forward slashes work in PowerShell and in Git Bash) and
+ * the module folder argument.
+ */
+function commandLine(dir) {
+  const quote = (s) => (/[\s"'&|<>()^;$`\\]/.test(s) ? `"${s}"` : s);
+  const script = process.argv[1] ? path.relative(process.cwd(), process.argv[1]).split(path.sep).join("/") : "";
+  if (!script) return DEFAULT_COMMAND;
+  return `node ${quote(script)} ${quote(dir ?? ".")}`;
 }
 
 // Imported by the tests, run by a person: only the latter parses argv.

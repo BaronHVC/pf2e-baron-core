@@ -4,10 +4,13 @@
 // TTY flag and the answers are injected, so nothing here needs a real one).
 
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import {
   HUMAN_TEXT_FILE,
   flattenLang,
@@ -19,12 +22,14 @@ import {
   signaturesText,
   staleSignatures,
 } from "../../tools/shared.mjs";
-import { NO_TTY_MESSAGE, QUESTION, SignTextError, signTexts } from "../../tools/sign-text.mjs";
-import { TOOLS, materialize, readJson, readText, runNode } from "./helpers.mjs";
+import { LEGEND, NO_TTY_MESSAGE, QUESTION, SignTextError, noTtyMessage, signTexts } from "../../tools/sign-text.mjs";
+import { REPO, TOOLS, childEnv, materialize, readJson, readText, runNode, tempDir } from "./helpers.mjs";
 
 // Independent oracle: sha256 of the exact UTF-8 bytes.
 const oracle = (s) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
 const SIGN_TEXT = path.join(TOOLS, "sign-text.mjs");
+const NL = String.fromCharCode(10);
+const NEXT = "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node ../pf2e-baron-core/tools/sign-text.mjs . --sign";
 
 /** The valid fixture with baron.json "humanText": "signed" plus `spec` (see helpers.materialize). */
 const signedModule = (t, spec = {}) =>
@@ -156,6 +161,29 @@ test("signatureStatus tells signed, unsigned, changed, still to write, conflicti
   );
 });
 
+test("signatureStatus never counts a string with a lone UTF-16 surrogate as signed: its UTF-8 hash is not its own", () => {
+  const ch = (...codes) => String.fromCharCode(...codes);
+  const high = `Open${ch(0xd800)}`;
+  const low = `Open${ch(0xdfff)}`;
+  const replacement = `Open${ch(0xfffd)}`;
+  const pair = `Open ${ch(0xd83d, 0xde00)}`;
+  // UTF-8 turns every lone surrogate into U+FFFD: three strings, one hash.
+  assert.equal(hashText(high), hashText(low));
+  assert.equal(hashText(high), hashText(replacement));
+  const texts = [
+    { file: "lang/en.json", key: "a", value: low },
+    { file: "lang/en.json", key: "b", value: ch(0xdbff) },
+    { file: "lang/en.json", key: "c", value: replacement },
+    { file: "lang/en.json", key: "d", value: pair },
+  ];
+  const signed = { "lang/en.json": { a: hashText(high), b: hashText(ch(0xfffd)), c: hashText(replacement), d: hashText(pair) } };
+  assert.deepEqual(
+    signatureStatus(texts, signed).map((t) => `${t.key} ${t.status}`),
+    // U+FFFD itself and a whole surrogate pair are ordinary text.
+    ["a illformed", "b illformed", "c signed", "d signed"],
+  );
+});
+
 test("staleSignatures lists the signed keys and files that no longer hold a text", () => {
   const texts = [{ file: "lang/en.json", key: "a" }, { file: "module.json", key: "title" }];
   const h = oracle("x");
@@ -252,7 +280,10 @@ test("without --sign it lists each unsigned or changed text with file, key and v
     "changed   lang/es.json  baron-fixture.Open",
     '          "Abrir"',
     "sign-text: 2 text(s) need a signature (1 unsigned, 1 changed since signed); 12 of 14 signed",
-    "info: 1 signature(s) for keys that no longer exist; --sign removes them: lang/en.json baron-fixture.Gone",
+    "info: 1 signature(s) for keys that no longer exist; --sign removes them:",
+    "stale     lang/en.json  baron-fixture.Gone",
+    // The last line says what to do next.
+    "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node ../pf2e-baron-core/tools/sign-text.mjs . --sign",
   ]);
   assert.ok(res.lines[0].startsWith("sign-text: baron-fixture ("), res.lines[0]);
   // Listing never writes.
@@ -285,9 +316,156 @@ test("the listing says so when baron.json has not opted in, and when its humanTe
   assert.ok(typo.lines.includes('note: baron.json "humanText" is "Signed", which check-module rejects (rule [c]); its lock still asks for these signatures'), typo.out);
 });
 
+test("the listing ends with the command that signs, and says when check-module does not ask for it yet", async (t) => {
+  const on = await run(signedModule(t));
+  assert.equal(on.lines.at(-1), NEXT, on.out);
+  const off = await run(materialize(t));
+  assert.equal(off.lines.at(-1), `${NEXT} (check-module asks for them once baron.json says "humanText": "signed")`, off.out);
+  // The CLI passes the command as the person typed it.
+  const typed = await run(signedModule(t), { command: "node tools/sign-text.mjs mod" });
+  assert.equal(typed.lines.at(-1), "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node tools/sign-text.mjs mod --sign", typed.out);
+  // Nothing to sign: no next step.
+  const dir = signedModule(t);
+  writeSignatures(dir, hashesOf(fixtureTexts(dir)));
+  const done = await run(dir);
+  assert.ok(!done.lines.some((l) => l.startsWith("next:")), done.out);
+});
+
+test("the listing shows stale signatures one per line, ten at most", async (t) => {
+  const dir = signedModule(t);
+  const signed = hashesOf(fixtureTexts(dir));
+  for (let i = 0; i < 300; i++) signed["lang/en.json"][`OLD-PREFIX.SomeSettingNameHint${i}`] = oracle(String(i));
+  writeSignatures(dir, signed);
+  const res = await run(dir);
+  assert.equal(res.stale, 300);
+  const at = res.lines.indexOf("info: 300 signature(s) for keys that no longer exist; --sign removes them:");
+  assert.ok(at > 0, res.out);
+  assert.deepEqual(
+    res.lines.slice(at + 1, at + 12),
+    [...Array.from({ length: 10 }, (_, i) => `stale     lang/en.json  OLD-PREFIX.SomeSettingNameHint${i}`), "and 290 more"],
+  );
+  assert.ok(res.lines.every((l) => l.length < 200), "no line runs on");
+});
+
 /* ----------------------------------------------------------------------------
  * Signing (--sign)
  * -------------------------------------------------------------------------- */
+
+test("--sign explains each answer, the translation case included, before the first question", async (t) => {
+  const dir = signedModule(t);
+  const res = await run(dir, { sign: true, isTTY: true, ask: fakeAsk("q").ask });
+  const at = res.lines.indexOf(LEGEND[0]);
+  const first = res.lines.findIndex((l) => l.startsWith("[1/14] "));
+  assert.ok(at > 0 && at < first, res.out);
+  assert.deepEqual(res.lines.slice(at, at + LEGEND.length), LEGEND);
+  const legend = LEGEND.join(" ").replace(/ +/g, " ");
+  for (const words of [
+    "s you wrote this text yourself, from scratch",
+    "for a translation: you are fluent in its language and checked it line by line against its human-written source",
+    "N or Enter skip it",
+    "q stop, and save the signatures given so far",
+    "Ctrl+C stop without saving any signature of this run",
+  ]) {
+    assert.ok(legend.includes(words), words);
+  }
+  // With nothing to ask there is nothing to explain.
+  writeSignatures(dir, hashesOf(fixtureTexts(dir)));
+  const done = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
+  assert.ok(!done.lines.includes(LEGEND[0]), done.out);
+});
+
+test("--sign names the stream that is not a terminal, and needs both to be one", async (t) => {
+  const dir = signedModule(t);
+  for (const [tty, here] of [
+    [{ stdin: true, stdout: false }, "Here stdout is not a terminal"],
+    [{ stdin: false, stdout: true }, "Here stdin is not a terminal"],
+    [{ stdin: false, stdout: false }, "Here stdin and stdout are not a terminal"],
+  ]) {
+    const fake = fakeAsk("s");
+    const res = await run(dir, { sign: true, isTTY: tty, ask: fake.ask });
+    assert.equal(res.code, 1, JSON.stringify(tty));
+    assert.deepEqual(fake.asked, []);
+    assert.deepEqual(res.errors, [noTtyMessage(tty)]);
+    assert.ok(res.errors[0].includes(`${NL}${here}: run it without a pipe or a redirection (no |, <, >, Tee-Object or more).${NL}`), res.errors[0]);
+  }
+  const both = await run(dir, { sign: true, isTTY: { stdin: true, stdout: true }, ask: fakeAsk("q").ask });
+  assert.equal(both.code, 0, both.out);
+  // The suggested commands are the one the person typed.
+  const lines = noTtyMessage({ stdout: false, command: "node x/sign-text.mjs mod" }).split(NL);
+  assert.ok(lines.includes("  node x/sign-text.mjs mod --sign") && lines.includes("  winpty node x/sign-text.mjs mod --sign"), lines.join(NL));
+  assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
+});
+
+test("--sign never asks about a value with a lone UTF-16 surrogate and lists it as broken", async (t) => {
+  const bad = `Open${String.fromCharCode(0xd800)}`;
+  const dir = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Open": bad } } });
+  const fake = fakeAsk(...Array(13).fill("s"));
+  const res = await run(dir, { sign: true, isTTY: true, ask: fake.ask });
+  assert.equal(fake.asked.length, 13, res.out);
+  assert.ok(!Object.hasOwn(readSigned(dir)["lang/en.json"], "baron-fixture.Open"));
+  assert.ok(res.out.includes(`broken    lang/en.json  baron-fixture.Open${NL}          ${JSON.stringify(bad)}`), res.out);
+  assert.ok(res.lines.includes("info: 1 value(s) hold a lone UTF-16 surrogate (half of an escaped pair, from a broken JSON escape): fix the value, then sign it"), res.out);
+});
+
+test("--sign: Ctrl+C tells the caller how many answers it threw away", async (t) => {
+  const dir = signedModule(t);
+  const interrupted = new Error("Ctrl+C");
+  await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fakeAsk("s", "n", "s", interrupted).ask }), interrupted);
+  assert.equal(interrupted.signedBeforeStop, 2);
+  assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
+});
+
+test("--sign tries the rename again while another program holds human-text.json, and keeps the answers when it cannot", async (t) => {
+  const dir = signedModule(t);
+  const file = path.join(dir, HUMAN_TEXT_FILE);
+  const realRename = fs.renameSync;
+  const busy = (code) => Object.assign(new Error(`${code}: held by another program, rename`), { code });
+  const tmps = () => fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"));
+
+  // Held for a moment: the third try goes through.
+  let tries = 0;
+  const brief = t.mock.method(fs, "renameSync", (...args) => {
+    tries++;
+    if (tries <= 2) throw busy("EPERM");
+    return realRename(...args);
+  });
+  const first = await run(dir, { sign: true, isTTY: true, ask: fakeAsk("s", "q").ask });
+  brief.mock.restore();
+  assert.equal(tries, 3);
+  assert.equal(first.wrote, true);
+  assert.deepEqual(readSigned(dir), { "module.json": { title: oracle("Baron Fixture") } });
+  assert.deepEqual(tmps(), []);
+
+  // Held for good: the file stays as it was and the answers stay in the temporary file.
+  const before = readText(dir, HUMAN_TEXT_FILE);
+  const held = t.mock.method(fs, "renameSync", () => {
+    throw busy("EBUSY");
+  });
+  let message = "";
+  await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fakeAsk("s", "q").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  assert.equal(held.mock.callCount(), 10);
+  held.mock.restore();
+  assert.equal(readText(dir, HUMAN_TEXT_FILE), before);
+  assert.equal(tmps().length, 1);
+  const tmp = path.join(dir, tmps()[0]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(tmp, "utf8")).signed, { "module.json": { title: oracle("Baron Fixture"), description: oracle(readJson(dir, "module.json").description) } });
+  for (const words of [`could not replace ${file} (EBUSY: another program may have it open`, `The 1 signature(s) given in this run are in ${tmp}`, "rename that file over human-text.json, or run --sign again"]) {
+    assert.ok(message.includes(words), `${words}${NL}${message}`);
+  }
+  fs.rmSync(tmp);
+
+  // Any other error is not tried again.
+  const other = t.mock.method(fs, "renameSync", () => {
+    throw busy("EXDEV");
+  });
+  await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fakeAsk("s", "q").ask }), SignTextError);
+  assert.equal(other.mock.callCount(), 1);
+  other.mock.restore();
+  assert.equal(readText(dir, HUMAN_TEXT_FILE), before);
+});
 
 test("--sign refuses without a terminal, asks nothing and writes nothing", async (t) => {
   const dir = signedModule(t);
@@ -296,9 +474,14 @@ test("--sign refuses without a terminal, asks nothing and writes nothing", async
   assert.equal(res.code, 1);
   assert.deepEqual(fake.asked, []);
   assert.deepEqual(res.errors, [NO_TTY_MESSAGE]);
-  for (const words of ["by a person at a terminal", "PowerShell or Windows Terminal", "Git Bash (mintty)", "winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign"]) {
+  const lines = NO_TTY_MESSAGE.split(NL);
+  for (const words of ["by a person at a terminal", "(PowerShell, Windows Terminal or Git Bash)", "Only with Git for Windows older than 2.54 does Git Bash (mintty) not give node a TTY"]) {
     assert.ok(NO_TTY_MESSAGE.includes(words), words);
   }
+  assert.ok(lines.includes("  node ../pf2e-baron-core/tools/sign-text.mjs . --sign"), NO_TTY_MESSAGE);
+  assert.ok(lines.includes("  winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign"), NO_TTY_MESSAGE);
+  // Without knowing which stream is not a terminal, it does not guess.
+  assert.ok(!NO_TTY_MESSAGE.includes("Here "), NO_TTY_MESSAGE);
   assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
   // isTTY must be true, not merely truthy-looking.
   assert.equal((await run(dir, { sign: true, ask: fake.ask })).code, 1);
@@ -443,9 +626,15 @@ test("the CLI lists with exit 0 and refuses --sign when stdin is a pipe, with th
   assert.ok(list.stdout.includes("sign-text: 14 text(s) need a signature (14 unsigned, 0 changed since signed); 0 of 14 signed"), list.out);
 
   // spawnSync gives the child pipes, never a TTY: exactly what an agent has.
+  // The message says so, and repeats the command as it was typed (here from
+  // the core folder, with the module folder as argument).
   const sign = runNode(SIGN_TEXT, [dir, "--sign"]);
   assert.equal(sign.status, 1, sign.out);
-  assert.ok(sign.stderr.includes("winpty node ../pf2e-baron-core/tools/sign-text.mjs . --sign"), sign.out);
+  const errLines = sign.stderr.split(/\r?\n/);
+  assert.ok(errLines.includes("Here stdin and stdout are not a terminal: run it without a pipe or a redirection (no |, <, >, Tee-Object or more)."), sign.out);
+  const typed = /[\s"'&|<>()^;$`\\]/.test(dir) ? `"${dir}"` : dir;
+  assert.ok(errLines.includes(`  node tools/sign-text.mjs ${typed} --sign`), sign.out);
+  assert.ok(errLines.includes(`  winpty node tools/sign-text.mjs ${typed} --sign`), sign.out);
   assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
 
   // From the module folder, with no argument.
@@ -468,4 +657,69 @@ test("the CLI has no way to sign without a person: unknown flags are errors", (t
   assert.equal(missing.status, 1);
   assert.match(missing.stderr, /is not a folder/);
   assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
+});
+
+const CR = String.fromCharCode(13);
+const CTRL_C = String.fromCharCode(3);
+const CTRL_D = String.fromCharCode(4);
+
+/**
+ * Runs the CLI with stdin and stdout faked to be a terminal (a preload sets
+ * their isTTY), typing the next of `keys` at each question. A child that is
+ * still running after `timeoutMs` is killed and reported as timed out.
+ */
+async function runFakeTerminal(t, args, keys, { timeoutMs = 15000 } = {}) {
+  const preload = path.join(tempDir(t, "tty"), "fake-tty.mjs");
+  fs.writeFileSync(preload, 'for (const s of [process.stdin, process.stdout]) Object.defineProperty(s, "isTTY", { value: true, configurable: true });\n');
+  const child = spawn(process.execPath, ["--import", pathToFileURL(preload).href, SIGN_TEXT, ...args], { cwd: REPO, env: childEnv(), stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+  let stdout = "";
+  let stderr = "";
+  let typed = 0;
+  const left = [...keys];
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (d) => {
+    stdout += d;
+    const asked = stdout.split("[s/N/q]").length - 1;
+    while (typed < asked && left.length) {
+      typed++;
+      child.stdin.write(left.shift());
+    }
+  });
+  child.stderr.on("data", (d) => {
+    stderr += d;
+  });
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    child.kill();
+  }, timeoutMs);
+  const [code] = await once(child, "close");
+  clearTimeout(timer);
+  return { code, timedOut, stdout, stderr, out: `${stdout}${stderr}` };
+}
+
+test("the CLI at a terminal: q saves, Ctrl+C exits 130 and Ctrl+D exits 1, both without writing and saying what was lost", async (t) => {
+  const dir = signedModule(t);
+  const file = path.join(dir, HUMAN_TEXT_FILE);
+
+  // Ctrl+D closes readline from inside its keypress handler: the process must still exit.
+  const eof = await runFakeTerminal(t, [dir, "--sign"], [`s${CR}`, CTRL_D]);
+  assert.equal(eof.timedOut, false, `Ctrl+D left the process running${NL}${eof.out}`);
+  assert.equal(eof.code, 1, eof.out);
+  assert.ok(eof.stderr.includes("sign-text: stopped (end of input): human-text.json is unchanged; the 1 signature(s) given in this run were not saved (answer q to stop and keep them)"), eof.out);
+  assert.ok(!fs.existsSync(file));
+
+  const interrupt = await runFakeTerminal(t, [dir, "--sign"], [`s${CR}`, `s${CR}`, CTRL_C]);
+  assert.equal(interrupt.timedOut, false, interrupt.out);
+  assert.equal(interrupt.code, 130, interrupt.out);
+  assert.ok(interrupt.stderr.includes("sign-text: stopped (Ctrl+C): human-text.json is unchanged; the 2 signature(s) given in this run were not saved"), interrupt.out);
+  assert.ok(!fs.existsSync(file));
+
+  const quit = await runFakeTerminal(t, [dir, "--sign"], [`s${CR}`, `q${CR}`]);
+  assert.equal(quit.timedOut, false, quit.out);
+  assert.equal(quit.code, 0, quit.out);
+  assert.ok(quit.stdout.includes(LEGEND.join(NL)), quit.out);
+  assert.deepEqual(readSigned(dir), { "module.json": { title: oracle("Baron Fixture") } });
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes(".tmp")), []);
 });

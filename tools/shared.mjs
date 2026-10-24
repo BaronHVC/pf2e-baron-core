@@ -300,7 +300,10 @@ export const isHumanPlaceholder = (value) => value.trimStart().startsWith(HUMAN_
 
 /**
  * sha256 of the exact string, as UTF-8: no trim, no line-ending or Unicode
- * normalization, so any change to the text needs a new signature.
+ * normalization, so any change to the text needs a new signature. UTF-8 is
+ * lossless only for a well-formed string: it turns every lone surrogate into
+ * U+FFFD, so signatureStatus() never counts a string that is not well formed
+ * as signed.
  * @param {string} value
  * @returns {string} lowercase hex
  */
@@ -396,6 +399,8 @@ export function readSignatures(root) {
  *   "unwritten"  empty, or still a TODO-HUMANO: placeholder: nothing to sign yet
  *   "conflict"   the file defines the key twice (nested and dotted) with different values
  *   "list"       an array holds the text: only a string value can be signed
+ *   "illformed"  the string holds a lone UTF-16 surrogate (a JSON escape of
+ *                half a pair): its hash would not tell it from another value
  * @param {{ file: string, key: string, value: unknown }[]} texts from humanTexts()
  * @param {object} signed
  * @returns {{ file: string, key: string, value: unknown, status: string }[]}
@@ -412,6 +417,7 @@ export function signatureStatus(texts, signed) {
     const recorded = keys && Object.hasOwn(keys, t.key) ? keys[t.key] : null;
     let status;
     if (typeof t.value !== "string") status = "list";
+    else if (!t.value.isWellFormed()) status = "illformed";
     else if (all.some((v) => v !== t.value)) status = "conflict";
     else if (!t.value.trim() || isHumanPlaceholder(t.value)) status = "unwritten";
     else if (recorded === hashText(t.value)) status = "signed";
