@@ -212,6 +212,63 @@ export function splitGitHubPaths(paths) {
   return { own: paths.filter((p) => !isDep(p)), deps: paths.filter(isDep) };
 }
 
+/* ----------------------------------------------------------------------------
+ * Module files and language keys
+ * -------------------------------------------------------------------------- */
+
+/**
+ * Files under `relDir` whose name passes `filter`, recursively (node_modules
+ * skipped), sorted.
+ * @param {string} root module folder
+ * @param {string} relDir
+ * @param {(name: string) => boolean} filter
+ * @returns {string[]} paths relative to root, with forward slashes
+ */
+export function walk(root, relDir, filter) {
+  const out = [];
+  const dir = path.join(root, relDir);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return out;
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const rel = `${relDir}/${e.name}`;
+    if (e.isDirectory()) {
+      if (e.name !== "node_modules") out.push(...walk(root, rel, filter));
+    } else if (e.isFile() && filter(e.name)) out.push(rel);
+  }
+  return out.sort();
+}
+
+/**
+ * The language files Foundry will load: module.json's "languages" list, else
+ * every lang/*.json.
+ * @param {string} root module folder
+ * @param {object|null} module parsed module.json
+ * @returns {{ lang: string, rel: string }[]}
+ */
+export function languageEntries(root, module) {
+  const declared = Array.isArray(module?.languages) ? module.languages.filter((l) => l && typeof l.path === "string") : [];
+  return declared.length
+    ? declared.map((l) => ({ lang: String(l.lang ?? path.basename(l.path, ".json")), rel: l.path.replace(/^\.\//, "") }))
+    : walk(root, "lang", (n) => n.endsWith(".json")).map((rel) => ({ lang: path.basename(rel, ".json"), rel }));
+}
+
+/**
+ * Every leaf of a language file as [key, value], in file order. Foundry keys
+ * may be nested objects or flat dotted strings; both mean the same key, so a
+ * nested key is joined with dots. Anything that is not a plain object (a
+ * string, an array, a number) is a leaf. check-module's key parity [d] and key
+ * lookups [h] use the keys.
+ * @param {unknown} obj
+ * @returns {[string, unknown][]}
+ */
+export function flattenLang(obj, prefix = "", out = []) {
+  for (const [k, v] of Object.entries(obj ?? {})) {
+    const key = prefix ? `${prefix}.${k}` : k;
+    if (v && typeof v === "object" && !Array.isArray(v)) flattenLang(v, key, out);
+    else out.push([key, v]);
+  }
+  return out;
+}
+
 const REGEX_KEYWORDS = new Set([
   "return", "typeof", "instanceof", "in", "of", "new", "delete", "void",
   "throw", "case", "do", "else", "yield", "await",

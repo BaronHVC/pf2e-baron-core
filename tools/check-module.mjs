@@ -31,15 +31,18 @@ import {
   VENDORED_PATH,
   coreFileAt,
   findUsesPins,
+  flattenLang,
   githubPaths,
   gitTry,
   httpsUrlProblem,
+  languageEntries,
   mentionsGitHub,
   readCoreVersion,
   scanJs,
   sha256Lf,
   splitGitHubPaths,
   toLf,
+  walk,
   workflowFiles,
 } from "./shared.mjs";
 
@@ -154,19 +157,6 @@ class Reporter {
  * Module model
  * -------------------------------------------------------------------------- */
 
-function walk(root, relDir, filter) {
-  const out = [];
-  const dir = path.join(root, relDir);
-  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return out;
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    const rel = `${relDir}/${e.name}`;
-    if (e.isDirectory()) {
-      if (e.name !== "node_modules") out.push(...walk(root, rel, filter));
-    } else if (e.isFile() && filter(e.name)) out.push(rel);
-  }
-  return out.sort();
-}
-
 function readJson(root, rel) {
   const file = path.join(root, rel);
   if (!fs.existsSync(file)) return { rel, missing: true };
@@ -177,16 +167,6 @@ function readJson(root, rel) {
     const bom = text.charCodeAt(0) === 0xfeff ? " (the file starts with a UTF-8 BOM)" : "";
     return { rel, error: `${err.message}${bom}` };
   }
-}
-
-/** Foundry keys may be nested objects or flat dotted strings; both mean the same key. */
-function flattenKeys(obj, prefix = "", out = new Set()) {
-  for (const [k, v] of Object.entries(obj ?? {})) {
-    const key = prefix ? `${prefix}.${k}` : k;
-    if (v && typeof v === "object" && !Array.isArray(v)) flattenKeys(v, key, out);
-    else out.add(key);
-  }
-  return out;
 }
 
 /**
@@ -239,10 +219,7 @@ function loadModule(root, opts) {
   ctx.vendored = fs.existsSync(path.join(root, VENDORED_PATH));
 
   // Languages Foundry will load: the manifest's list, else every lang/*.json.
-  const declared = Array.isArray(ctx.module?.languages) ? ctx.module.languages.filter((l) => l && typeof l.path === "string") : [];
-  const langEntries = declared.length
-    ? declared.map((l) => ({ lang: String(l.lang ?? path.basename(l.path, ".json")), rel: l.path.replace(/^\.\//, "") }))
-    : walk(root, "lang", (n) => n.endsWith(".json")).map((rel) => ({ lang: path.basename(rel, ".json"), rel }));
+  const langEntries = languageEntries(root, ctx.module);
   ctx.langFiles = [...new Set([...langEntries.map((l) => l.rel), ...walk(root, "lang", (n) => n.endsWith(".json"))])];
   ctx.langJson = new Map(ctx.langFiles.map((rel) => [rel, readJson(root, rel)]));
   ctx.langKeys = new Map(); // lang code -> Set of keys (several files per code merge, as in Foundry)
@@ -250,7 +227,7 @@ function loadModule(root, opts) {
     const data = ctx.langJson.get(rel)?.data;
     if (!data) continue;
     const keys = ctx.langKeys.get(lang) ?? new Set();
-    for (const k of flattenKeys(data)) keys.add(k);
+    for (const [k] of flattenLang(data)) keys.add(k);
     ctx.langKeys.set(lang, keys);
   }
 
