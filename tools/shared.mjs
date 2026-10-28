@@ -1,6 +1,7 @@
-// Helpers shared by sync-core.mjs, check-module.mjs, release-manifest.mjs and
-// sign-text.mjs. Node built-ins and git only: the tools run on a dev's Windows
-// box and on the Linux CI runner, with no npm install in between.
+// Helpers shared by sync-core.mjs, check-module.mjs, release-manifest.mjs,
+// sign-text.mjs and text-sheet.mjs. Node built-ins and git only: the tools run
+// on a dev's Windows box and on the Linux CI runner, with no npm install in
+// between.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -440,14 +441,12 @@ export function staleSignatures(texts, signed) {
 }
 
 /**
- * human-text.json text: keys sorted at every level, 2-space indent, LF and a
- * trailing newline, so signing the same texts again produces no diff. Written
- * by hand rather than with JSON.stringify(obj, null, 2), which would put a key
- * that looks like an array index ("2", "10") first whatever the sort says.
- * @param {object} signed file -> key -> sha256
- * @returns {string}
+ * JSON text with the keys sorted at every level, 2-space indent, LF and a
+ * trailing newline. Written by hand rather than with JSON.stringify(obj, null,
+ * 2), which would put a key that looks like an array index ("2", "10") first
+ * whatever the sort says.
  */
-export function signaturesText(signed) {
+function sortedJsonText(data) {
   const write = (value, indent) => {
     if (!isPlainObject(value)) return JSON.stringify(value);
     const keys = Object.keys(value).sort();
@@ -455,7 +454,108 @@ export function signaturesText(signed) {
     const inner = `${indent}  `;
     return `{\n${keys.map((k) => `${inner}${JSON.stringify(k)}: ${write(value[k], inner)}`).join(",\n")}\n${indent}}`;
   };
-  return `${write({ version: HUMAN_TEXT_VERSION, signed }, "")}\n`;
+  return `${write(data, "")}\n`;
+}
+
+/**
+ * human-text.json text: keys sorted at every level, 2-space indent, LF and a
+ * trailing newline, so signing the same texts again produces no diff.
+ * @param {object} signed file -> key -> sha256
+ * @returns {string}
+ */
+export function signaturesText(signed) {
+  return sortedJsonText({ version: HUMAN_TEXT_VERSION, signed });
+}
+
+/* ----------------------------------------------------------------------------
+ * Who wrote each signed text: human-text-authors.json, next to
+ * human-text.json. sign-text --sign --author <name> and --sign --sheet record
+ * the author with each signature they give, for the person who attests the
+ * texts to Foundry and signs for an author without a terminal. check-module
+ * never reads it, and the release ZIP never packs it.
+ * -------------------------------------------------------------------------- */
+
+/** The authors, at the module root, committed like human-text.json. */
+export const HUMAN_TEXT_AUTHORS_FILE = "human-text-authors.json";
+export const HUMAN_TEXT_AUTHORS_VERSION = 1;
+/** The longest author name, in characters (code points), after trimming. */
+export const AUTHOR_NAME_MAX = 60;
+
+/**
+ * Why `name` cannot name an author, or null. It is trimmed first: what is left
+ * must be 1 to AUTHOR_NAME_MAX characters, with no control character.
+ * @param {unknown} name
+ * @returns {string|null}
+ */
+export function authorNameProblem(name) {
+  if (typeof name !== "string") return "must be a name";
+  const s = name.trim();
+  if (!s) return "is empty: give the name of the person who wrote the texts";
+  if (/\p{Cc}/u.test(s)) return `${JSON.stringify(s)} holds a control character (a tab, a line break or another invisible one)`;
+  if (!s.isWellFormed()) return "holds a lone UTF-16 surrogate";
+  const length = [...s].length;
+  if (length > AUTHOR_NAME_MAX) return `is ${length} characters long: an author name has ${AUTHOR_NAME_MAX} at most`;
+  return null;
+}
+
+/**
+ * Why `data` is not a valid human-text-authors.json, or null:
+ * { "version": 1, "authors": { "<file>": { "<key>": "<name>" } } }, each name
+ * as authorNameProblem() accepts it, already trimmed.
+ * @param {unknown} data
+ * @returns {string|null}
+ */
+export function authorsProblem(data) {
+  const show = (v) => String(JSON.stringify(v));
+  if (!isPlainObject(data)) return "must hold a JSON object";
+  const extra = Object.keys(data).filter((k) => k !== "version" && k !== "authors");
+  if (extra.length) return `has unknown key(s) ${extra.map(show).join(", ")}: only "version" and "authors" are allowed`;
+  if (data.version !== HUMAN_TEXT_AUTHORS_VERSION) return `has "version" ${show(data.version)}: it must be ${HUMAN_TEXT_AUTHORS_VERSION}`;
+  if (!isPlainObject(data.authors)) return 'needs "authors" to be an object of files';
+  for (const [file, keys] of Object.entries(data.authors)) {
+    if (!isPlainObject(keys)) return `has authors[${show(file)}] that is not an object of keys`;
+    for (const [key, name] of Object.entries(keys)) {
+      const problem = authorNameProblem(name);
+      if (problem || name !== name.trim()) return `has authors[${show(file)}][${show(key)}] that is not an author name (${problem ?? "spaces at an end"})`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Reads human-text-authors.json from the module folder.
+ * @param {string} root
+ * @returns {{ missing: true, authors: object } | { error: string } | { authors: object }}
+ *   `authors` is the file's "authors" map ({} when there is no file)
+ */
+export function readAuthors(root) {
+  const file = path.join(root, HUMAN_TEXT_AUTHORS_FILE);
+  if (!fs.existsSync(file)) return { missing: true, authors: {} };
+  let text;
+  try {
+    text = fs.readFileSync(file, "utf8");
+  } catch (err) {
+    return { error: `cannot be read: ${err.message}` };
+  }
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    const bom = text.charCodeAt(0) === 0xfeff ? " (the file starts with a UTF-8 BOM)" : "";
+    return { error: `is not valid JSON: ${err.message}${bom}` };
+  }
+  const problem = authorsProblem(data);
+  return problem ? { error: problem } : { authors: data.authors };
+}
+
+/**
+ * human-text-authors.json text, in the format of human-text.json: keys sorted
+ * at every level, 2-space indent, LF and a trailing newline.
+ * @param {object} authors file -> key -> name
+ * @returns {string}
+ */
+export function authorsText(authors) {
+  return sortedJsonText({ version: HUMAN_TEXT_AUTHORS_VERSION, authors });
 }
 
 const REGEX_KEYWORDS = new Set([

@@ -75,6 +75,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Con las etiquetas: una prueba corre el check-module de los cores
+          # que fijan los modulos (v1.5.0, v1.6.0) sobre un modulo de hoy.
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
