@@ -5,11 +5,14 @@
 // files that change only in the edited values, byte for byte).
 
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { HUMAN_TEXT_FILE } from "../../tools/shared.mjs";
+import { signTexts } from "../../tools/sign-text.mjs";
+import * as TS from "../../tools/text-sheet.mjs";
 import {
   CURRENT_PREFIX,
   DRAFT_FILE,
@@ -24,7 +27,7 @@ import {
   jsonStringLeaves,
   parseDraft,
 } from "../../tools/text-sheet.mjs";
-import { TOOLS, git, materialize, readJson, readText, runNode } from "./helpers.mjs";
+import { TOOLS, checkModule, git, materialize, readJson, readText, runNode } from "./helpers.mjs";
 
 const ch = (...codes) => String.fromCharCode(...codes);
 const BOM = ch(0xfeff);
@@ -255,10 +258,10 @@ test("parseDraft reads the documented shape: the key first, the columns by heade
     "",
   ].join("\r\n");
   assert.deepEqual(parseDraft(text), [
-    { key: "baron-fixture.Notice", line: 15, where: "panel\ny chat", intent: "uno | otro", placeholders: ["{count}", "{total}"], max: 40 },
-    { key: "Kind_b", line: 16, where: "etiqueta", intent: "nombra", placeholders: [], max: null },
-    { key: "A.One", line: 17, where: "dos claves", intent: "la misma nota", placeholders: [], max: 9 },
-    { key: "A.Two", line: 17, where: "dos claves", intent: "la misma nota", placeholders: [], max: 9 },
+    { key: "baron-fixture.Notice", line: 15, section: "Textos", where: "panel\ny chat", intent: "uno | otro", placeholders: ["{count}", "{total}"], max: 40 },
+    { key: "Kind_b", line: 16, section: "Textos", where: "etiqueta", intent: "nombra", placeholders: [], max: null },
+    { key: "A.One", line: 17, section: "Textos", where: "dos claves", intent: "la misma nota", placeholders: [], max: 9 },
+    { key: "A.Two", line: 17, section: "Textos", where: "dos claves", intent: "la misma nota", placeholders: [], max: 9 },
   ]);
 });
 
@@ -273,8 +276,8 @@ test("parseDraft reads the template's earlier shape: archivo | clave | intencion
     "",
   ].join("\n");
   assert.deepEqual(parseDraft(text), [
-    { key: "__MODULE_ID__.Open", line: 5, where: "", intent: "viene de la plantilla: etiqueta del boton", placeholders: null, max: null },
-    { key: "__MODULE_ID__.SettingGmOnly", line: 6, where: "", intent: "nombre del ajuste", placeholders: null, max: null },
+    { key: "__MODULE_ID__.Open", line: 5, section: "Textos de trabajo escritos por IA", where: "", intent: "viene de la plantilla: etiqueta del boton", placeholders: null, max: null },
+    { key: "__MODULE_ID__.SettingGmOnly", line: 6, section: "Textos de trabajo escritos por IA", where: "", intent: "nombre del ajuste", placeholders: null, max: null },
   ]);
 });
 
@@ -306,6 +309,9 @@ test("parseDraft reads the baron-traps shape: several tables, keys without the p
   ]);
   assert.equal(rows[0].intent, `Prop${ch(0xf3)}sito: encabezar.`);
   assert.equal(rows[0].where, `T${ch(0xed)}tulo de la tarjeta.`);
+  assert.equal(rows[0].section, "Tarjeta");
+  // Its concept table is read apart, for the terms the keys share.
+  assert.deepEqual(TS.parseConcepts(text), [{ line: 7, concept: "Los tres valores de la flag state", keys: ["StateArmed", "StateTriggered"] }]);
 });
 
 /* ----------------------------------------------------------------------------
@@ -316,17 +322,18 @@ test("export never shows an unsigned, changed or still-to-write value: only the 
   const dir = sheetModule(t);
   const e = await exp(dir);
   assert.equal(e.file, path.join(dir, SHEET_FILE));
-  assert.deepEqual(e.header, [...FIXED_COLUMNS, "en", "es", `${CURRENT_PREFIX}en`, `${CURRENT_PREFIX}es`]);
+  assert.deepEqual(e.header, [...FIXED_COLUMNS, "en", "es", `${CURRENT_PREFIX}en`, `${CURRENT_PREFIX}es`, "author", "section"]);
+  // In the order of textos-borrador.md, then the rows it lacks in file order.
   assert.deepEqual([...e.byKey.keys()], [
-    "module.json:description",
     "baron-fixture.Notice",
-    "baron-fixture.Kind_a",
     "baron-fixture.Kind_b",
+    "module.json:description",
+    "baron-fixture.Kind_a",
     "baron-fixture.Unused",
   ]);
   assert.deepEqual(
     [...e.byKey.values()].map((r) => r.status),
-    ["unsigned", "unsigned", "to write", "unsigned", "en: signed; es: changed"],
+    ["unsigned", "unsigned", "unsigned", "to write", "en: signed; es: changed"],
   );
   // The leak guard: no AI working text and no marker anywhere in the file or the output.
   for (const where of [e.text, e.out]) {
@@ -342,7 +349,7 @@ test("export never shows an unsigned, changed or still-to-write value: only the 
   assert.equal(e.byKey.get("baron-fixture.Unused").current_es, "");
   // UTF-8 with a BOM, CRLF between records.
   assert.deepEqual([...e.buf.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
-  assert.ok(e.text.startsWith(`${BOM}key,where,intent,placeholders,max_length,status,en,es,current_en,current_es\r\n`));
+  assert.ok(e.text.startsWith(`${BOM}key,where,intent,placeholders,max_length,status,en,es,current_en,current_es,author,section\r\n`));
   assert.match(e.out, /wrote textos-hoja\.csv: 5 row\(s\), 5 that need a person/);
   assert.match(e.out, /^next: .* import textos-hoja\.csv$/m);
 });
@@ -362,6 +369,8 @@ test("export --all adds every signed text with its value in current_<lang>, and 
     es: "",
     current_en: "Baron Fixture",
     current_es: "",
+    author: "",
+    section: "",
   });
   assert.equal(e.byKey.get("baron-fixture.Title").current_es, "Baron Fixture");
   assert.equal(e.byKey.get("baron-fixture.Open").current_en, "Open");
@@ -376,7 +385,8 @@ test("export fills where from check-module's key scan, and intent, placeholders 
   const dir = sheetModule(t);
   const e = await exp(dir);
   const notice = e.byKey.get("baron-fixture.Notice");
-  assert.equal(notice.where, "aviso del panel\nscripts/lib/util.js:5");
+  assert.equal(notice.where, `aviso del panel${DASH}scripts/lib/util.js:5`);
+  assert.equal(notice.section, "Textos de trabajo");
   assert.equal(notice.intent, "dice cuantos hay");
   assert.equal(notice.placeholders, "{count}");
   assert.equal(notice.max_length, "40");
@@ -386,10 +396,10 @@ test("export fills where from check-module's key scan, and intent, placeholders 
   assert.equal(e.byKey.get("baron-fixture.Kind_b").intent, "nombra el tipo B");
   assert.equal(e.byKey.get("baron-fixture.Kind_b").max_length, "12");
   const description = e.byKey.get("module.json:description");
-  assert.equal(description.where, 'module.json "description": one text for every language, written in the en column\nlista de modulos');
+  assert.equal(description.where, `module.json "description": one text for every language, written in the en column${DASH}lista de modulos`);
   assert.equal(description.max_length, "60");
   // The gaps both ways are warnings, not errors.
-  assert.match(e.out, /warn: 2 row\(s\) that need a person have no row in docs\/textos-borrador\.md/);
+  assert.match(e.out, /warn: 2 row\(s\) not signed yet have no row in docs\/textos-borrador\.md/);
   assert.match(e.out, /^ {2}baron-fixture\.Kind_a$/m);
   assert.match(e.out, /^ {2}baron-fixture\.Unused$/m);
   assert.match(e.out, /warn: 1 row\(s\) of docs\/textos-borrador\.md name a key that is not in the language files/);
@@ -397,7 +407,7 @@ test("export fills where from check-module's key scan, and intent, placeholders 
   // The signed Title has no draft row, and needs none.
   assert.ok(!/^ {2}baron-fixture\.Title$/m.test(e.out));
   // The template's routine of a fresh module: in --all, the signed rows do not warn either.
-  assert.match((await exp(dir, { all: true, out: "all.csv" })).out, /warn: 2 row\(s\) that need a person/);
+  assert.match((await exp(dir, { all: true, out: "all.csv" })).out, /warn: 2 row\(s\) not signed yet/);
 });
 
 test("export warns when textos-borrador.md lists other placeholders, or none at all exists", async (t) => {
@@ -427,9 +437,11 @@ test("export writes only outside the folders the release ZIP packs, and never ov
   // Once a person wrote in it, export refuses to overwrite it until it is imported.
   await fill(dir, [["baron-fixture.Notice", "es", "{count} avisos"]], { name: SHEET_FILE });
   const before = fs.readFileSync(path.join(dir, SHEET_FILE));
-  await assert.rejects(exp(dir), (err) => err instanceof TextSheetError && /holds written texts that are not in the module yet \(row 3\): import it first/.test(err.message));
+  await assert.rejects(exp(dir), (err) => err instanceof TextSheetError && /holds a text in row 2 \(baron-fixture\.Notice, es\) that is not in the module yet: import it first/.test(err.message));
   assert.ok(fs.readFileSync(path.join(dir, SHEET_FILE)).equals(before));
   assert.equal((await imp(dir, SHEET_FILE)).code, 0);
+  // Imported and signed: the sheet is done, and export writes a new one over it.
+  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), SIGNED_FILE({ ...SIGNED, "lang/es.json": { ...SIGNED["lang/es.json"], "baron-fixture.Notice": oracle("{count} avisos") } }));
   assert.equal((await exp(dir)).byKey.get("baron-fixture.Notice").es, "");
   fs.writeFileSync(path.join(dir, "other.csv"), "name,phone\r\nx,1\r\n");
   await assert.rejects(exp(dir, { out: "other.csv" }), /is not a text sheet/);
@@ -447,16 +459,18 @@ test("export of a module without humanText follows the TODO-HUMANO rule, and its
   const dir = materialize(t, {
     write: {
       "lang/en.json": json2({ ...EN, "baron-fixture.Kind_b": "" }),
-      "lang/es.json": json2(ES),
+      "lang/es.json": json2({ ...ES, "baron-fixture.Kind_b": "TODO-HUMANO: tipo B" }),
       [HUMAN_TEXT_FILE]: json2({ version: 1, signed: { "lang/en.json": { "baron-fixture.Open": oracle("Open") } } }),
     },
   });
   const e = await exp(dir);
-  assert.match(e.out, /does not say "humanText": "signed": a text needs a person when it starts with TODO-HUMANO: or is empty/);
+  assert.match(e.out, /does not say "humanText": "signed": a text needs a person when it starts with TODO-HUMANO: \(check-module \[n\]\)/);
   assert.deepEqual([...e.byKey.keys()], ["baron-fixture.Kind_a", "baron-fixture.Kind_b"]);
-  assert.deepEqual([...e.byKey.values()].map((r) => r.status), ["to write", "en: to write; es: written"]);
+  // An empty text is no marker, as for [n]: the tool cannot tell who wrote a text without one.
+  assert.deepEqual([...e.byKey.values()].map((r) => r.status), ["to write", "en: empty; es: to write"]);
   const all = await exp(dir, { all: true });
-  assert.equal(all.byKey.get("baron-fixture.Notice").status, "written");
+  assert.equal(all.byKey.get("baron-fixture.Notice").status, "no marker");
+  assert.match(all.out, /warn: there is no docs\/textos-borrador\.md: the intent column is empty for all 8 row\(s\) not signed yet/);
   // Not a signed text: not shown, lock or no lock.
   assert.equal(all.byKey.get("baron-fixture.Notice").current_en, "");
   assert.equal(all.byKey.get("baron-fixture.Open").current_en, "Open");
@@ -480,7 +494,7 @@ test("import writes the filled cells, leaves human-text.json alone and says how 
   const r = await imp(dir, file);
   assert.equal(r.code, 0, r.out);
   assert.equal(r.written, 4);
-  assert.deepEqual(r.files, ["module.json", "lang/en.json", "lang/es.json"]);
+  assert.deepEqual(r.files, ["lang/en.json", "lang/es.json", "module.json"]);
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Notice"], "{count} notices");
   assert.equal(readJson(dir, "lang", "es.json")["baron-fixture.Notice"], `{count} avisos, se${ch(0xf1)}or`);
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Kind_a"], "Kind A");
@@ -538,7 +552,7 @@ test("import refuses a text whose {placeholders} differ from the ones it must ke
     const file = await fill(dir, [["baron-fixture.Notice", "en", value]]);
     const r = await imp(dir, file);
     assert.equal(r.code, 1);
-    assert.ok(r.errors.includes(`  row 3  en  baron-fixture.Notice: ${reason}`), r.out);
+    assert.ok(r.errors.includes(`  row 2  en  baron-fixture.Notice: ${reason}`), r.out);
   }
   // A text with no placeholder may not gain one.
   const extra = await imp(dir, await fill(dir, [["baron-fixture.Kind_b", "en", "Kind {count}"]]));
@@ -573,20 +587,20 @@ test("import refuses TODO-HUMANO:, whitespace, unknown keys and keys one languag
   assert.equal(r.rejected, 5, r.out);
   // OnlyEs has its own row (es only); the unknown key and the keyless text get new ones.
   assert.deepEqual(r.errors.slice(1, 6), [
-    "  row 5  en  baron-fixture.Kind_b: starts with \"TODO-HUMANO:\", the marker of a text nobody wrote",
-    "  row 5  es  baron-fixture.Kind_b: holds only whitespace",
+    "  row 3  en  baron-fixture.Kind_b: starts with \"TODO-HUMANO:\", the marker of a text nobody wrote",
+    "  row 3  es  baron-fixture.Kind_b: holds only whitespace",
     "  row 7  en  baron-fixture.OnlyEs: is not a key of lang/en.json: the import never creates keys; add it to every language file first",
     "  row 8  en  baron-fixture.Nope: is not a key of the language files: the import never creates keys",
     "  row 9  es  (no key): the row has text but its key cell is empty",
   ]);
   assert.ok(r.errors.at(-1).includes("nothing written: fix those cells in the sheet and import it again, or pass --partial to write the 1 valid change(s)"), r.out);
-  assert.ok(r.lines.includes("warn: row 4  en  baron-fixture.Kind_a: starts or ends with whitespace, which stays in the text"), r.out);
+  assert.ok(r.lines.includes("warn: row 5  en  baron-fixture.Kind_a: starts or ends with whitespace, which stays in the text"), r.out);
   for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
 
   // Kind_b's max_length (12) only warns.
   const long = await imp(dir, await fill(dir, [["baron-fixture.Kind_b", "en", "A label longer than twelve"]]));
   assert.equal(long.code, 0, long.out);
-  assert.match(long.out, /warn: row 5 {2}en {2}baron-fixture\.Kind_b: is 26 characters long without its placeholders, over max_length 12/);
+  assert.match(long.out, /warn: row 3 {2}en {2}baron-fixture\.Kind_b: is 26 characters long without its placeholders, over max_length 12/);
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Kind_b"], "A label longer than twelve");
 });
 
@@ -607,7 +621,7 @@ test("import is all or nothing: one refused cell and no file changes; --partial 
   const dry = await imp(dir, file, { dryRun: true, partial: true });
   assert.equal(dry.code, 1);
   assert.match(dry.out, /--dry-run: would write 2 text\(s\) to lang\/en\.json, lang\/es\.json, 0 unchanged; nothing written/);
-  assert.match(dry.out, /row 3 {2}en {2}baron-fixture\.Notice -> lang\/en\.json: "\{count\} notices" \(was unsigned\)/);
+  assert.match(dry.out, /row 2 {2}en {2}baron-fixture\.Notice -> lang\/en\.json: "\{count\} notices" \(was unsigned\)/);
   // The old value of an unsigned text is never printed either.
   assert.ok(!dry.out.includes("AI-"), dry.out);
   for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
@@ -692,7 +706,7 @@ test("import writes the module.json title and description from the first languag
 
   const es = await imp(dir, await fill(dir, [["module.json:description", "es", "Revisa todo."]]));
   assert.equal(es.code, 1);
-  assert.match(es.out, /row 3 {2}es {2}module\.json:description: module\.json has one "description" for every language: write it in the en column/);
+  assert.match(es.out, /row 4 {2}es {2}module\.json:description: module\.json has one "description" for every language: write it in the en column/);
   const unknown = await imp(dir, await fill(dir, [["module.json:version", "en", "9.9.9"]]));
   assert.match(unknown.out, /module\.json:version: is not a key of the language files/);
   assert.equal(readJson(dir, "module.json").version, "0.0.0");
@@ -755,7 +769,7 @@ test("a key in two files of one language: no current value unless both agree, an
     },
   });
   const e = await exp(dir, { all: true });
-  assert.deepEqual(e.header.slice(6), ["en", "es", "current_en", "current_es"]);
+  assert.deepEqual(e.header.slice(6), ["en", "es", "current_en", "current_es", "author", "section"]);
   // Both signed, but which one would the sheet show? Neither.
   assert.equal(e.byKey.get("baron-fixture.Open").current_en, "");
   assert.equal(e.byKey.get("baron-fixture.Title").current_en, "Baron Fixture");
@@ -788,7 +802,7 @@ test("import stops on a sheet it cannot read, before touching the module", async
   const dir = sheetModule(t);
   const before = bytes(dir, ...TRACKED);
   fs.writeFileSync(path.join(dir, "nokey.csv"), "name,en\r\nx,y\r\n");
-  await assert.rejects(imp(dir, "nokey.csv"), /has no "key" column/);
+  await assert.rejects(imp(dir, "nokey.csv"), /has no header row with a "key" column/);
   fs.writeFileSync(path.join(dir, "nolang.csv"), "key,fr\r\nx,y\r\n");
   await assert.rejects(imp(dir, "nolang.csv"), /has no language column: the module declares en, es/);
   fs.writeFileSync(path.join(dir, "twice.csv"), "key,en,EN\r\nx,y,z\r\n");
@@ -807,6 +821,436 @@ test("jsonStringLeaves gives every string value its key path and the exact offse
     ["l.1.q", "r", true, '"r"'],
   ]);
   assert.throws(() => jsonStringLeaves('{"a": }'), SyntaxError);
+});
+
+/* ----------------------------------------------------------------------------
+ * Leaks, two writers and what spreadsheets do to a sheet
+ * -------------------------------------------------------------------------- */
+
+const DASH = ` ${ch(0x2014)} `;
+const SIGNED_FILE = (signed) => json2({ version: 1, signed });
+
+test("export leaves out a textos-borrador.md cell that quotes a working text, naming only its key, column and line", async (t) => {
+  const hint = { en: "AI-HINT opens the panel of every trap in this scene", es: "AI-PISTA abre el panel de cada trampa de la escena" };
+  const draft = [
+    DRAFT,
+    "## Panel",
+    "",
+    `| clave | ${DONDE} | ${INTENCION} |`,
+    "|---|---|---|",
+    // A sentence anywhere (case and spacing aside), and a short text between quotation marks.
+    `| \`Kind_a\` | junto a ai-hint opens the PANEL of every trap in   this scene | hoy dice ${ch(0xab)}ai-kind-b-es${ch(0xbb)} |`,
+    // A signed text may be quoted.
+    '| `Unused` | aviso | como "Never referenced", el texto firmado |',
+    // A short working text that is the plain name of the thing is no copy.
+    "| `Damage` | panel | explica el dano persistente y el persistent damage |",
+    "| `Hint` | panel | explica el panel |",
+    "",
+  ].join("\n");
+  const dir = sheetModule(t, {
+    write: {
+      "lang/en.json": json2({ ...EN, "baron-fixture.Damage": "Persistent damage", "baron-fixture.Hint": hint.en }),
+      "lang/es.json": json2({ ...ES, "baron-fixture.Damage": "Dano persistente", "baron-fixture.Hint": hint.es }),
+      [DRAFT_FILE]: draft,
+    },
+  });
+  for (const all of [false, true]) {
+    const e = await exp(dir, { all, out: `s${all}.csv` });
+    const kindA = e.byKey.get("baron-fixture.Kind_a");
+    assert.equal(kindA.where, "scripts/main.js:29 (key built at runtime)");
+    assert.equal(kindA.intent, "");
+    assert.equal(e.byKey.get("baron-fixture.Unused").intent, 'como "Never referenced", el texto firmado');
+    assert.equal(e.byKey.get("baron-fixture.Damage").intent, "explica el dano persistente y el persistent damage");
+    assert.equal(e.byKey.get("baron-fixture.Hint").intent, "explica el panel");
+    assert.ok(!/ai-/i.test(e.text), e.text);
+    assert.ok(!/ai-/i.test(e.out), e.out);
+    assert.match(e.out, /warn: 2 cell\(s\) of docs\/textos-borrador\.md quote a text that has no valid signature/);
+    assert.match(e.out, /^ {2}docs\/textos-borrador\.md:14 {2}baron-fixture\.Kind_a \(where\)$/m);
+    assert.match(e.out, /^ {2}docs\/textos-borrador\.md:14 {2}baron-fixture\.Kind_a \(intent\)$/m);
+  }
+});
+
+test("a brace group that is not a {name} is text: an enricher label after ] and {two words} are no placeholders", async (t) => {
+  const dir = sheetModule(t, {
+    write: {
+      "lang/en.json": json2({ ...EN, "baron-fixture.Kind_b": "Roll @Check[reflex|dc:20]{AiLabelEn} for {count} or {a b}" }),
+      "lang/es.json": json2({ ...ES, "baron-fixture.Kind_b": "Tira @UUID[Compendium.x.y]{AiLabelEs} por {count}" }),
+    },
+  });
+  const e = await exp(dir);
+  assert.equal(e.byKey.get("baron-fixture.Kind_b").placeholders, "{count}");
+  assert.ok(!e.text.includes("AiLabel"));
+  const r = await imp(dir, await fill(dir, [
+    ["baron-fixture.Kind_b", "en", "Roll @Check[reflex|dc:20]{Reflex save} with {count}"],
+    ["baron-fixture.Kind_b", "es", "Tira por {count}"],
+  ]));
+  assert.equal(r.code, 0, r.out);
+  assert.ok(!r.out.includes("AiLabel"), r.out);
+  const missing = await imp(dir, await fill(dir, [["baron-fixture.Kind_b", "en", "Roll @Check[reflex|dc:20]{Reflex save}"]]));
+  assert.match(missing.out, /lacks \{count\}: it must keep exactly \{count\}/);
+});
+
+test("import never counts a cell that repeats the unsigned value as written or unchanged, and never asks to sign for it", async (t) => {
+  const dir = sheetModule(t);
+  const before = bytes(dir, ...TRACKED);
+  fs.writeFileSync(path.join(dir, "s.csv"), csvWrite([
+    ["key", "en", "es"],
+    ["baron-fixture.Notice", EN["baron-fixture.Notice"], ES["baron-fixture.Notice"]],
+    ["baron-fixture.Unused", "", ES["baron-fixture.Unused"]],
+    ["baron-fixture.Open", "Open", ""],
+    ["module.json:description", DESCRIPTION, ""],
+  ]));
+  for (const dryRun of [true, false]) {
+    const r = await imp(dir, "s.csv", { dryRun });
+    assert.equal(r.code, 0, r.out);
+    assert.equal(r.written, 0);
+    assert.equal(r.unchanged, 1, r.out);
+    assert.equal(r.unsignedSame, 4, r.out);
+    assert.ok(r.lines.some((l) => l.startsWith("warn: row 2  en  baron-fixture.Notice: is already the value in lang/en.json, which has no valid signature: nothing to write")), r.out);
+    assert.ok(r.lines.some((l) => l.startsWith("warn: row 3  es  baron-fixture.Unused: is already the value")), r.out);
+    assert.ok(r.lines.some((l) => l.startsWith("warn: row 5  en  module.json:description: is already the value in module.json")), r.out);
+    assert.ok(!r.out.includes("AI-"), r.out);
+    assert.ok(!/^next: /m.test(r.out), r.out);
+  }
+  for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
+});
+
+test("two language columns that share one file: two different texts are both refused, one text is written once", async (t) => {
+  const languages = [
+    { lang: "en", name: "English", path: "lang/en.json" },
+    { lang: "en-US", name: "English (US)", path: "lang/en.json" },
+    { lang: "es", name: "Espanol", path: "lang/es.json" },
+  ];
+  const dir = sheetModule(t, { merge: { "module.json": { description: DESCRIPTION, languages } } });
+  const before = bytes(dir, ...TRACKED);
+  const write = (rows) => fs.writeFileSync(path.join(dir, "s.csv"), csvWrite([["key", "en", "en-US"], ...rows]));
+  // Other lengths once crashed the edit; a first text as long as the old one was silently lost.
+  for (const [en, us] of [["Kind B", "Kind Bee"], ["Kind B label", "Kind C"]]) {
+    write([["baron-fixture.Kind_b", en, us]]);
+    for (const partial of [false, true]) {
+      const r = await imp(dir, "s.csv", { partial });
+      assert.equal(r.code, 1, r.out);
+      assert.equal(r.written, 0, r.out);
+      assert.equal(r.rejected, 2, r.out);
+      assert.ok(r.errors.includes("  row 2  en  baron-fixture.Kind_b: the en and en-US columns both write it in lang/en.json, with different texts (row 2): keep one"), r.out);
+      for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
+    }
+  }
+  write([["baron-fixture.Kind_b", "Kind B", "Kind B"]]);
+  const once = await imp(dir, "s.csv");
+  assert.equal(once.code, 0, once.out);
+  assert.equal(once.written, 1);
+  assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Kind_b"], "Kind B");
+  assert.match(once.out, /note: row 2 gives baron-fixture\.Kind_b \(en, en-US\) the same text: written once/);
+});
+
+test("import refuses text in a column it does not read, so a misnamed language never loses a text; empty and notes columns are notes", async (t) => {
+  const dir = sheetModule(t);
+  const before = bytes(dir, ...TRACKED);
+  fs.writeFileSync(path.join(dir, "s.csv"), csvWrite([
+    ["es", "KEY", "en", "fr", "notas", ""],
+    ["Tipo B", "baron-fixture.Kind_b", "Kind B", `Texte fran${ch(0xe7)}ais`, "mine", ""],
+    ["", "baron-fixture.Kind_a", "", "", "", "stray"],
+  ], { delimiter: ";" }));
+  const r = await imp(dir, "s.csv");
+  assert.equal(r.code, 1, r.out);
+  assert.ok(r.errors.includes('  row 1  column D  "fr": has text in row 2, but import reads only "key", "author" and the language columns (en, es): if it holds texts, name it by their language code; a column for your own notes is named "notas"'), r.out);
+  assert.ok(r.errors.some((l) => l.startsWith("  row 1  column F  (no header): has text in row 3")), r.out);
+  for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
+  const partial = await imp(dir, "s.csv", { partial: true });
+  assert.equal(partial.code, 1);
+  assert.equal(partial.written, 2, partial.out);
+
+  fs.writeFileSync(path.join(dir, "s2.csv"), csvWrite([["key", "en", "fr", "notas"], ["baron-fixture.Kind_b", "Kind Bee", "", "una nota"]]));
+  const ok = await imp(dir, "s2.csv");
+  assert.equal(ok.code, 0, ok.out);
+  assert.match(ok.out, /note: column\(s\) "fr", "notas" ignored/);
+});
+
+test("a language file that is not valid JSON stops both commands at its line and column, without quoting it", async (t) => {
+  const broken = {
+    // V8 quotes the text around an unexpected token.
+    unquoted: ['{\n  "baron-fixture.Title": "Baron Fixture",\n  "baron-fixture.Notice": AI-NOTICE-ES unquoted\n}\n', "line 3, column 27"],
+    // ...and gives a position for a missing comma.
+    comma: ['{\n  "baron-fixture.Title": "AI-TITLE-ES" "baron-fixture.Notice": "x"\n}\n', "line 2, column 40"],
+  };
+  for (const [name, [text, at]] of Object.entries(broken)) {
+    const dir = sheetModule(t, { write: { "lang/es.json": text, "s.csv": "key,en\r\nbaron-fixture.Kind_b,Kind B\r\n" } });
+    const check = (err) => {
+      assert.ok(err instanceof TextSheetError, String(err));
+      assert.equal(err.message, `lang/es.json is not valid JSON at ${at}: fix it in an editor`, name);
+      return true;
+    };
+    await assert.rejects(exp(dir), check);
+    await assert.rejects(imp(dir, "s.csv"), check);
+  }
+});
+
+test("export and import warn that sign-text refuses a language file or module.json that starts with a UTF-8 BOM", async (t) => {
+  const dir = sheetModule(t, { write: { "lang/es.json": BOM + json2(ES) } });
+  const warning = /warn: lang\/es\.json starts with a UTF-8 BOM, which sign-text and check-module refuse: save it as UTF-8 without a BOM before signing/;
+  assert.match((await exp(dir)).out, warning);
+  const r = await imp(dir, await fill(dir, [["baron-fixture.Kind_b", "es", "Tipo B"]]));
+  assert.equal(r.code, 0, r.out);
+  assert.match(r.out, warning);
+  assert.deepEqual([...fs.readFileSync(path.join(dir, "lang", "es.json")).subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+});
+
+test("export never overwrites a sheet whose imported texts are not signed yet: a new sheet would show them as rows to write", async (t) => {
+  const dir = sheetModule(t);
+  await fill(dir, [["baron-fixture.Notice", "es", "{count} avisos"]], { name: SHEET_FILE });
+  assert.equal((await imp(dir, SHEET_FILE)).code, 0);
+  const before = fs.readFileSync(path.join(dir, SHEET_FILE));
+  await assert.rejects(exp(dir), (err) => err instanceof TextSheetError && /holds a text in row 2 \(baron-fixture\.Notice, es\) that was imported but is not signed yet: its author signs it first \(node \.\.\/pf2e-baron-core\/tools\/sign-text\.mjs \. --sign\)/.test(err.message));
+  assert.ok(fs.readFileSync(path.join(dir, SHEET_FILE)).equals(before));
+  // Once signed, the sheet has done its job and a new one replaces it.
+  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), SIGNED_FILE({ ...SIGNED, "lang/es.json": { ...SIGNED["lang/es.json"], "baron-fixture.Notice": oracle("{count} avisos") } }));
+  const e = await exp(dir);
+  assert.equal(e.byKey.get("baron-fixture.Notice").status, "en: unsigned; es: signed");
+  assert.equal(e.byKey.get("baron-fixture.Notice").current_es, "{count} avisos");
+});
+
+test("export refuses to drop text that a person typed in a notes column or a column import does not read", async (t) => {
+  const dir = sheetModule(t);
+  const { records } = await exp(dir);
+  records[0].push("notas");
+  records[1].push("revisar con IAR18");
+  fs.writeFileSync(path.join(dir, SHEET_FILE), csvWrite(records));
+  await assert.rejects(exp(dir), /holds text in column "notas" \(row 2\), which a new sheet would drop: move the sheet away/);
+});
+
+test("the author column: export leaves it empty, import writes it nowhere and lists the rows each author signs", async (t) => {
+  const dir = sheetModule(t);
+  const signatures = bytes(dir, HUMAN_TEXT_FILE);
+  const e = await exp(dir);
+  assert.deepEqual(e.header.slice(-2), ["author", "section"]);
+  const file = await fill(dir, [
+    ["baron-fixture.Notice", "en", "{count} notices"],
+    ["baron-fixture.Notice", "author", "BaronHVC"],
+    ["baron-fixture.Kind_b", "es", "Tipo B"],
+    ["baron-fixture.Kind_b", "author", " IAR18 "],
+    ["baron-fixture.Kind_a", "en", "Kind A"],
+  ]);
+  for (const dryRun of [true, false]) {
+    const r = await imp(dir, file, { dryRun });
+    assert.equal(r.code, 0, r.out);
+    const at = r.lines.indexOf("by author (import writes it nowhere; each one signs the rows under their name, at their own terminal):");
+    assert.ok(at > 0, r.out);
+    assert.deepEqual(r.lines.slice(at + 1, at + 4), ["  BaronHVC: row 2", "  IAR18: row 3", "  (no author): row 5"]);
+  }
+  for (const f of ["lang/en.json", "lang/es.json", "module.json"]) assert.ok(!/BaronHVC|IAR18/.test(readText(dir, f)) || f === "module.json", f);
+  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)).equals(signatures[HUMAN_TEXT_FILE]));
+});
+
+test("import refuses a spreadsheet error instead of a text, and warns about what Excel may have converted", async (t) => {
+  const dir = sheetModule(t);
+  const errors = ["#NAME?", `#${ch(0xbf)}NOMBRE?`, "#N/A", "#N/D", `#${ch(0xa1)}VALOR!`, "#DIV/0!", " #REF! ", "#ERROR!", "#SPILL!"];
+  for (const value of errors) {
+    const r = await imp(dir, await fill(dir, [["baron-fixture.Kind_b", "en", value]]));
+    assert.equal(r.code, 1, value);
+    assert.ok(r.errors.some((l) => l.startsWith("  row 3  en  baron-fixture.Kind_b: is a spreadsheet error, not a text: the spreadsheet took what was typed for a formula")), `${value}: ${r.out}`);
+  }
+  const r = await imp(dir, await fill(dir, [
+    ["baron-fixture.Kind_b", "en", "'Kind B"],
+    ["baron-fixture.Kind_b", "es", "1/2"],
+    ["baron-fixture.Kind_a", "en", "1,000"],
+    ["baron-fixture.Kind_a", "es", "#1 tipo A"],
+  ]));
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.lines.includes("warn: row 3  en  baron-fixture.Kind_b: starts with an apostrophe, which stays in the text: if the spreadsheet kept the one typed to stop a conversion, delete it"), r.out);
+  assert.ok(r.lines.includes("warn: row 3  es  baron-fixture.Kind_b: is only a number or a date: check that the spreadsheet did not convert what was typed"), r.out);
+  assert.ok(r.lines.includes("warn: row 5  en  baron-fixture.Kind_a: is only a number or a date: check that the spreadsheet did not convert what was typed"), r.out);
+  assert.ok(!r.lines.some((l) => l.startsWith("warn:") && l.includes("es  baron-fixture.Kind_a")), r.out);
+});
+
+test("export warns about the cells Excel would open as a formula", async (t) => {
+  const dir = sheetModule(t, {
+    write: {
+      "lang/en.json": json2({ ...EN, "baron-fixture.Open": "= open" }),
+      [HUMAN_TEXT_FILE]: SIGNED_FILE({ ...SIGNED, "lang/en.json": { ...SIGNED["lang/en.json"], "baron-fixture.Open": oracle("= open") } }),
+    },
+  });
+  const e = await exp(dir, { all: true });
+  assert.equal(e.byKey.get("baron-fixture.Open").current_en, "= open");
+  assert.match(e.out, /warn: 1 cell\(s\) start with =, \+, - or @, which Excel opens as a formula and shows as #NAME\?/);
+  assert.match(e.out, /^ {2}row \d+ {2}current_en {2}baron-fixture\.Open$/m);
+});
+
+test("import of a sheet where no language cell has text stops, and says where Google Sheets and Excel save", async (t) => {
+  const dir = sheetModule(t);
+  await exp(dir);
+  for (const dryRun of [false, true]) {
+    await assert.rejects(imp(dir, SHEET_FILE, { dryRun }), (err) =>
+      err instanceof TextSheetError &&
+      /^no en or es cell of textos-hoja\.csv has text: is it the file you saved\?/.test(err.message) &&
+      /"\$HOME\/Downloads\/textos-hoja - textos-hoja\.csv"/.test(err.message));
+  }
+});
+
+test("the next steps name the module folder and quote paths when the tool runs from another folder", async (t) => {
+  const dir = sheetModule(t);
+  const parent = path.dirname(dir);
+  const lines = [];
+  await exportSheet({ dir: "baron-fixture", cwd: parent, log: (l) => lines.push(l) });
+  assert.ok(lines.at(-1).endsWith("then run: node ../pf2e-baron-core/tools/text-sheet.mjs import baron-fixture/textos-hoja.csv baron-fixture"), lines.at(-1));
+  lines.length = 0;
+  await exportSheet({ dir: "baron-fixture", cwd: parent, out: "mis textos/hoja.csv", log: (l) => lines.push(l) });
+  assert.ok(lines.at(-1).endsWith('import "mis textos/hoja.csv" baron-fixture'), lines.at(-1));
+  await assert.rejects(
+    (async () => {
+      await fill(dir, [["baron-fixture.Kind_b", "en", "Kind B"]], { name: "../mis textos/hoja.csv" });
+      await exportSheet({ dir: "baron-fixture", cwd: parent, out: "mis textos/hoja.csv", log: () => {} });
+    })(),
+    /import it first \(node \.\.\/pf2e-baron-core\/tools\/text-sheet\.mjs import "mis textos\/hoja\.csv" baron-fixture\)/,
+  );
+  const imported = [];
+  await importSheet({ file: "mis textos/hoja.csv", dir: "baron-fixture", cwd: parent, log: (l) => imported.push(l), logError: (l) => imported.push(l) });
+  assert.ok(imported.at(-1).endsWith("node ../pf2e-baron-core/tools/sign-text.mjs baron-fixture --sign"), imported.at(-1));
+
+  // The CLI prints the scripts it runs, relative to the folder it runs in, and the command works as printed.
+  const ex = runNode(TEXT_SHEET, ["export", "baron-fixture", "--out", "x y.csv"], { cwd: parent });
+  assert.equal(ex.status, 0, ex.out);
+  const next = ex.stdout.trim().split(/\r?\n/).at(-1);
+  const command = next.slice(next.indexOf("then run: ") + "then run: ".length);
+  assert.ok(command.endsWith(' import "x y.csv" baron-fixture'), command);
+  const run = spawnSync(command, { cwd: parent, shell: true, encoding: "utf8", windowsHide: true });
+  assert.match(`${run.stdout}${run.stderr}`, /no en or es cell of x y\.csv has text/);
+});
+
+test("export puts the rows in the order of textos-borrador.md, with each table's heading and the terms they share", async (t) => {
+  const draft = [
+    "# Textos",
+    "",
+    "## Conceptos",
+    "",
+    "| Concepto (en el c" + ch(0xf3) + "digo) | Claves donde aparece |",
+    "|---|---|",
+    "| El aviso `notice` | `Notice`, `Kind_b`, `Gone` |",
+    "",
+    "### Tarjeta `card`",
+    "",
+    `| clave | ${INTENCION} |`,
+    "|---|---|",
+    "| `Kind_b` | nombra el tipo B |",
+    "",
+    "### Panel",
+    "",
+    `| clave | ${INTENCION} |`,
+    "|---|---|",
+    "| `Notice` | dice cuantos hay |",
+    "",
+  ].join("\n");
+  const dir = sheetModule(t, { write: { [DRAFT_FILE]: draft } });
+  const e = await exp(dir);
+  assert.deepEqual([...e.byKey.keys()], ["baron-fixture.Kind_b", "baron-fixture.Notice", "module.json:description", "baron-fixture.Kind_a", "baron-fixture.Unused"]);
+  assert.equal(e.byKey.get("baron-fixture.Kind_b").section, "Tarjeta card");
+  assert.equal(e.byKey.get("baron-fixture.Notice").section, "Panel");
+  assert.equal(e.byKey.get("baron-fixture.Kind_a").section, "");
+  const term = `mismo t${ch(0xe9)}rmino que`;
+  assert.equal(e.byKey.get("baron-fixture.Kind_b").intent, `nombra el tipo B${DASH}${term} Notice (El aviso notice)`);
+  assert.equal(e.byKey.get("baron-fixture.Notice").intent, `dice cuantos hay${DASH}${term} Kind_b (El aviso notice)`);
+  assert.match(e.out, /^next: the people who write the texts read the rules in docs\/textos-borrador\.md first,/m);
+});
+
+test("parseConcepts reads the tables of concepts that several keys name with one term", async () => {
+  const text = [
+    "| Concepto | Claves donde aparece |",
+    "|---|---|",
+    "| Los tres valores de la flag `state` | `StateArmed`, `StateTriggered` |",
+    "| uno solo | `Alone` |",
+    "",
+    "| clave | claves donde aparece |",
+    "|---|---|",
+    "| `NotAConcept` | `A`, `B` |",
+  ].join("\n");
+  assert.deepEqual(TS.parseConcepts(text), [{ line: 3, concept: "Los tres valores de la flag state", keys: ["StateArmed", "StateTriggered"] }]);
+});
+
+test("the where column stays on one line: the draft's text and the code's places are joined by a dash", async (t) => {
+  const dir = sheetModule(t);
+  const e = await exp(dir);
+  assert.equal(e.byKey.get("baron-fixture.Notice").where, `aviso del panel${DASH}scripts/lib/util.js:5`);
+  assert.equal(e.byKey.get("module.json:description").where, `module.json "description": one text for every language, written in the en column${DASH}lista de modulos`);
+  for (const r of e.byKey.values()) assert.ok(!r.where.includes("\n"), r.where);
+});
+
+test("import finds the header row wherever a sort put it, and says what happened when it is gone", async (t) => {
+  const dir = sheetModule(t);
+  const { records } = await exp(dir);
+  const [header, ...rows] = records;
+  rows.find((r) => r[0] === "baron-fixture.Notice")[header.indexOf("en")] = "{count} notices";
+  rows.sort((a, b) => a[0].localeCompare(b[0]));
+  fs.writeFileSync(path.join(dir, "sorted.csv"), csvWrite([...rows.slice(0, 2), header, ...rows.slice(2)]));
+  const r = await imp(dir, "sorted.csv");
+  assert.equal(r.code, 0, r.out);
+  assert.equal(r.written, 1);
+  assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Notice"], "{count} notices");
+  fs.writeFileSync(path.join(dir, "headless.csv"), csvWrite(rows));
+  await assert.rejects(imp(dir, "headless.csv"), /headless\.csv has no header row with a "key" column\. If the rows were sorted, the header row went with them/);
+});
+
+test("after a partial import, export names the cell still pending and how to clear it", async (t) => {
+  const dir = sheetModule(t);
+  await fill(dir, [["baron-fixture.Kind_b", "es", "Tipo B"], ["baron-fixture.Kind_a", "en", "Kind {oops}"]], { name: SHEET_FILE });
+  assert.equal((await imp(dir, SHEET_FILE, { partial: true })).written, 1);
+  await assert.rejects(exp(dir), (err) =>
+    err instanceof TextSheetError &&
+    /holds a text in row 5 \(baron-fixture\.Kind_a, en\) that is not in the module yet: import it first \(.*\); a cell that import refuses must be fixed or emptied in the sheet; or move the sheet away/.test(err.message));
+});
+
+test("without the lock, the rows are exactly what check-module [n] reports: a marker in a list or in one copy of a key too", async (t) => {
+  const lang = {
+    "baron-fixture": { Conf: "Some text" },
+    "baron-fixture.Conf": "TODO-HUMANO: B",
+    "baron-fixture.List": ["TODO-HUMANO: a", "b"],
+    "baron-fixture.Plain": ["x"],
+    "baron-fixture.Empty": "",
+    "baron-fixture.Marker": "TODO-HUMANO: say hi",
+    "baron-fixture.Done": "Done",
+  };
+  const dir = materialize(t, { write: { "lang/en.json": json2(lang), "lang/es.json": json2(lang), "lang/fr.json": json2({ "baron-fixture.Extra": "TODO-HUMANO: extra" }) } });
+  const e = await exp(dir);
+  assert.deepEqual([...e.byKey.keys()], ["baron-fixture.Conf", "baron-fixture.List", "baron-fixture.Marker"]);
+  assert.deepEqual([...e.byKey.values()].map((r) => r.status), ["conflict", "list", "to write"]);
+  assert.match(e.out, /note: baron\.json does not say "humanText": "signed": a text needs a person when it starts with TODO-HUMANO: \(check-module \[n\]\), also inside a list or in one copy of a key defined twice/);
+  assert.match(e.out, /warn: lang\/fr\.json is in lang\/ but module\.json "languages" does not declare it: the sheet leaves out its 1 TODO-HUMANO: text\(s\), which check-module \[n\] reports; declare it, or move it out of lang\//);
+  // check-module [n] reports the same keys.
+  const n = checkModule([dir]).out.split(/\r?\n/).filter((l) => l.includes("[n]") && l.includes("TODO-HUMANO"));
+  assert.ok(n.some((l) => l.includes("(baron-fixture.Conf, baron-fixture.List[0], baron-fixture.Marker)") && l.includes("(lang/en.json)")), n.join("\n"));
+  assert.ok(n.some((l) => l.includes("(baron-fixture.Extra)") && l.includes("(lang/fr.json)")), n.join("\n"));
+  const all = await exp(dir, { all: true, out: "all.csv" });
+  assert.equal(all.byKey.get("baron-fixture.Empty").status, "empty");
+  assert.equal(all.byKey.get("baron-fixture.Done").status, "no marker");
+  assert.equal(all.byKey.get("baron-fixture.Plain").status, "list");
+  assert.match(all.out, /warn: there is no docs\/textos-borrador\.md: the intent column is empty for all \d+ row\(s\) not signed yet/);
+  const before = bytes(dir, "lang/en.json", "lang/es.json");
+  const r = await imp(dir, await fill(dir, [["baron-fixture.Conf", "en", "A text"], ["baron-fixture.List", "en", "A list"]]));
+  assert.equal(r.code, 1);
+  assert.ok(r.errors.includes("  row 2  en  baron-fixture.Conf: is defined twice in lang/en.json (nested and dotted) with different values: keep one by hand first"), r.out);
+  assert.ok(r.errors.includes("  row 3  en  baron-fixture.List: is a list in lang/en.json, not a text: edit it by hand"), r.out);
+  for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
+});
+
+test("with the lock, a list and a key defined twice are rows as sign-text lists them, never show a value, and import refuses them", async (t) => {
+  const en = { ...EN, "baron-fixture": { Conf: "AI-CONF-NESTED" }, "baron-fixture.Conf": "AI-CONF-DOTTED", "baron-fixture.List": ["AI-LIST-EN"] };
+  const es = { ...ES, "baron-fixture.Conf": "AI-CONF-ES", "baron-fixture.List": ["AI-LIST-ES"] };
+  const dir = sheetModule(t, { write: { "lang/en.json": json2(en), "lang/es.json": json2(es) } });
+  const e = await exp(dir);
+  assert.equal(e.byKey.get("baron-fixture.Conf").status, "en: conflict; es: unsigned");
+  assert.equal(e.byKey.get("baron-fixture.List").status, "list");
+  assert.ok(!e.text.includes("AI-"), e.text);
+  // sign-text lists the same texts as not signed.
+  const listed = [];
+  await signTexts({ dir, log: (l) => listed.push(l), logError: () => {} });
+  const keys = new Set(listed.map((l) => /^(?:unsigned|changed|to write|conflict|list|broken) +\S+ {2}(\S+)$/.exec(l)?.[1]).filter(Boolean));
+  const sheetKeys = new Set([...e.byKey.keys()].map((k) => (k.startsWith("module.json:") ? k.slice(12) : k)));
+  assert.deepEqual([...sheetKeys].sort(), [...keys].sort());
+  const before = bytes(dir, ...TRACKED);
+  const r = await imp(dir, await fill(dir, [["baron-fixture.Conf", "en", "A text"], ["baron-fixture.List", "es", "Una lista"]]));
+  assert.equal(r.code, 1);
+  assert.ok(r.errors.some((l) => l.endsWith("en  baron-fixture.Conf: is defined twice in lang/en.json (nested and dotted) with different values: keep one by hand first")), r.out);
+  assert.ok(r.errors.some((l) => l.endsWith("es  baron-fixture.List: is a list in lang/es.json, not a text: edit it by hand")), r.out);
+  for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
 });
 
 /* ----------------------------------------------------------------------------
@@ -829,7 +1273,11 @@ test("the CLI exports and imports from the module folder, exits 1 on refused cel
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Notice"], EN["baron-fixture.Notice"]);
   const good = runNode(TEXT_SHEET, ["import", "good.csv"], { cwd: dir });
   assert.equal(good.status, 0, good.out);
-  assert.ok(good.stdout.trim().endsWith(SIGN_NEXT));
+  // The sign step names the sign-text next to the text-sheet that ran, from this folder.
+  const last = good.stdout.trim().split(/\r?\n/).at(-1);
+  const signText = /: node "?(.+?sign-text\.mjs)"? \. --sign$/.exec(last);
+  assert.ok(signText, last);
+  assert.equal(fs.realpathSync(path.resolve(dir, signText[1])), fs.realpathSync(path.join(TOOLS, "sign-text.mjs")));
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Notice"], "{count} notices");
 
   assert.equal(runNode(TEXT_SHEET, []).status, 1);
@@ -839,4 +1287,23 @@ test("the CLI exports and imports from the module folder, exits 1 on refused cel
   assert.match(runNode(TEXT_SHEET, ["import"], { cwd: dir }).stderr, /import needs the sheet/);
   assert.match(runNode(TEXT_SHEET, ["publish"]).stderr, /unknown command publish/);
   assert.match(runNode(TEXT_SHEET, ["export", "a", "b"]).stderr, /unexpected argument b/);
+});
+
+test("the CLI prints its usage only after a mistake in the arguments, not after a problem with the module or the sheet", (t) => {
+  const dir = sheetModule(t);
+  fs.writeFileSync(path.join(dir, "ansi.csv"), Buffer.from([...Buffer.from("key,en\r\nbaron-fixture.Kind_b,Espa"), 0xf1, 0x0d, 0x0a]));
+  const bad = runNode(TEXT_SHEET, ["import", "ansi.csv"], { cwd: dir });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /is not UTF-8 text/);
+  assert.ok(!bad.stderr.includes("usage:"), bad.stderr);
+  for (const args of [["export", "--sign"], ["import"], ["publish"]]) assert.match(runNode(TEXT_SHEET, args, { cwd: dir }).stderr, /usage:/, args.join(" "));
+});
+
+test("export suggests ignoring every sheet and Excel's lock file, and a textos-hoja* line covers them all", async (t) => {
+  const dir = sheetModule(t);
+  git(dir, "init", "-q");
+  assert.match((await exp(dir)).out, /warn: textos-hoja\.csv is not in \.gitignore: add the lines "textos-hoja\*" and "~\$\*"/);
+  fs.writeFileSync(path.join(dir, ".gitignore"), "textos-hoja*\n~$*\n");
+  assert.ok(!/gitignore/.test((await exp(dir)).out));
+  assert.ok(!/gitignore/.test((await exp(dir, { out: "textos-hoja-IAR18.csv" })).out));
 });

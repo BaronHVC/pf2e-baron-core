@@ -9,27 +9,33 @@
 // export writes a CSV (UTF-8 with a BOM, comma-separated, RFC 4180 quoting,
 // CRLF) that Excel and Google Sheets open as is, by default textos-hoja.csv
 // at the module root (never inside a folder the release ZIP packs). One row
-// per text: by default only those that still need a person (the texts that
-// sign-text and check-module [n] report; with baron.json "humanText" absent
-// or "markers", those that start with TODO-HUMANO: or are empty), with --all
-// every text of the declared languages plus the module.json title and
-// description. Columns: key, where, intent, placeholders, max_length, status,
-// one empty column per language and one current_<lang> column per language.
-// A current_<lang> cell holds a value only when its signature is valid: the
-// sheet never shows an AI working text, so nobody starts from one.
+// per text, in the order of docs/textos-borrador.md: by default only those
+// that still need a person (the texts that sign-text and check-module [n]
+// report; with baron.json "humanText" absent or "markers", those [n] reports,
+// a TODO-HUMANO: marker), with --all every text of the declared languages
+// plus the module.json title and description. Columns: key, where, intent,
+// placeholders, max_length, status, one empty column per language, one
+// current_<lang> column per language, then author (who wrote the row: import
+// only echoes it) and section (the heading of the row in the draft). A
+// current_<lang> cell holds a value only when its signature is valid, and a
+// cell taken from the draft is left empty when it quotes a text without one:
+// the sheet never shows an AI working text, so nobody starts from one.
 //
 // import reads that CSV back as Excel or Google Sheets save it (with or
 // without a BOM, UTF-16 too; comma, semicolon or tab; CRLF or LF; columns in
-// any order, matched by name) and writes each filled language cell into its
-// lang file, or into module.json for the title and description rows. A cell is
-// refused when its key is not in that language file (the tool never creates a
-// key), when its {placeholders} differ from the ones the text must keep, when
-// it starts with TODO-HUMANO: or holds only whitespace; over max_length it
-// only warns. One refused cell and nothing is written, unless --partial;
-// --dry-run writes nothing and shows what would change. Only the edited
-// values change in each file, byte for byte, through a temporary file and a
-// rename. It never touches human-text.json and never signs: the authors sign
-// what they wrote, each at a terminal, with sign-text --sign.
+// any order, matched by name; the header row wherever a sort left it) and
+// writes each filled language cell into its lang file, or into module.json
+// for the title and description rows. A cell is refused when its key is not in
+// that language file (the tool never creates a key), when its {placeholders}
+// differ from the ones the text must keep, when it starts with TODO-HUMANO:,
+// holds only whitespace or is a spreadsheet error such as #NAME?; a column it
+// does not read that holds text is refused too, so a misnamed language never
+// loses a text. Over max_length only warns. One refused cell and nothing is
+// written, unless --partial; --dry-run writes nothing and shows what would
+// change. Only the edited values change in each file, byte for byte, through
+// a temporary file and a rename. It never touches human-text.json and never
+// signs: the authors sign what they wrote, each at a terminal, with
+// sign-text --sign.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -46,6 +52,7 @@ import {
   ownScripts,
   readSignatures,
   signatureStatus,
+  walk,
 } from "./shared.mjs";
 import { DEFAULT_COMMAND as SIGN_COMMAND } from "./sign-text.mjs";
 
@@ -56,6 +63,8 @@ const USAGE = [
 
 /** How the tool is run from the module folder, as the docs write it. */
 export const DEFAULT_COMMAND = "node ../pf2e-baron-core/tools/text-sheet.mjs";
+/** How sign-text is run from the module folder, without its folder argument. */
+export const SIGN_TOOL = SIGN_COMMAND.replace(/ \.$/, "");
 /** Where export writes by default, at the module root; modules list it in .gitignore. */
 export const SHEET_FILE = "textos-hoja.csv";
 /** The intent of each text, written by the agent that wrote the working text. */
@@ -64,17 +73,40 @@ export const DRAFT_FILE = "docs/textos-borrador.md";
 export const FIXED_COLUMNS = ["key", "where", "intent", "placeholders", "max_length", "status"];
 /** current_<lang>: the signed value, the only value the sheet ever shows. */
 export const CURRENT_PREFIX = "current_";
+/** After the current_<lang> columns: who wrote the row's texts (import only echoes it). */
+export const AUTHOR_COLUMN = "author";
+/** The last column: the heading above the row's table in the draft, to sort and filter by screen. */
+export const SECTION_COLUMN = "section";
+/** Headers import reads as the author column. */
+const AUTHOR_NAMES = [AUTHOR_COLUMN, "autor"];
+/** Columns a person may add for their own notes: import ignores them. Any other column with text is refused. */
+export const NOTE_COLUMNS = ["notas", "nota", "notes", "note", "comentarios", "comments"];
 /** Key of a module.json listing field in the sheet: "module.json:title". */
 export const LISTING_PREFIX = "module.json:";
 /** What the release ZIP packs (module-release.yml): the sheet never goes there. */
 export const PACKED_PATHS = ["module.json", "scripts", "styles", "templates", "lang", "packs", "LICENSE", "NOTICE.md"];
+/** What the module's .gitignore needs: every sheet (one per author, the .xlsx a person keeps) and Excel's lock files. */
+export const GITIGNORE_LINES = ["textos-hoja*", "~$*"];
 
 // Built from char codes so this file stays ASCII.
-const BOM = String.fromCharCode(0xfeff);
-const BACKSLASH = String.fromCharCode(92);
-// game.i18n.format() replaces every match of this with the named value.
-const TOKEN_RE = /{[^}]+}/g;
+const ch = (...codes) => String.fromCharCode(...codes);
+const BOM = ch(0xfeff);
+const BACKSLASH = ch(92);
+// Joins the parts of one cell on one line: a line break makes Excel wrap the whole row.
+const DASH = ` ${ch(0x2014)} `;
+// game.i18n.format() fills in each {name}. A brace group right after "]" is
+// the label of an enricher (@Check[...]{Label}, @UUID[...]{Name}), and one
+// that is not a name ({two words}) is text: the person rewrites those.
+const TOKEN_RE = /(?<!\])\{[A-Za-z_$][\w.$]*\}/g;
 const DELIMITERS = [",", ";", "\t"];
+// What Excel and Google Sheets save for a formula that failed, in English and
+// Spanish (#NAME?, #N/A, #REF!, #DIV/0!, #SPILL!, and the same with an opening
+// inverted mark: #?NOMBRE?, #!VALOR!; #N/D for #N/A).
+const SHEET_ERROR_RE = /^#(?:N\/[AD]|[\xa1\xbf]?[A-Z\xc1\xc9\xcd\xd1\xd3\xda][A-Z0-9_\/\xc1\xc9\xcd\xd1\xd3\xda]*[!?]|GETTING_DATA|OBTENIENDO_DATOS)$/;
+// A cell a spreadsheet may have turned into a number or a date: "1/2", "1,000", "+2".
+const NUMBER_OR_DATE_RE = /^(?:[-+]?(?:\d[\d.,\s]*)?\d(?:[eE][-+]?\d+)?%?|\d{1,4}[\/.-]\d{1,2}(?:[\/.-]\d{1,4})?)$/;
+// A cell that starts with one of these opens in Excel as a formula.
+const FORMULA_START_RE = /^[=+\-@]/;
 // Lists in the output stop after this many lines, as check-module caps its own.
 const CAP = 10;
 // On Windows an editor, Excel or a sync client may hold a file for a moment.
@@ -83,7 +115,30 @@ const RENAME_TRIES = 10;
 const RENAME_WAIT_MS = 200;
 
 /** A problem with the module or the sheet that stops the tool (exit 1), never a crash. */
-export class TextSheetError extends Error {}
+export class TextSheetError extends Error {
+  /** @param {string} message @param {{ usage?: boolean }} [opts] usage: a mistake in the arguments, so the CLI adds its usage */
+  constructor(message, { usage = false } = {}) {
+    super(message);
+    this.usage = usage;
+  }
+}
+
+/* ----------------------------------------------------------------------------
+ * The commands the hints print
+ * -------------------------------------------------------------------------- */
+
+// As sign-text quotes them: forward slashes work in PowerShell and in Git Bash.
+const quote = (s) => (/[\s"'&|<>()^;$`\\]/.test(s) ? `"${s}"` : s);
+const relPath = (from, to) => path.relative(from, to).split(path.sep).join("/");
+
+/** `import <sheet> [<module>]`, from the folder the tool runs in. */
+function importCommand({ tool, cwd, root }, sheet) {
+  const dir = relPath(cwd, root);
+  return `${tool} import ${quote(relPath(cwd, sheet) || sheet)}${dir ? ` ${quote(dir)}` : ""}`;
+}
+
+/** `sign-text <module> --sign`, from the folder the tool runs in. */
+const signCommand = ({ signTool, cwd, root }) => `${signTool} ${quote(relPath(cwd, root) || ".")} --sign`;
 
 /* ----------------------------------------------------------------------------
  * CSV
@@ -226,13 +281,16 @@ export function csvParse(text) {
 // Header names compare without accents, case or punctuation: "Max." (with
 // its accent) is "max".
 const fold = (s) => s.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+const KEY_HEADER_RE = /^(?:clave|key)\b/;
 const DRAFT_ROLES = [
-  ["key", /^(?:clave|key)\b/],
+  ["key", KEY_HEADER_RE],
   ["where", /^(?:donde|where)\b/],
   ["intent", /^(?:intencion|que comunica|intent|proposito)\b/],
   ["placeholders", /^(?:variables?|marcadores?|placeholders?)\b/],
   ["max", /^(?:max|maximo|largo|longitud)\b/],
 ];
+// "Claves donde aparece": the column of a table of concepts.
+const CONCEPT_KEYS_RE = /^(?:claves|keys)\b/;
 const DELIMITER_ROW_RE = /^\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
 
 /** Cells of a markdown table row: an escaped \| stays in its cell. */
@@ -263,6 +321,44 @@ function cellKeys(cell) {
 }
 
 const tokensOf = (s) => [...new Set(String(s).match(TOKEN_RE) ?? [])];
+/** Markdown text as a spreadsheet cell shows it: no backticks, one line. */
+const plain = (s) => s.replace(/`/g, "").replace(/\s+/g, " ").trim();
+
+/**
+ * Every markdown table of a draft outside code fences and HTML comments, with
+ * its folded header, its rows (cells and line number) and the heading above it.
+ */
+function draftTables(text) {
+  const src = (text.startsWith(BOM) ? text.slice(1) : text)
+    .replace(/\r\n?/g, "\n")
+    // An HTML comment is not shown; blanked line by line, so line numbers stay.
+    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
+  const lines = src.split("\n");
+  const tables = [];
+  let fence = null;
+  let section = "";
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
+    if (f) {
+      if (!fence) fence = f[1][0];
+      else if (f[1][0] === fence) fence = null;
+      continue;
+    }
+    if (fence) continue;
+    const heading = /^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+    if (heading) {
+      section = plain(heading[1]);
+      continue;
+    }
+    if (!line.trim().startsWith("|") || !DELIMITER_ROW_RE.test(lines[i + 1] ?? "")) continue;
+    const table = { section, header: splitRow(line).map(fold), rows: [] };
+    for (i += 2; i < lines.length && lines[i].trim().startsWith("|"); i++) table.rows.push({ line: i + 1, cells: splitRow(lines[i]) });
+    i--;
+    tables.push(table);
+  }
+  return tables;
+}
 
 /**
  * The rows of a textos-borrador.md. Every markdown table whose header has a
@@ -274,46 +370,53 @@ const tokensOf = (s) => [...new Set(String(s).match(TOKEN_RE) ?? [])];
  * are ignored. A key cell names its keys in backticks; a key may leave out the
  * module's i18n prefix, and module.json:title and module.json:description
  * name the listing texts. A placeholder is every {name} in the variables cell.
+ * `section` is the heading above the table.
  * @param {string} text
- * @returns {{ key: string, line: number, where: string, intent: string, placeholders: string[]|null, max: number|null }[]}
+ * @returns {{ key: string, line: number, section: string, where: string, intent: string, placeholders: string[]|null, max: number|null }[]}
  *   `placeholders` is null without a variables column; `max` is null without a number
  */
 export function parseDraft(text) {
-  const src = (text.startsWith(BOM) ? text.slice(1) : text)
-    .replace(/\r\n?/g, "\n")
-    // An HTML comment is not shown; blanked line by line, so line numbers stay.
-    .replace(/<!--[\s\S]*?-->/g, (m) => m.replace(/[^\n]/g, " "));
-  const lines = src.split("\n");
   const rows = [];
-  let fence = null;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const f = /^ {0,3}(`{3,}|~{3,})/.exec(line);
-    if (f) {
-      if (!fence) fence = f[1][0];
-      else if (f[1][0] === fence) fence = null;
-      continue;
-    }
-    if (fence || !line.trim().startsWith("|") || !DELIMITER_ROW_RE.test(lines[i + 1] ?? "")) continue;
+  for (const table of draftTables(text)) {
     const roles = {};
-    splitRow(line).forEach((h, idx) => {
-      const role = DRAFT_ROLES.find(([, re]) => re.test(fold(h)))?.[0];
+    table.header.forEach((h, idx) => {
+      const role = DRAFT_ROLES.find(([, re]) => re.test(h))?.[0];
       if (role && roles[role] === undefined) roles[role] = idx;
     });
-    i += 2;
-    for (; i < lines.length && lines[i].trim().startsWith("|"); i++) {
-      if (roles.key === undefined) continue;
-      const cells = splitRow(lines[i]);
+    if (roles.key === undefined) continue;
+    for (const { line, cells } of table.rows) {
       const cell = (role) => (roles[role] === undefined ? "" : (cells[roles[role]] ?? ""));
       const placeholders = roles.placeholders === undefined ? null : tokensOf(cell("placeholders"));
       const max = /\d+/.exec(cell("max"));
       for (const key of cellKeys(cell("key"))) {
-        rows.push({ key, line: i + 1, where: cell("where"), intent: cell("intent"), placeholders, max: max ? Number(max[0]) : null });
+        rows.push({ key, line, section: table.section, where: cell("where"), intent: cell("intent"), placeholders, max: max ? Number(max[0]) : null });
       }
     }
-    i--;
   }
   return rows;
+}
+
+/**
+ * The tables of concepts of a textos-borrador.md: a table with a "claves"
+ * column ("Claves donde aparece") and no "clave" column lists, in each row,
+ * the keys that must name one concept with the same term. `concept` is the
+ * first other cell of the row.
+ * @param {string} text
+ * @returns {{ line: number, concept: string, keys: string[] }[]} rows with two keys or more
+ */
+export function parseConcepts(text) {
+  const out = [];
+  for (const { header, rows } of draftTables(text)) {
+    if (header.some((h) => KEY_HEADER_RE.test(h))) continue;
+    const at = header.findIndex((h) => CONCEPT_KEYS_RE.test(h));
+    if (at < 0) continue;
+    const named = header.findIndex((h, i) => i !== at && h);
+    for (const { line, cells } of rows) {
+      const keys = cellKeys(cells[at] ?? "");
+      if (keys.length > 1) out.push({ line, concept: named < 0 ? "" : plain(cells[named] ?? ""), keys });
+    }
+  }
+  return out;
 }
 
 /* ----------------------------------------------------------------------------
@@ -321,6 +424,24 @@ export function parseDraft(text) {
  * -------------------------------------------------------------------------- */
 
 const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+
+/**
+ * Where a JSON text stops being valid, as " at line L, column C", or "". Never
+ * V8's message: it quotes the text around the error, a working text maybe.
+ */
+function jsonErrorPlace(text, err) {
+  let at = /position (\d+)/.exec(String(err?.message))?.[1];
+  if (at === undefined) {
+    try {
+      jsonStringLeaves(text);
+    } catch (e) {
+      at = /at (\d+)$/.exec(String(e?.message))?.[1];
+    }
+  }
+  if (at === undefined) return "";
+  const before = text.slice(0, Number(at)).split("\n");
+  return ` at line ${before.length}, column ${before.at(-1).length + 1}`;
+}
 
 /** A JSON file as it is on disk: its bytes, its BOM, its text and its data. */
 function readJsonFile(root, rel) {
@@ -339,7 +460,7 @@ function readJsonFile(root, rel) {
   try {
     data = JSON.parse(text);
   } catch (err) {
-    throw new TextSheetError(`${rel} is not valid JSON: ${err.message}`);
+    throw new TextSheetError(`${rel} is not valid JSON${jsonErrorPlace(text, err)}: fix it in an editor`);
   }
   return { rel, file, buf, bom, text, data };
 }
@@ -355,19 +476,25 @@ const SIGNED_LABELS = {
   illformed: "broken",
 };
 
+/** Whether a value, or any string inside it, starts with TODO-HUMANO:, as check-module [n] reads it. */
+const hasMarker = (v) => (typeof v === "string" ? isHumanPlaceholder(v) : v !== null && typeof v === "object" && Object.values(v).some(hasMarker));
+const countMarkers = (v) => (typeof v === "string" ? +isHumanPlaceholder(v) : v !== null && typeof v === "object" ? Object.values(v).reduce((n, x) => n + countMarkers(x), 0) : 0);
+
 /**
  * Status of one text. With "humanText": "signed", the signature status
- * (sign-text and check-module [n]); otherwise the marker rule of [n]: a text
- * that starts with TODO-HUMANO: (or is empty) is still to write.
+ * (sign-text and check-module [n]); otherwise the marker rule of [n]: "to
+ * write" starts with TODO-HUMANO:, "no marker" does not (who wrote it, the
+ * tool cannot know) and "empty" is empty; a list, a key defined twice and a
+ * broken string keep their own status.
  */
 function labelOf(t, mode) {
-  if (mode === "signed") return SIGNED_LABELS[t.status];
-  if (t.status === "list" || t.status === "conflict") return t.status;
-  return !t.value.trim() || isHumanPlaceholder(t.value) ? "to write" : "written";
+  if (mode === "signed" || t.status === "list" || t.status === "conflict" || t.status === "illformed") return SIGNED_LABELS[t.status];
+  if (isHumanPlaceholder(t.value)) return "to write";
+  return t.value.trim() ? "no marker" : "empty";
 }
 
-/** Whether a text needs a person: what sign-text and check-module [n] report, by mode. */
-const needsPerson = (label, mode) => (mode === "signed" ? label !== "signed" && label !== "missing" : label === "to write");
+/** Whether a text needs a person: every text without a valid signature with the lock (sign-text, [n]); without it, what [n] reports. */
+const needsOf = (t, mode) => (mode === "signed" ? t.status !== "signed" : hasMarker(t.value));
 
 /**
  * THE LEAK GUARD. The only way a value reaches the sheet or the output: when
@@ -382,6 +509,44 @@ function shownValue(entries) {
   if (!entries.length || entries.some((t) => t.status !== "signed")) return "";
   const [{ value }] = entries;
   return typeof value === "string" && entries.every((t) => t.value === value) ? value : "";
+}
+
+// Text folded for a search: case and runs of whitespace do not hide a quote.
+const foldText = (s) => s.normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim();
+const WORD_CHAR_RE = /[\p{L}\p{N}_]/u;
+// A working text this long is a sentence, never a term a description would
+// use by chance: anywhere in a draft cell it is a copy. A shorter one ("Runas
+// de propiedad", "Revelar la trampa") is often the plain name of the thing,
+// so it counts only between quotation marks.
+const SENTENCE_WORDS = 7;
+const QUOTE_PAIRS = [['"', '"'], [ch(0x201c), ch(0x201d)], [ch(0xab), ch(0xbb)], ["'", "'"], [ch(0x2018), ch(0x2019)]];
+
+/** The texts a cell copied from the draft must never quote: every value without a valid signature (strings inside a list too), folded. */
+function workingTexts(texts) {
+  const out = new Map();
+  const add = (v) => {
+    if (typeof v === "string") {
+      const s = foldText(v);
+      if (s) out.set(s, s.split(" ").length >= SENTENCE_WORDS);
+    } else if (v !== null && typeof v === "object") Object.values(v).forEach(add);
+  };
+  for (const t of texts) if (t.status !== "signed") add(t.value);
+  return [...out].map(([s, sentence]) => ({ s, sentence }));
+}
+
+/** Whether `cell` quotes one of `secrets`: whole, between quotation marks, or, for a sentence, anywhere as whole words (case and spacing aside). */
+function quotesAny(cell, secrets) {
+  if (!cell) return false;
+  const hay = foldText(cell);
+  const edge = (c, inner) => c === undefined || !WORD_CHAR_RE.test(c) || !WORD_CHAR_RE.test(inner);
+  return secrets.some(({ s, sentence }) => {
+    if (QUOTE_PAIRS.some(([open, close]) => hay.includes(open + s + close))) return true;
+    if (!sentence) return false;
+    for (let i = hay.indexOf(s); i >= 0; i = hay.indexOf(s, i + 1)) {
+      if (edge(hay[i - 1], s[0]) && edge(hay[i + s.length], s.at(-1))) return true;
+    }
+    return false;
+  });
 }
 
 /** baron.json "humanText", read as sign-text reads it: only a missing value or "markers" leaves the lock off. */
@@ -399,6 +564,10 @@ function readMode(root) {
   return { mode: "markers", prefix: null, raw: undefined };
 }
 
+/** A language code that cannot name a column: it would be read as another column. */
+const reservedColumn = (name) =>
+  FIXED_COLUMNS.includes(name) || AUTHOR_NAMES.includes(name) || name === SECTION_COLUMN || NOTE_COLUMNS.includes(name) || name.startsWith(CURRENT_PREFIX);
+
 /**
  * Everything both commands need, read once: the declared languages and their
  * files, every text with its status, the draft rows and where each key is used.
@@ -415,17 +584,19 @@ function loadModule(root) {
   const entries = languageEntries(root, module);
   const langs = [...new Set(entries.map((e) => e.lang))];
   if (!langs.length) throw new TextSheetError("module.json declares no language and lang/ has no .json file: there is nothing to write");
-  const bad = langs.find((l) => !l || /[\s,;"]/.test(l) || l.toLowerCase().startsWith(CURRENT_PREFIX) || FIXED_COLUMNS.includes(l.toLowerCase()));
+  const bad = langs.find((l) => !l || /[\s,;"]/.test(l) || reservedColumn(l.toLowerCase()));
   if (bad !== undefined) throw new TextSheetError(`the language code ${JSON.stringify(bad)} cannot name a column of the sheet`);
   const files = new Map();
   for (const { rel } of entries) if (!files.has(rel)) files.set(rel, readJsonFile(root, rel));
+  // lang/ ships whole in the release ZIP: a file module.json does not declare is still checked by [n].
+  const undeclared = walk(root, "lang", (n) => n.endsWith(".json")).filter((rel) => !files.has(rel));
 
   const read = readSignatures(root);
   if (read.error) throw new TextSheetError(`${HUMAN_TEXT_FILE} ${read.error}: restore it from git`);
   const texts = signatureStatus(
     humanTexts(module, [...files.values()].map((f) => ({ rel: f.rel, data: f.data }))),
     read.signed,
-  ).map((t) => ({ ...t, label: labelOf(t, mode) }));
+  ).map((t) => ({ ...t, label: labelOf(t, mode), needs: needsOf(t, mode) }));
 
   // lang -> key -> its texts (one per file of that language, or two for a conflict).
   const byLang = new Map(langs.map((l) => [l, new Map()]));
@@ -461,36 +632,65 @@ function loadModule(root) {
     return [...new Set(dynamic.filter((d) => key.startsWith(d.head)).map((d) => `${d.loc.file}:${d.loc.line} (key built at runtime)`))];
   };
 
-  return { root, module, moduleFile, mode, rawMode: raw, prefix, langs, entries, files, texts, byLang, keys, listing, whereUsed, missingSignatures: !!read.missing, draft: loadDraft(root, { prefix, keys, listing }) };
+  return {
+    root,
+    module,
+    moduleFile,
+    mode,
+    rawMode: raw,
+    prefix,
+    langs,
+    entries,
+    files,
+    undeclared,
+    texts,
+    byLang,
+    keys,
+    listing,
+    whereUsed,
+    missingSignatures: !!read.missing,
+    draft: loadDraft(root, { prefix, keys, listing }),
+  };
 }
 
-/** The draft rows matched to the module's keys, and what does not match. */
+/** The draft rows and concepts matched to the module's keys, and what does not match. */
 function loadDraft(root, { prefix, keys, listing }) {
-  const out = { exists: false, byKey: new Map(), unknown: [], duplicates: [] };
+  const out = { exists: false, byKey: new Map(), concepts: new Map(), unknown: [], duplicates: [] };
   const file = path.join(root, DRAFT_FILE);
   if (!fs.existsSync(file)) return out;
   out.exists = true;
   const known = new Set(keys);
-  for (const row of parseDraft(fs.readFileSync(file, "utf8"))) {
-    let key = null;
-    if (row.key.startsWith(LISTING_PREFIX)) {
-      const field = row.key.slice(LISTING_PREFIX.length);
-      if (listing.has(field)) key = row.key;
-    } else if (known.has(row.key)) key = row.key;
-    else if (prefix && known.has(`${prefix}.${row.key}`)) key = `${prefix}.${row.key}`;
+  const resolve = (key) => {
+    if (key.startsWith(LISTING_PREFIX)) return listing.has(key.slice(LISTING_PREFIX.length)) ? key : null;
+    if (known.has(key)) return key;
+    return prefix && known.has(`${prefix}.${key}`) ? `${prefix}.${key}` : null;
+  };
+  const text = fs.readFileSync(file, "utf8");
+  for (const row of parseDraft(text)) {
+    const key = resolve(row.key);
     if (key === null) out.unknown.push(row);
     else if (out.byKey.has(key)) out.duplicates.push({ ...row, first: out.byKey.get(key).line });
     else out.byKey.set(key, row);
   }
+  // Each key of a concept: the other keys that name it with the same term, as the draft writes them.
+  for (const { concept, keys: named } of parseConcepts(text)) {
+    const found = named.map((k) => [k, resolve(k)]).filter(([, key]) => key !== null);
+    for (const [, key] of found) {
+      const others = [...new Set(found.filter(([, k]) => k !== key).map(([k]) => k))];
+      if (!others.length) continue;
+      if (!out.concepts.has(key)) out.concepts.set(key, []);
+      out.concepts.get(key).push({ concept, others });
+    }
+  }
   return out;
 }
 
-/** One language cell of a key: its status, its shown value (signed only) and its texts. */
+/** One language cell of a key: its status, whether it needs a person, its shown value (signed only) and its texts. */
 function langCell(m, lang, key) {
   const list = m.byLang.get(lang).get(key) ?? [];
-  if (!list.length) return { label: "missing", shown: "", list };
-  const open = list.find((t) => t.label !== "signed" && t.label !== "written");
-  return { label: (open ?? list[0]).label, shown: shownValue(list), list };
+  if (!list.length) return { label: "missing", needs: false, shown: "", list };
+  const open = list.find((t) => t.needs) ?? list.find((t) => t.status !== "signed");
+  return { label: (open ?? list[0]).label, needs: list.some((t) => t.needs), shown: shownValue(list), list };
 }
 
 /**
@@ -508,37 +708,65 @@ function requiredPlaceholders(m, key) {
   return found;
 }
 
-/** The sheet's rows for the module: the module.json listing fields first, then every key in file order. */
+const E_ACUTE = ch(0xe9);
+
+/** The intent of a key: its draft row, then the other keys that name each of its concepts with the same term. */
+function intentOf(m, key) {
+  const terms = (m.draft.concepts.get(key) ?? []).map((c) => `mismo t${E_ACUTE}rmino que ${c.others.join(", ")}${c.concept ? ` (${c.concept})` : ""}`);
+  return [m.draft.byKey.get(key)?.intent, ...terms].filter(Boolean).join(DASH);
+}
+
+/**
+ * The sheet's rows for the module, in the order of textos-borrador.md (the
+ * rows without a draft row after them: the module.json listing fields first,
+ * then every key in file order). Each cell taken from the draft goes through
+ * the leak guard: one that quotes a text without a valid signature is left
+ * empty and reported in `leaks` (key, column, line; never the text).
+ */
 function sheetRows(m, all) {
   const rows = [];
   const first = m.langs[0];
   for (const field of LISTING_FIELDS) {
     const t = m.listing.get(field);
-    if (!t) continue;
-    const key = LISTING_PREFIX + field;
-    if (!all && !needsPerson(t.label, m.mode)) continue;
-    const draft = m.draft.byKey.get(key);
-    const where = [`module.json "${field}": one text for every language, written in the ${first} column`, draft?.where].filter(Boolean).join("\n");
+    if (!t || (!all && !t.needs)) continue;
     rows.push({
-      key,
-      where,
-      draft,
+      key: LISTING_PREFIX + field,
       status: t.label,
-      needs: needsPerson(t.label, m.mode),
+      needs: t.needs,
+      signedAll: t.status === "signed",
+      code: `module.json "${field}": one text for every language, written in the ${first} column`,
       current: Object.fromEntries(m.langs.map((l) => [l, l === first ? shownValue([t]) : ""])),
     });
   }
   for (const key of m.keys) {
     const cells = Object.fromEntries(m.langs.map((l) => [l, langCell(m, l, key)]));
-    const needs = m.langs.some((l) => needsPerson(cells[l].label, m.mode));
+    const needs = m.langs.some((l) => cells[l].needs);
     if (!all && !needs) continue;
     const labels = m.langs.map((l) => cells[l].label);
     const status = new Set(labels).size === 1 ? labels[0] : m.langs.map((l, i) => `${l}: ${labels[i]}`).join("; ");
-    const draft = m.draft.byKey.get(key);
-    const where = [draft?.where, m.whereUsed(key).join(", ")].filter(Boolean).join("\n");
-    rows.push({ key, where, draft, status, needs, current: Object.fromEntries(m.langs.map((l) => [l, cells[l].shown])) });
+    const signedAll = m.langs.every((l) => cells[l].list.every((t) => t.status === "signed"));
+    rows.push({ key, status, needs, signedAll, code: m.whereUsed(key).join(", "), current: Object.fromEntries(m.langs.map((l) => [l, cells[l].shown])) });
   }
-  return rows;
+
+  const secrets = workingTexts(m.texts);
+  const leaks = [];
+  for (const r of rows) {
+    r.draft = m.draft.byKey.get(r.key);
+    const guard = (column, text, line) => {
+      if (!quotesAny(text, secrets)) return text;
+      leaks.push({ key: r.key, column, line });
+      return "";
+    };
+    const draftWhere = guard("where", r.draft?.where ?? "", r.draft?.line);
+    const parts = r.key.startsWith(LISTING_PREFIX) ? [r.code, draftWhere] : [draftWhere, r.code];
+    r.where = parts.filter(Boolean).join(DASH);
+    const conceptLine = m.draft.byKey.get(r.key)?.line;
+    r.intent = guard("intent", intentOf(m, r.key), conceptLine);
+    r.section = guard("section", r.draft?.section ?? "", r.draft?.line);
+  }
+  const order = rows.map((r, i) => ({ r, i, at: r.draft?.line ?? Infinity }));
+  order.sort((a, b) => (a.at === b.at ? a.i - b.i : a.at - b.at));
+  return { rows: order.map((o) => o.r), leaks };
 }
 
 const listCapped = (items, log, fmt) => {
@@ -546,7 +774,15 @@ const listCapped = (items, log, fmt) => {
   if (items.length > CAP) log(`  and ${items.length - CAP} more`);
 };
 
-const showKey = (k) => JSON.stringify(k);
+const capRows = (rows) => (rows.length > CAP ? `${rows.slice(0, CAP).join(", ")} and ${rows.length - CAP} more` : rows.join(", "));
+const rowWord = (rows) => (rows.length === 1 ? `row ${rows[0]}` : `rows ${capRows(rows)}`);
+/** A spreadsheet's name of a column: A, B, ..., Z, AA. */
+const colName = (i) => (i >= 26 ? colName(Math.floor(i / 26) - 1) : "") + String.fromCharCode(65 + (i % 26));
+
+/** The UTF-8 BOM warning of every declared file that has one: sign-text and check-module refuse such a file. */
+function bomWarnings(m) {
+  return [m.moduleFile, ...m.files.values()].filter((f) => f.bom).map((f) => `${f.rel} starts with a UTF-8 BOM, which sign-text and check-module refuse: save it as UTF-8 without a BOM before signing`);
+}
 
 /* ----------------------------------------------------------------------------
  * Files: atomic writes
@@ -631,15 +867,23 @@ async function writeAll(writes) {
  * export
  * -------------------------------------------------------------------------- */
 
-/** Whether the module already holds `value` as the text of `key` in `lang` (or as a listing field). */
-function holds(m, key, lang, value) {
-  if (key.startsWith(LISTING_PREFIX)) return m.listing.get(key.slice(LISTING_PREFIX.length))?.value === value;
-  const list = m.byLang.get(lang)?.get(key) ?? [];
-  return list.length > 0 && list.every((t) => t.value === value);
+/** The texts of `key` in `lang` (or its listing field): what import would write. */
+function textsOf(m, key, lang) {
+  if (key.startsWith(LISTING_PREFIX)) {
+    const t = m.listing.get(key.slice(LISTING_PREFIX.length));
+    return t ? [t] : [];
+  }
+  return m.byLang.get(lang)?.get(key) ?? [];
 }
 
-/** Why the sheet cannot be written at `target`, or null. */
-function outProblem(m, target) {
+/**
+ * Why the sheet cannot be written at `target`, or null. An existing sheet may
+ * hold what people wrote: it is replaced only when every text in it is in the
+ * module and, with the lock, signed (else a new sheet would list an imported
+ * text as one to write, and its second author would write it again), and when
+ * no other column holds text.
+ */
+function outProblem(m, target, hint) {
   const { root } = m;
   if (path.extname(target).toLowerCase() !== ".csv") return `${target} does not end in .csv`;
   const rel = path.relative(root, target);
@@ -651,61 +895,77 @@ function outProblem(m, target) {
   }
   if (!fs.existsSync(target)) return null;
   if (!fs.statSync(target).isFile()) return `${target} is not a file`;
-  // An existing sheet may hold texts nobody imported yet: never overwrite
-  // those. One whose every written cell is already in the module was imported.
   let sheet;
   try {
     sheet = readSheet(fs.readFileSync(target), m.langs);
   } catch {
     return `${target} exists and is not a text sheet: choose another --out`;
   }
-  if (sheet.keyIdx < 0) return `${target} exists and is not a text sheet: choose another --out`;
-  const pending = sheet.records.find((r) =>
-    sheet.langCols.some((c) => {
-      const cell = (r.fields[c.idx] ?? "").replace(/\r\n?/g, "\n");
-      return cell !== "" && !holds(m, (r.fields[sheet.keyIdx] ?? "").trim(), c.lang, cell);
-    }),
-  );
+  if (!sheet.header || sheet.keyIdx < 0) return `${target} exists and is not a text sheet: choose another --out`;
+  const filled = sheet.records.flatMap((r) => {
+    const key = (r.fields[sheet.keyIdx] ?? "").trim();
+    return sheet.langCols
+      .map((c) => ({ key, lang: c.lang, row: r.row, cell: (r.fields[c.idx] ?? "").replace(/\r\n?/g, "\n") }))
+      .filter((x) => x.cell !== "")
+      .map((x) => ({ ...x, list: textsOf(m, x.key, x.lang), place: `row ${x.row} (${x.key || "no key"}, ${x.lang})` }));
+  });
+  // Not imported first: importing comes before signing.
+  const pending = filled.find((x) => !x.list.length || !x.list.every((t) => t.value === x.cell));
   if (pending) {
-    return `${target} holds written texts that are not in the module yet (row ${pending.row}): import it first (${DEFAULT_COMMAND} import ${path.basename(target)}), or move it away`;
+    return `${target} holds a text in ${pending.place} that is not in the module yet: import it first (${importCommand(hint, target)}); a cell that import refuses must be fixed or emptied in the sheet; or move the sheet away`;
+  }
+  const unsigned = m.mode === "signed" && filled.find((x) => !x.list.every((t) => t.status === "signed"));
+  if (unsigned) {
+    return `${target} holds a text in ${unsigned.place} that was imported but is not signed yet: its author signs it first (${signCommand(hint)}), or move the sheet away: a new sheet would list it as a text to write`;
+  }
+  for (const col of [...sheet.notes, ...sheet.unknown]) {
+    const rows = sheet.records.filter((r) => (r.fields[col.idx] ?? "").trim() !== "").map((r) => r.row);
+    if (rows.length) {
+      return `${target} holds text in column ${col.name ? JSON.stringify(col.name) : colName(col.idx)} (${rowWord(rows)}), which a new sheet would drop: move the sheet away, or give --out another name`;
+    }
   }
   return null;
 }
 
 /**
  * Writes the sheet. The CLI wraps it; tests call it directly.
- * @param {{ dir?: string, out?: string, all?: boolean, cwd?: string, log?: (line: string) => void }} [opts]
+ * @param {{ dir?: string, out?: string, all?: boolean, cwd?: string, log?: (line: string) => void, tool?: string, signTool?: string }} [opts]
+ *   `tool` and `signTool`: how the hints run text-sheet and sign-text
  * @returns {Promise<{ code: number, file: string, rows: number, header: string[], warnings: number }>}
  * @throws {TextSheetError}
  */
-export async function exportSheet({ dir = process.cwd(), out, all = false, cwd = process.cwd(), log = console.log } = {}) {
+export async function exportSheet({ dir = process.cwd(), out, all = false, cwd = process.cwd(), log = console.log, tool = DEFAULT_COMMAND, signTool = SIGN_TOOL } = {}) {
   const root = path.resolve(cwd, dir);
   const m = loadModule(root);
   const target = out ? path.resolve(cwd, out) : path.join(root, SHEET_FILE);
-  const problem = outProblem(m, target);
+  const hint = { tool, signTool, cwd, root };
+  const problem = outProblem(m, target, hint);
   if (problem) throw new TextSheetError(problem);
 
-  const rows = sheetRows(m, all);
-  const header = [...FIXED_COLUMNS, ...m.langs, ...m.langs.map((l) => CURRENT_PREFIX + l)];
+  const { rows, leaks } = sheetRows(m, all);
+  const header = [...FIXED_COLUMNS, ...m.langs, ...m.langs.map((l) => CURRENT_PREFIX + l), AUTHOR_COLUMN, SECTION_COLUMN];
   const table = [
     header,
     ...rows.map((r) => [
       r.key,
       r.where,
-      r.draft?.intent ?? "",
+      r.intent,
       requiredPlaceholders(m, r.key).join(" "),
       r.draft?.max ?? "",
       r.status,
       ...m.langs.map(() => ""),
       ...m.langs.map((l) => r.current[l]),
+      "",
+      r.section,
     ]),
   ];
+  fs.mkdirSync(path.dirname(target), { recursive: true });
   await writeAll([{ file: target, rel: path.basename(target), before: fs.existsSync(target) ? fs.readFileSync(target) : null, after: Buffer.from(csvWrite(table), "utf8") }]);
 
-  const relOut = path.relative(cwd, target).split(path.sep).join("/") || target;
+  const relOut = relPath(cwd, target) || target;
   log(`text-sheet: ${m.module.id ?? path.basename(root)} (${root}) export${all ? " --all" : ""}`);
   if (m.mode === "markers") {
-    log('note: baron.json does not say "humanText": "signed": a text needs a person when it starts with TODO-HUMANO: or is empty (check-module [n])');
+    log('note: baron.json does not say "humanText": "signed": a text needs a person when it starts with TODO-HUMANO: (check-module [n]), also inside a list or in one copy of a key defined twice');
   } else if (m.rawMode !== "signed") {
     log(`note: baron.json "humanText" is ${JSON.stringify(m.rawMode)}, which check-module rejects (rule [c]); its lock still applies, so the sheet follows the signatures`);
   }
@@ -718,11 +978,29 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
     warnings++;
     log(`warn: ${line}`);
   };
-  const noIntent = rows.filter((r) => r.needs && !r.draft);
+  for (const w of bomWarnings(m)) warn(w);
+  for (const rel of m.undeclared) {
+    let markers = null;
+    try {
+      markers = countMarkers(readJsonFile(root, rel).data);
+    } catch {
+      // check-module [c] reports a broken file; here it only counts as undeclared
+    }
+    if (m.mode === "signed") {
+      warn(`${rel} is in lang/ but module.json "languages" does not declare it: the sheet leaves it out, and check-module [n] reports it (lang/ ships whole in the release ZIP, and its texts cannot be signed); declare it, or move it out of lang/`);
+    } else if (markers === null || markers > 0) {
+      warn(`${rel} is in lang/ but module.json "languages" does not declare it: the sheet leaves out its ${markers ?? "unread"} TODO-HUMANO: text(s), which check-module [n] reports; declare it, or move it out of lang/`);
+    }
+  }
+  if (leaks.length) {
+    warn(`${leaks.length} cell(s) of ${DRAFT_FILE} quote a text that has no valid signature (a working text), so the sheet leaves them empty: rewrite each one as an intent, never with the text's wording:`);
+    listCapped(leaks, log, (x) => `  ${DRAFT_FILE}${x.line ? `:${x.line}` : ""}  ${x.key} (${x.column})`);
+  }
+  const noIntent = rows.filter((r) => !r.draft && !r.signedAll);
   if (!m.draft.exists) {
-    if (noIntent.length) warn(`there is no ${DRAFT_FILE}: the intent column is empty for all ${noIntent.length} row(s) that need a person`);
+    if (noIntent.length) warn(`there is no ${DRAFT_FILE}: the intent column is empty for all ${noIntent.length} row(s) not signed yet`);
   } else if (noIntent.length) {
-    warn(`${noIntent.length} row(s) that need a person have no row in ${DRAFT_FILE}, so their intent is empty:`);
+    warn(`${noIntent.length} row(s) not signed yet have no row in ${DRAFT_FILE}, so their intent is empty:`);
     listCapped(noIntent, log, (r) => `  ${r.key}`);
   }
   if (m.draft.unknown.length) {
@@ -733,7 +1011,7 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
     warn(`${m.draft.duplicates.length} key(s) have a second row in ${DRAFT_FILE}; the sheet takes the first:`);
     listCapped(m.draft.duplicates, log, (r) => `  ${DRAFT_FILE}:${r.line}  ${r.key} (first at line ${r.first})`);
   }
-  const mismatch = rows.filter((r) => r.draft?.placeholders && tokensOf(r.draft.placeholders.join(" ")).sort().join(" ") !== requiredPlaceholders(m, r.key).slice().sort().join(" "));
+  const mismatch = rows.filter((r) => r.draft?.placeholders && r.draft.placeholders.slice().sort().join(" ") !== requiredPlaceholders(m, r.key).slice().sort().join(" "));
   if (mismatch.length) {
     warn(`${mismatch.length} row(s) of ${DRAFT_FILE} list other placeholders than the language files use; the sheet keeps those of the language files:`);
     listCapped(mismatch, log, (r) => `  ${r.key}: ${DRAFT_FILE} ${r.draft.placeholders.join(" ") || "(none)"}, language files ${requiredPlaceholders(m, r.key).join(" ") || "(none)"}`);
@@ -746,6 +1024,17 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
     warn(`${uneven.length} key(s) use different placeholders in each language; the sheet asks for all of them:`);
     listCapped(uneven, log, (r) => `  ${r.key}`);
   }
+  // Excel opens a cell that starts with = + - or @ as a formula and shows #NAME?.
+  const formulas = [];
+  table.slice(1).forEach((cells, i) => {
+    header.forEach((h, c) => {
+      if (c > 0 && !m.langs.includes(h) && FORMULA_START_RE.test(String(cells[c]))) formulas.push({ row: i + 2, column: h, key: cells[0] });
+    });
+  });
+  if (formulas.length) {
+    warn(`${formulas.length} cell(s) start with =, +, - or @, which Excel opens as a formula and shows as #NAME? (#${ch(0xbf)}NOMBRE?): read them in the language files or in ${DRAFT_FILE}, or open the sheet with Datos > Desde el texto/CSV:`);
+    listCapped(formulas, log, (x) => `  row ${x.row}  ${x.column}  ${x.key}`);
+  }
   if (m.mode === "signed") {
     const done = [...m.draft.byKey.keys()].filter((k) => !rows.some((r) => r.key === k && r.needs) && (k.startsWith(LISTING_PREFIX) ? m.listing.get(k.slice(LISTING_PREFIX.length))?.label === "signed" : m.langs.every((l) => langCell(m, l, k).label === "signed")));
     if (done.length) log(`info: ${done.length} row(s) of ${DRAFT_FILE} are for texts signed in every language: delete them`);
@@ -754,12 +1043,13 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
   const inside = path.relative(root, target).split(path.sep).join("/");
   if (!inside.startsWith("..") && !path.isAbsolute(inside) && gitTry(root, ["rev-parse", "--is-inside-work-tree"]) === "true") {
     if (gitTry(root, ["check-ignore", "-q", "--", inside]) === null) {
-      warn(`${inside} is not in .gitignore: add a line "${inside === SHEET_FILE ? SHEET_FILE : `/${inside}`}" so the sheet is never committed`);
+      const lines = /^textos-hoja[^/]*$/.test(inside) ? GITIGNORE_LINES : [`/${inside}`, GITIGNORE_LINES[1]];
+      warn(`${inside} is not in .gitignore: add the lines ${lines.map((l) => `"${l}"`).join(" and ")} so no sheet (nor Excel's lock file) is ever committed`);
     }
   }
   log(
-    `next: the people who write the texts fill in the ${m.langs.join(" and ")} column(s) themselves (never an AI, and never starting from an AI text), ` +
-      `save the file as CSV UTF-8, then run: ${DEFAULT_COMMAND} import ${relOut}`,
+    `next: the people who write the texts ${m.draft.exists ? `read the rules in ${DRAFT_FILE} first, then ` : ""}fill in the ${m.langs.join(" and ")} column(s) themselves (never an AI, and never starting from an AI text) and their name in "${AUTHOR_COLUMN}", ` +
+      `save the file as CSV UTF-8, then run: ${importCommand(hint, target)}`,
   );
   return { code: 0, file: target, rows: rows.length, header, warnings };
 }
@@ -771,35 +1061,46 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
 /**
  * A saved sheet: its records and where its columns are, by header name (case
  * and surrounding spaces do not matter): "key", one column per language of
- * `langs` and their current_<lang> columns. The header is the first record
- * that is not empty; every other column is ignored.
+ * `langs`, their current_<lang> columns and "author". The header is the record
+ * with "key" and a language, wherever a sort put it (else the first with
+ * "key"); every other record that is not empty is data. The export's other
+ * columns are ignored; `notes` are columns for a person's notes, `unknown`
+ * every other column (import refuses one that holds text).
  */
 function readSheet(buf, langs) {
   const { delimiter, records } = csvParse(decodeSheet(buf));
   const blank = (r) => r.fields.every((f) => !f.trim());
-  const at = records.findIndex((r) => !blank(r));
-  if (at < 0) return { delimiter, records: [], keyIdx: -1, langCols: [], currentCols: [], unknown: [], header: null };
-  const header = records[at];
-  const names = header.fields.map((f) => f.trim().toLowerCase());
+  const namesOf = (r) => r.fields.map((f) => f.trim().toLowerCase());
   const langOf = (name) => langs.find((l) => l.toLowerCase() === name);
+  let at = records.findIndex((r) => namesOf(r).includes("key") && namesOf(r).some((n) => langOf(n)));
+  if (at < 0) at = records.findIndex((r) => namesOf(r).includes("key"));
+  const data = records.filter((r, i) => i !== at && !blank(r));
+  if (at < 0) return { delimiter, records: data, keyIdx: -1, langCols: [], currentCols: [], authorIdx: -1, notes: [], unknown: [], header: null };
+  const header = records[at];
+  const names = namesOf(header);
   const langCols = [];
   const currentCols = [];
+  const notes = [];
   const unknown = [];
+  let authorIdx = -1;
   names.forEach((name, idx) => {
-    if (!name || FIXED_COLUMNS.includes(name)) return;
+    if (FIXED_COLUMNS.includes(name) || name === SECTION_COLUMN) return;
     const lang = langOf(name);
     const cur = name.startsWith(CURRENT_PREFIX) ? langOf(name.slice(CURRENT_PREFIX.length)) : undefined;
     if (lang) langCols.push({ lang, idx });
     else if (cur) currentCols.push({ lang: cur, idx });
-    else unknown.push(header.fields[idx].trim());
+    else if (AUTHOR_NAMES.includes(name) && authorIdx < 0) authorIdx = idx;
+    else if (NOTE_COLUMNS.includes(name)) notes.push({ name: header.fields[idx].trim(), idx });
+    else unknown.push({ name: header.fields[idx].trim(), idx });
   });
-  return { delimiter, records: records.slice(at + 1), keyIdx: names.indexOf("key"), langCols, currentCols, unknown, header };
+  return { delimiter, records: data, keyIdx: names.indexOf("key"), langCols, currentCols, authorIdx, notes, unknown, header };
 }
 
 /**
  * Every leaf string of a JSON text with its key path and the offsets of its
  * string token, so a value can be replaced without touching a byte around it.
- * Throws on text that is not JSON (callers parse it first).
+ * Throws a SyntaxError that ends in "at <offset>" on text that is not JSON
+ * (callers parse it first).
  * @param {string} text
  * @returns {{ path: string[], start: number, end: number, value: string, inArray: boolean }[]}
  */
@@ -818,7 +1119,11 @@ export function jsonStringLeaves(text) {
     expect('"');
     while (i < text.length && text[i] !== '"') i += text[i] === BACKSLASH ? 2 : 1;
     expect('"');
-    return { start, end: i, value: JSON.parse(text.slice(start, i)) };
+    try {
+      return { start, end: i, value: JSON.parse(text.slice(start, i)) };
+    } catch {
+      throw new SyntaxError(`bad string at ${start}`);
+    }
   };
   const literal = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/y;
   const value = (keyPath, inArray) => {
@@ -852,7 +1157,7 @@ export function jsonStringLeaves(text) {
     if (text[i] === '"') return void out.push({ path: keyPath, ...str(), inArray });
     literal.lastIndex = i;
     const m = literal.exec(text);
-    if (!m) throw new SyntaxError(`unexpected ${JSON.stringify(text[i])} at ${i}`);
+    if (!m) throw new SyntaxError(`unexpected character at ${i}`);
     i += m[0].length;
   };
   value([], false);
@@ -871,7 +1176,9 @@ function encodeJsonString(value, asciiOnly) {
  * The file's text with the edited values, and nothing else, changed. A key is
  * every leaf string whose dotted path is that key (nested and dotted copies of
  * one Foundry key change together); module.json edits name a top-level field.
- * The result is checked by parsing it again: every other value is unchanged.
+ * Two edits of one value are refused (import groups its cells by file and key
+ * first, so this never happens). The result is checked by parsing it again:
+ * every other value is unchanged.
  */
 function applyEdits(f, edits) {
   const leaves = jsonStringLeaves(f.text);
@@ -881,14 +1188,23 @@ function applyEdits(f, edits) {
   for (const e of edits) {
     const hits = leaves.filter((l) => !l.inArray && (e.field ? l.path.length === 1 && l.path[0] === e.field : l.path.join(".") === e.key));
     if (!hits.length) throw new Error(`text-sheet: internal error: no value for ${e.field ?? e.key} in ${f.rel}`);
-    for (const h of hits) reps.push({ ...h, token: encodeJsonString(e.value, asciiOnly) });
+    for (const h of hits) reps.push({ ...h, name: e.field ?? e.key, token: encodeJsonString(e.value, asciiOnly) });
   }
   reps.sort((a, b) => b.start - a.start);
+  for (let k = 1; k < reps.length; k++) {
+    if (reps[k].end > reps[k - 1].start) throw new TextSheetError(`two cells of the sheet write the same value of ${f.rel} (${reps[k].name}): nothing was written`);
+  }
   let text = f.text;
   for (const r of reps) text = text.slice(0, r.start) + r.token + text.slice(r.end);
 
   const before = flattenLang(f.data);
-  const after = flattenLang(JSON.parse(text));
+  let after;
+  try {
+    after = flattenLang(JSON.parse(text));
+  } catch {
+    // Never V8's message: it would quote the file.
+    throw new Error(`text-sheet: internal error: editing ${f.rel} would not leave valid JSON`);
+  }
   const edited = new Map(edits.map((e) => [e.field ?? e.key, e.value]));
   const same = before.length === after.length && before.every(([k, v], n) => after[n][0] === k && JSON.stringify(after[n][1]) === JSON.stringify(edited.has(k) && typeof v === "string" ? edited.get(k) : v));
   if (!same) throw new Error(`text-sheet: internal error: editing ${f.rel} would change more than the edited values`);
@@ -919,8 +1235,12 @@ function checkCell(m, target, lang, value) {
       return { reasons: [`is defined twice in ${list[0].file} (nested and dotted) with different values: keep one by hand first`], warnings };
     }
   }
-  if (!value.trim()) reasons.push("holds only whitespace");
+  const trimmed = value.trim();
+  if (!trimmed) reasons.push("holds only whitespace");
   else if (isHumanPlaceholder(value)) reasons.push('starts with "TODO-HUMANO:", the marker of a text nobody wrote');
+  else if (SHEET_ERROR_RE.test(trimmed)) {
+    reasons.push("is a spreadsheet error, not a text: the spreadsheet took what was typed for a formula (a text that starts with =, +, - or @); type it again in a cell formatted as text");
+  }
   // Unreachable while both sheet decoders are fatal; kept so that a lenient
   // one could never write a value whose signature would not be its own.
   if (!value.isWellFormed()) reasons.push("holds a lone UTF-16 surrogate");
@@ -934,7 +1254,9 @@ function checkCell(m, target, lang, value) {
   }
   const max = m.draft.byKey.get(target.field ? LISTING_PREFIX + target.field : target.key)?.max ?? null;
   if (max !== null && lengthOf(value) > max) warnings.push(`is ${lengthOf(value)} characters long without its placeholders, over max_length ${max}`);
-  if (value.trim() && value !== value.trim()) warnings.push("starts or ends with whitespace, which stays in the text");
+  if (trimmed && value !== trimmed) warnings.push("starts or ends with whitespace, which stays in the text");
+  if (value.startsWith("'")) warnings.push("starts with an apostrophe, which stays in the text: if the spreadsheet kept the one typed to stop a conversion, delete it");
+  if (NUMBER_OR_DATE_RE.test(trimmed)) warnings.push("is only a number or a date: check that the spreadsheet did not convert what was typed");
   return { reasons, warnings };
 }
 
@@ -942,19 +1264,25 @@ function checkCell(m, target, lang, value) {
  * Reads a sheet back into the module. The CLI wraps it; tests call it directly.
  * @param {{
  *   file: string, dir?: string, dryRun?: boolean, partial?: boolean, cwd?: string,
- *   log?: (line: string) => void, logError?: (line: string) => void,
+ *   log?: (line: string) => void, logError?: (line: string) => void, tool?: string, signTool?: string,
  * }} opts
- * @returns {Promise<{ code: number, written: number, unchanged: number, rejected: number, files: string[] }>}
+ * @returns {Promise<{ code: number, written: number, unchanged: number, unsignedSame: number, rejected: number, files: string[] }>}
+ *   `unsignedSame`: cells equal to a value that has no valid signature (nothing to write, nothing counted as unchanged)
  * @throws {TextSheetError}
  */
-export async function importSheet({ file, dir = process.cwd(), dryRun = false, partial = false, cwd = process.cwd(), log = console.log, logError = console.error } = {}) {
-  if (!file) throw new TextSheetError(`import needs the sheet: ${DEFAULT_COMMAND} import ${SHEET_FILE}`);
+export async function importSheet({ file, dir = process.cwd(), dryRun = false, partial = false, cwd = process.cwd(), log = console.log, logError = console.error, tool = DEFAULT_COMMAND, signTool = SIGN_TOOL } = {}) {
+  if (!file) throw new TextSheetError(`import needs the sheet: ${tool} import ${SHEET_FILE}`, { usage: true });
   const root = path.resolve(cwd, dir);
   const sheetPath = path.resolve(cwd, file);
   if (!fs.existsSync(sheetPath) || !fs.statSync(sheetPath).isFile()) throw new TextSheetError(`${file} does not exist`);
   const m = loadModule(root);
+  const hint = { tool, signTool, cwd, root };
   const sheet = readSheet(fs.readFileSync(sheetPath), m.langs);
-  if (!sheet.header || sheet.keyIdx < 0) throw new TextSheetError(`${file} has no "key" column: import reads a sheet written by ${DEFAULT_COMMAND} export`);
+  if (!sheet.header || sheet.keyIdx < 0) {
+    throw new TextSheetError(
+      `${file} has no header row with a "key" column. If the rows were sorted, the header row went with them: undo the sort, or sort again with "Mis datos tienen encabezados" checked (Datos > Ordenar). import reads a sheet written by ${tool} export`,
+    );
+  }
   const byLangCol = new Map();
   for (const c of sheet.langCols) {
     if (byLangCol.has(c.lang)) throw new TextSheetError(`${file} has two "${c.lang}" columns: keep one`);
@@ -962,16 +1290,42 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
   }
   if (!sheet.langCols.length) throw new TextSheetError(`${file} has no language column: the module declares ${m.langs.join(", ")}`);
 
-  log(`text-sheet: ${m.module.id ?? path.basename(root)} (${root}) import ${path.relative(cwd, sheetPath).split(path.sep).join("/") || file}${dryRun ? " --dry-run" : ""}${partial ? " --partial" : ""}`);
+  log(`text-sheet: ${m.module.id ?? path.basename(root)} (${root}) import ${relPath(cwd, sheetPath) || file}${dryRun ? " --dry-run" : ""}${partial ? " --partial" : ""}`);
   const notes = [];
-  if (sheet.unknown.length) notes.push(`column(s) ${sheet.unknown.map((n) => JSON.stringify(n)).join(", ")} ignored: only "key" and the language columns (${m.langs.join(", ")}) are read`);
+  const rejects = [];
+  const reject = (row, lang, key, reason) => rejects.push({ row, lang, key, reason });
+
+  // A column import does not read loses whatever was typed in it: refused when it holds text.
+  const ignored = [...sheet.notes];
+  for (const u of sheet.unknown) {
+    const rows = sheet.records.filter((r) => (r.fields[u.idx] ?? "").trim() !== "").map((r) => r.row);
+    if (!rows.length) {
+      if (u.name) ignored.push(u);
+      continue;
+    }
+    reject(
+      sheet.header.row,
+      `column ${colName(u.idx)}`,
+      u.name ? JSON.stringify(u.name) : "(no header)",
+      `has text in ${rowWord(rows)}, but import reads only "key", "${AUTHOR_COLUMN}" and the language columns (${m.langs.join(", ")}): if it holds texts, name it by their language code; a column for your own notes is named "${NOTE_COLUMNS[0]}"`,
+    );
+  }
+  ignored.sort((a, b) => a.idx - b.idx);
+  if (ignored.length) notes.push(`column(s) ${ignored.map((c) => JSON.stringify(c.name)).join(", ")} ignored: only "key", "${AUTHOR_COLUMN}" and the language columns (${m.langs.join(", ")}) are read`);
   const missingCols = m.langs.filter((l) => !byLangCol.has(l));
   if (missingCols.length) notes.push(`no column for ${missingCols.join(", ")}: those texts stay as they are`);
 
-  /** @type {{ row: number, lang: string, key: string, value: string, target: object, warnings: string[] }[]} */
+  // Nothing written in any language cell: most likely not the file the person saved.
+  if (!rejects.length && !sheet.records.some((r) => sheet.langCols.some((c) => (r.fields[c.idx] ?? "") !== ""))) {
+    throw new TextSheetError(
+      `no ${sheet.langCols.map((c) => c.lang).join(" or ")} cell of ${file} has text: is it the file you saved? ` +
+        'Google Sheets saves its download in Downloads (Descargas) as "<spreadsheet> - <tab>.csv": pass that path, in quotes, ' +
+        `as in ${tool} import "$HOME/Downloads/textos-hoja - textos-hoja.csv"; Excel writes the file only with Guardar como > "CSV UTF-8 (delimitado por comas)"`,
+    );
+  }
+
+  /** @type {{ row: number, lang: string, key: string, value: string, target: object, author: string, warnings: string[] }[]} */
   const cells = [];
-  const rejects = [];
-  const reject = (row, lang, key, reason) => rejects.push({ row, lang, key, reason });
   for (const r of sheet.records) {
     const key = (r.fields[sheet.keyIdx] ?? "").trim();
     for (const c of sheet.currentCols) {
@@ -995,44 +1349,68 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
       for (const c of filled) reject(r.row, c.lang, key, "is not a key of the language files: the import never creates keys");
       continue;
     }
+    const author = sheet.authorIdx < 0 ? "" : (r.fields[sheet.authorIdx] ?? "").trim();
     for (const c of filled) {
       const value = r.fields[c.idx].replace(/\r\n?/g, "\n");
       const { reasons, warnings } = checkCell(m, target, c.lang, value);
       if (reasons.length) for (const reason of reasons) reject(r.row, c.lang, key, reason);
-      else cells.push({ row: r.row, lang: c.lang, key, value, target, warnings });
+      else cells.push({ row: r.row, lang: c.lang, key, value, target, author, warnings });
     }
   }
 
-  // The same text twice: once is enough; two different texts are both refused.
-  const accepted = [];
+  // Cells are grouped by the value they write, file and key: two language
+  // columns may share one file. Two different texts for one value are both
+  // refused; the same text twice is written once.
+  const textsFor = (c) => (c.target.field ? [m.listing.get(c.target.field)] : m.byLang.get(c.lang).get(c.key));
+  const idsOf = (c) => [...new Set(textsFor(c).map((t) => `${t.file}\n${c.target.field ?? c.key}`))];
   const groups = new Map();
   for (const c of cells) {
-    const id = `${c.lang}\n${c.key}`;
-    if (!groups.has(id)) groups.set(id, []);
-    groups.get(id).push(c);
-  }
-  for (const group of groups.values()) {
-    const rowsOf = group.map((c) => c.row).join(", ");
-    if (new Set(group.map((c) => c.value)).size > 1) {
-      for (const c of group) reject(c.row, c.lang, c.key, `rows ${rowsOf} give it different texts: keep one`);
-    } else {
-      if (group.length > 1) notes.push(`rows ${rowsOf} give ${group[0].key} (${group[0].lang}) the same text: written once`);
-      accepted.push(group[0]);
+    for (const id of idsOf(c)) {
+      if (!groups.has(id)) groups.set(id, []);
+      groups.get(id).push(c);
     }
+  }
+  const clash = new Map();
+  for (const [id, group] of groups) {
+    if (new Set(group.map((c) => c.value)).size < 2) continue;
+    const rows = [...new Set(group.map((c) => c.row))];
+    const langs = [...new Set(group.map((c) => c.lang))];
+    const reason =
+      langs.length > 1
+        ? `the ${langs.join(" and ")} columns both write it in ${id.split("\n")[0]}, with different texts (${rowWord(rows)}): keep one`
+        : `rows ${rows.join(", ")} give it different texts: keep one`;
+    for (const c of group) if (!clash.has(c)) clash.set(c, reason);
+  }
+  for (const [c, reason] of clash) reject(c.row, c.lang, c.key, reason);
+  for (const group of groups.values()) {
+    if (group.length < 2 || group.some((c) => clash.has(c))) continue;
+    const rows = [...new Set(group.map((c) => c.row))];
+    const note = `${rowWord(rows)} give${rows.length === 1 ? "s" : ""} ${group[0].key} (${[...new Set(group.map((c) => c.lang))].join(", ")}) the same text: written once`;
+    if (!notes.includes(note)) notes.push(note);
   }
   rejects.sort((a, b) => a.row - b.row || a.lang.localeCompare(b.lang));
 
-  // What changes, file by file; a text equal to the current value changes nothing.
+  // What changes, file by file. A text equal to its current value changes
+  // nothing: unchanged when that value is signed (or there is no lock), and
+  // reported apart when it has no valid signature (the working text copied
+  // into the sheet, or a text imported before and not signed yet).
+  const claimed = new Set();
   const edits = new Map();
   const changes = [];
+  const same = [];
   let unchanged = 0;
-  for (const c of accepted) {
-    const texts = c.target.field ? [m.listing.get(c.target.field)] : m.byLang.get(c.lang).get(c.key);
+  for (const c of cells) {
+    if (clash.has(c)) continue;
+    const fresh = idsOf(c).filter((id) => !claimed.has(id));
+    if (!fresh.length) continue;
+    for (const id of fresh) claimed.add(id);
+    const texts = textsFor(c).filter((t) => fresh.includes(`${t.file}\n${c.target.field ?? c.key}`));
     if (texts.every((t) => t.value === c.value)) {
-      unchanged++;
+      if (m.mode === "signed" && texts.some((t) => t.status !== "signed")) same.push({ ...c, rels: [...new Set(texts.map((t) => t.file))] });
+      else unchanged++;
       continue;
     }
-    const rels = c.target.field ? ["module.json"] : [...new Set(texts.map((t) => t.file))];
+    const rels = [...new Set(texts.map((t) => t.file))];
     for (const rel of rels) {
       if (!edits.has(rel)) edits.set(rel, []);
       edits.get(rel).push(c.target.field ? { field: c.target.field, value: c.value } : { key: c.key, value: c.value });
@@ -1040,9 +1418,16 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
     changes.push({ ...c, rels, was: texts.every((t) => t.status === "signed") ? "signed" : texts[0].label });
   }
 
-  for (const c of accepted.filter((x) => x.warnings.length)) for (const w of c.warnings) log(`warn: row ${c.row}  ${c.lang}  ${c.key}: ${w}`);
+  for (const c of cells.filter((x) => x.warnings.length && !clash.has(x))) for (const w of c.warnings) log(`warn: row ${c.row}  ${c.lang}  ${c.key}: ${w}`);
+  for (const c of same) {
+    log(
+      `warn: row ${c.row}  ${c.lang}  ${c.key}: is already the value in ${c.rels.join(", ")}, which has no valid signature: nothing to write. ` +
+        `If a person wrote these words (in an earlier import, or the same words by chance), that person signs it with sign-text; if they were copied from ${c.rels.join(", ")}, they are the AI working text: write it again from scratch`,
+    );
+  }
+  for (const w of bomWarnings(m)) log(`warn: ${w}`);
   for (const n of notes) log(`note: ${n}`);
-  const result = { code: rejects.length ? 1 : 0, written: 0, unchanged, rejected: rejects.length, files: [] };
+  const result = { code: rejects.length ? 1 : 0, written: 0, unchanged, unsignedSame: same.length, rejected: rejects.length, files: [] };
   if (rejects.length) {
     logError(`text-sheet: ${rejects.length} cell(s) refused:`);
     for (const x of rejects) logError(`  row ${x.row}  ${x.lang}  ${x.key}: ${x.reason}`);
@@ -1058,9 +1443,24 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
     const old = shown ? ` (replaces the signed text ${JSON.stringify(shown)})` : ` (was ${c.was})`;
     return `  row ${c.row}  ${c.lang}  ${c.key} -> ${c.rels.join(", ")}: ${JSON.stringify(c.value)}${old}`;
   };
+  // Who wrote what: the author column, written nowhere, so each author knows what to sign.
+  const byAuthor = () => {
+    if (!changes.some((c) => c.author)) return;
+    const groupsBy = new Map();
+    for (const c of changes) {
+      const name = c.author || "(no author)";
+      if (!groupsBy.has(name)) groupsBy.set(name, []);
+      if (!groupsBy.get(name).includes(c.row)) groupsBy.get(name).push(c.row);
+    }
+    log("by author (import writes it nowhere; each one signs the rows under their name, at their own terminal):");
+    const names = [...groupsBy.keys()].filter((n) => n !== "(no author)");
+    for (const name of [...names, ...(groupsBy.has("(no author)") ? ["(no author)"] : [])]) log(`  ${name}: ${rowWord(groupsBy.get(name))}`);
+  };
+  const tail = `${unchanged} unchanged${same.length ? `, ${same.length} already there without a signature` : ""}`;
   if (dryRun) {
-    log(`text-sheet: --dry-run: would write ${changes.length} text(s)${changes.length ? ` to ${[...edits.keys()].join(", ")}` : ""}, ${unchanged} unchanged; nothing written`);
+    log(`text-sheet: --dry-run: would write ${changes.length} text(s)${changes.length ? ` to ${[...edits.keys()].join(", ")}` : ""}, ${tail}; nothing written`);
     for (const c of changes) log(showChange(c));
+    byAuthor();
     return result;
   }
 
@@ -1073,12 +1473,13 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
     result.files = writes.map((w) => w.rel);
   }
   result.written = changes.length;
-  log(`text-sheet: wrote ${changes.length} text(s)${changes.length ? ` to ${result.files.join(", ")}` : ""}, ${unchanged} unchanged${rejects.length ? `, ${rejects.length} refused (left out with --partial)` : ""}; ${HUMAN_TEXT_FILE} untouched`);
+  log(`text-sheet: wrote ${changes.length} text(s)${changes.length ? ` to ${result.files.join(", ")}` : ""}, ${tail}${rejects.length ? `, ${rejects.length} refused (left out with --partial)` : ""}; ${HUMAN_TEXT_FILE} untouched`);
   for (const c of changes) log(showChange(c));
   const resigned = changes.filter((c) => c.was === "signed").length;
   if (resigned) log(`info: ${resigned} of them replace a signed text: its signature no longer matches`);
-  if (changes.length || unchanged) {
-    log(`next: sign them yourself at a terminal, each author the texts they wrote (no pipe, no redirection): ${SIGN_COMMAND} --sign`);
+  byAuthor();
+  if (changes.length) {
+    log(`next: sign them yourself at a terminal, each author the texts they wrote, before the next export (no pipe, no redirection): ${signCommand(hint)}`);
   }
   return result;
 }
@@ -1090,21 +1491,30 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
 function parseArgs(argv) {
   const [command, ...rest] = argv;
   const opts = { command, positional: [], out: null, all: false, dryRun: false, partial: false };
+  const usage = (message) => new TextSheetError(message, { usage: true });
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     if (command === "export" && a === "--out") {
       opts.out = rest[++i];
-      if (!opts.out) throw new TextSheetError("--out needs a file name");
+      if (!opts.out) throw usage("--out needs a file name");
     } else if (command === "export" && a.startsWith("--out=")) opts.out = a.slice(6);
     else if (command === "export" && a === "--all") opts.all = true;
     else if (command === "import" && a === "--dry-run") opts.dryRun = true;
     else if (command === "import" && a === "--partial") opts.partial = true;
-    else if (a.startsWith("-")) throw new TextSheetError(`unknown option ${a}`);
+    else if (a.startsWith("-")) throw usage(`unknown option ${a}`);
     else opts.positional.push(a);
   }
   const most = command === "export" ? 1 : 2;
-  if (opts.positional.length > most) throw new TextSheetError(`unexpected argument ${opts.positional[most]}`);
+  if (opts.positional.length > most) throw usage(`unexpected argument ${opts.positional[most]}`);
   return opts;
+}
+
+/** How the person ran text-sheet, and so sign-text next to it, from the current folder: for the hints. */
+function commandsRun() {
+  const script = process.argv[1];
+  if (!script) return {};
+  const run = (file) => `node ${quote(relPath(process.cwd(), file) || file)}`;
+  return { tool: run(script), signTool: run(path.join(path.dirname(script), "sign-text.mjs")) };
 }
 
 async function main(argv) {
@@ -1113,16 +1523,16 @@ async function main(argv) {
     return argv.length ? 0 : 1;
   }
   try {
-    if (!["export", "import"].includes(argv[0])) throw new TextSheetError(`unknown command ${argv[0]}`);
+    if (!["export", "import"].includes(argv[0])) throw new TextSheetError(`unknown command ${argv[0]}`, { usage: true });
     const opts = parseArgs(argv);
     if (opts.command === "export") {
-      return (await exportSheet({ dir: opts.positional[0] ?? ".", out: opts.out ?? undefined, all: opts.all })).code;
+      return (await exportSheet({ dir: opts.positional[0] ?? ".", out: opts.out ?? undefined, all: opts.all, ...commandsRun() })).code;
     }
     const [file, dir] = opts.positional;
-    return (await importSheet({ file, dir: dir ?? ".", dryRun: opts.dryRun, partial: opts.partial })).code;
+    return (await importSheet({ file, dir: dir ?? ".", dryRun: opts.dryRun, partial: opts.partial, ...commandsRun() })).code;
   } catch (err) {
     if (err instanceof TextSheetError) {
-      console.error(`text-sheet: ERROR: ${err.message}\n${USAGE}`);
+      console.error(`text-sheet: ERROR: ${err.message}${err.usage ? `\n${USAGE}` : ""}`);
       return 1;
     }
     throw err;
