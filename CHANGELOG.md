@@ -15,34 +15,52 @@ tengan que resincronizar.
   [<carpeta>] [--out <archivo.csv>] [--all]` escribe `textos-hoja.csv` en la
   raíz del módulo: UTF-8 con BOM, comas, comillas de RFC 4180 y CRLF, que Excel
   en español de México y Google Sheets abren tal cual. Por omisión, solo los
-  textos que necesitan a una persona, con la misma lógica que `sign-text` y la
-  revisión `[n]` (sin el candado, la del marcador `TODO-HUMANO:`); con
-  `--all`, todos más el `title` y la `description` de `module.json`. Columnas:
-  `key`, `where` (de `docs/textos-borrador.md` y los `archivo:línea` del
-  rastreo de la revisión `[h]`), `intent`, `placeholders`, `max_length`,
-  `status`, una vacía por idioma y una `current_<idioma>` por idioma que solo
-  lleva un valor con firma válida: la hoja nunca muestra un texto de IA, y no
-  hay opción que lo haga. Nunca escribe dentro de lo que empaca el release ni
-  encima de una hoja con textos sin importar, y avisa si la hoja no está en el
-  `.gitignore`. Lee las intenciones de las tablas de `docs/textos-borrador.md`
-  con columna `clave` (formato en el README); avisa de los textos sin fila, de
-  las filas sin clave en los idiomas y de los marcadores que no coinciden.
+  textos que necesitan a una persona, los mismos que listan `sign-text` y la
+  revisión `[n]` (sin el candado, los que `[n]` reporta: `TODO-HUMANO:`,
+  también dentro de una lista o en una copia de una clave definida dos veces);
+  con `--all`, todos más el `title` y la `description` de `module.json`. Las
+  filas siguen el orden de `docs/textos-borrador.md`. Columnas: `key`, `where`
+  (en un renglón: lo de `docs/textos-borrador.md` y los `archivo:línea` del
+  rastreo de la revisión `[h]`), `intent` (con «mismo término que» de la tabla
+  de conceptos), `placeholders` (solo `{nombre}`: la etiqueta de un enricher
+  es texto), `max_length`, `status`, una vacía por idioma, una
+  `current_<idioma>` por idioma que solo lleva un valor con firma válida,
+  `author` (vacía) y `section` (el encabezado del borrador). La hoja nunca
+  muestra un texto de IA, y no hay opción que lo haga: tampoco una celda del
+  borrador que cite un texto sin firma (una oración de siete palabras o más,
+  o un texto entre comillas), que sale vacía con un aviso. Nunca escribe
+  dentro de lo que empaca el release, ni encima de una hoja con un texto sin
+  importar, con uno importado y sin firma (con el candado) o con texto en una
+  columna que `import` no lee. Avisa si la hoja no está en el `.gitignore`
+  (`textos-hoja*` y `~$*`), de los textos sin fila en el borrador, de las
+  filas sin clave en los idiomas, de los marcadores que no coinciden, de las
+  celdas que Excel abriría como fórmula, de un `lang/*.json` sin declarar y de
+  un archivo con BOM, que `sign-text` rechaza. Un JSON roto lo reporta con
+  renglón y columna, sin citarlo.
 - `text-sheet import <archivo.csv> [<carpeta>] [--dry-run] [--partial]`: lee
   la hoja como la guardan Excel o Google Sheets (con o sin BOM, UTF-16, coma,
-  punto y coma o tabulador, CRLF o LF, columnas en cualquier orden) y escribe
-  cada celda de idioma en su archivo, o en `module.json` el título y la
-  descripción (desde la columna del primer idioma). Rechaza una clave que no
-  existe en ese idioma (nunca crea claves), unos `{marcadores}` distintos de
-  los que el texto debe conservar, un valor que empieza con `TODO-HUMANO:` o
-  que solo tiene espacios, y dos textos distintos para la misma celda; pasarse
-  de `max_length` solo avisa. Con una celda rechazada no escribe nada y lista
-  cada motivo con su renglón; `--partial` escribe las válidas; `--dry-run` no
+  punto y coma o tabulador, CRLF o LF, columnas en cualquier orden, el
+  encabezado donde lo deje un orden) y escribe cada celda de idioma en su
+  archivo, o en `module.json` el título y la descripción (desde la columna del
+  primer idioma). Rechaza una clave que no existe en ese idioma (nunca crea
+  claves), una lista o una clave definida dos veces, unos `{marcadores}`
+  distintos de los que el texto debe conservar, un valor que empieza con
+  `TODO-HUMANO:`, que solo tiene espacios o que es un error de hoja de cálculo
+  (`#¿NOMBRE?`, `#N/A`…), dos textos distintos para un mismo valor (también
+  desde dos columnas de idioma que comparten archivo) y una columna con texto
+  que no lee; pasarse de `max_length`, un apóstrofo al principio y un texto que
+  es solo un número o una fecha solo avisan. Una celda igual al valor sin firma
+  no escribe nada y se avisa aparte. Una hoja sin texto en las columnas de
+  idioma lo detiene. Con una celda rechazada no escribe nada y lista cada
+  motivo con su renglón; `--partial` escribe las válidas; `--dry-run` no
   escribe y muestra qué cambiaría. Cambia solo los valores editados, byte por
   byte (orden, anidamiento, sangría, fines de línea, BOM, salto final y estilo
   de los escapes), con archivos temporales y renombrados, todos o ninguno.
-  Nunca toca `human-text.json` ni firma, y termina con el paso de
-  `sign-text --sign`. Exporta `exportSheet`, `importSheet`, `csvWrite`,
-  `csvParse`, `decodeSheet`, `parseDraft` y `jsonStringLeaves` para las
+  Nunca toca `human-text.json` ni firma; lista las filas de cada nombre de la
+  columna `author` y termina con el paso de `sign-text --sign`, con las rutas
+  tal como se corrió. Solo imprime el uso tras un error en los argumentos.
+  Exporta `exportSheet`, `importSheet`, `csvWrite`, `csvParse`,
+  `decodeSheet`, `parseDraft`, `parseConcepts` y `jsonStringLeaves` para las
   pruebas.
 - `tools/shared.mjs`: `i18nRefs` (el rastreo de claves de la revisión `[h]`,
   que ahora devuelve también dónde empieza cada clave armada en tiempo de

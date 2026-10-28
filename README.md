@@ -290,23 +290,36 @@ Un módulo puede tener cientos de textos por escribir (los de trabajo de la IA
 y los `TODO-HUMANO:`), y escribirlos en una terminal es lento. `text-sheet`
 los pone en una hoja de cálculo: una fila por texto, con dónde aparece, qué
 debe comunicar y qué marcadores debe llevar, y una columna vacía por idioma.
-Las personas que escriben los textos la llenan en Excel o en Google Sheets,
-`text-sheet import` los pasa a los archivos de idioma y cada autor firma
-después los suyos con `sign-text --sign`. El flujo:
+Las personas que escriben los textos (BaronHVC e IAR18) la llenan en Excel o
+en Google Sheets, `text-sheet import` los pasa a los archivos de idioma y cada
+autor firma en seguida los suyos con `sign-text --sign`. El flujo:
 
 ```sh
 # 1. Desde la carpeta del módulo: escribe textos-hoja.csv con lo que falta escribir
 node ../pf2e-baron-core/tools/text-sheet.mjs export
 
-# 2. Las personas llenan las columnas de idioma en Excel o Google Sheets y la guardan como CSV UTF-8
+# 2. Quienes escriben leen las reglas de docs/textos-borrador.md, llenan las
+#    columnas de idioma y su nombre en "author", y guardan la hoja como CSV UTF-8
 
 # 3. Revisa qué cambiaría, y escríbelo en lang/*.json (y en module.json)
 node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv --dry-run
 node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv
 
-# 4. Cada autor firma los textos que escribió, en su terminal
+# 4. En seguida, antes del siguiente export: cada autor firma los textos que
+#    escribió (las filas que import lista con su nombre), en su terminal
 node ../pf2e-baron-core/tools/sign-text.mjs . --sign
 ```
+
+Firma antes de exportar otra vez. Una hoja nueva lista como «por escribir»
+todo texto sin firma, también el que una persona acaba de importar, y el otro
+autor lo escribiría de nuevo; por eso, con el candado, `export` no reemplaza
+una hoja que trae un texto importado y todavía sin firma, y lo dice con su
+renglón, su clave y su idioma. Con dos autores, cada uno pone su nombre en la
+columna `author` de lo que escribió (una sola hoja para los dos) o usa su
+propia hoja (`export --out textos-hoja-IAR18.csv`); al final, `import` lista
+las filas de cada nombre, para que cada quien firme solo las suyas.
+`sign-text` pregunta «¿Escribiste tú este texto desde cero?»: nadie firma un
+texto que escribió el otro.
 
 **La hoja nunca muestra un texto de IA.** Retocar el texto de la IA no cumple
 la política de IA de Foundry (§4.1): el texto se escribe desde la intención,
@@ -314,9 +327,14 @@ no desde la frase de la IA. Por eso las columnas de idioma salen vacías, y
 `current_<idioma>` solo trae un valor cuya firma es válida (uno que una
 persona ya escribió y firmó, que sirve de original para traducir). Un texto
 sin firma, cambiado desde que se firmó o con `TODO-HUMANO:` nunca aparece, ni
-en la hoja ni en lo que imprime `import`, y no hay opción que lo muestre. Una
-sesión de Claude puede correr `export` e `import`, pero nunca llena las
-columnas de idioma.
+en la hoja ni en lo que imprime `import`, y no hay opción que lo muestre.
+Tampoco pasa a la hoja una celda de `docs/textos-borrador.md` que cite un texto
+sin firma: una oración de siete palabras o más en cualquier parte de la celda,
+o cualquier texto completo entre comillas (`"…"`, `“…”`, `«…»`, `'…'`); esa
+celda sale vacía y `export` avisa con la clave, la columna y la línea, nunca
+con el texto. Un texto corto sin comillas («Runas de propiedad») suele ser el
+nombre llano de la cosa y no se toca. Una sesión de Claude puede correr
+`export` e `import`, pero nunca llena las columnas de idioma.
 
 ### `export`
 
@@ -329,37 +347,56 @@ con BOM, separado por comas, con comillas de RFC 4180 (una celda puede llevar
 saltos de línea y comillas dobladas) y CRLF, para que Excel en español de
 México y Google Sheets lo abran tal cual. Nunca escribe dentro de lo que
 empaca el release (`module.json`, `scripts`, `styles`, `templates`, `lang`,
-`packs`, `LICENSE`, `NOTICE.md`) ni encima de una hoja con textos que todavía
-no se importaron. La hoja guarda borradores de personas: va en el
-`.gitignore` del módulo (la plantilla ya lo trae); si no está, `export` avisa.
+`packs`, `LICENSE`, `NOTICE.md`). Tampoco reemplaza una hoja que todavía
+sirve: una con un texto que no se ha importado (si `import` lo rechazó, se
+corrige o se vacía la celda), una con un texto importado que aún no tiene
+firma (con el candado) o una con texto en una columna que `import` no lee
+(las notas incluidas); el mensaje dice el renglón, la clave y el idioma. La
+hoja guarda borradores de personas: va en el `.gitignore` del módulo con dos
+líneas, `textos-hoja*` (todas las hojas: la de cada autor y el `.xlsx` donde
+se trabaja) y `~$*` (el archivo de bloqueo que Excel deja junto a lo que
+tiene abierto); la plantilla ya las trae y, si faltan, `export` avisa.
 
 Por omisión trae solo los textos que todavía necesitan a una persona: con
 `"humanText": "signed"`, los mismos que listan `sign-text` y la revisión `n`
 (sin firma, cambiados desde que se firmaron, por escribir y los demás que no
-tienen firma válida); sin el candado, los que empiezan con `TODO-HUMANO:` o
-están vacíos. Con `--all`, todos los textos de los idiomas que declara
-`module.json`, más su `title` y su `description`.
+tienen firma válida, como una lista o una clave definida dos veces); sin el
+candado, los mismos que reporta la revisión `n`: los que empiezan con
+`TODO-HUMANO:`, también dentro de una lista o en una de las dos copias de una
+clave definida anidada y con puntos (un texto vacío no). Con `--all`, todos
+los textos de los idiomas que declara `module.json`, más su `title` y su
+`description`. Las filas siguen el orden de `docs/textos-borrador.md` (sus
+secciones, pantalla por pantalla); al final van las que no tienen fila ahí.
 
 | columna            | qué trae |
 |--------------------|----------|
 | `key`              | la clave con puntos (`baron-traps.CardTriggered`), o `module.json:title` / `module.json:description` |
-| `where`            | dónde aparece, según `docs/textos-borrador.md`, y los `archivo:línea` de `scripts/` y `templates/` que usan la clave (el mismo rastreo de la revisión `h`; una clave armada en tiempo de ejecución apunta a donde se arma) |
-| `intent`           | la intención, de `docs/textos-borrador.md` |
-| `placeholders`     | los `{marcadores}` que el texto debe conservar: los del valor actual en los idiomas (o los de `docs/textos-borrador.md` si todos siguen con `TODO-HUMANO:`) |
+| `where`            | en un solo renglón: dónde aparece, según `docs/textos-borrador.md`, una raya (—) y los `archivo:línea` de `scripts/` y `templates/` que usan la clave (el mismo rastreo de la revisión `h`; una clave armada en tiempo de ejecución apunta a donde se arma) |
+| `intent`           | la intención, de `docs/textos-borrador.md`, y por cada concepto de su tabla de conceptos, «mismo término que» las otras claves que lo nombran |
+| `placeholders`     | los `{marcadores}` que el texto debe conservar: los del valor actual en los idiomas (o los de `docs/textos-borrador.md` si todos siguen con `TODO-HUMANO:`). Un marcador es una llave con un nombre (`{victim}`, `{actor.name}`); la etiqueta de un enricher (`@Check[...]{Etiqueta}`, `@UUID[...]{Nombre}`) y una llave con espacios son texto, que la persona reescribe |
 | `max_length`       | el largo máximo de `docs/textos-borrador.md`, en caracteres sin contar los marcadores |
-| `status`           | `unsigned`, `changed`, `to write`, `signed`, `conflict`, `list`, `broken` o, sin el candado, `to write` / `written`; por idioma cuando difieren (`en: signed; es: changed`), y `missing` si un idioma no tiene la clave |
+| `status`           | `unsigned`, `changed`, `to write`, `signed`, `conflict`, `list`, `broken`; sin el candado, `to write` (con `TODO-HUMANO:`), `no marker` (sin marcador: la herramienta no sabe quién lo escribió), `empty`, `conflict`, `list` o `broken`; por idioma cuando difieren (`en: signed; es: changed`), y `missing` si un idioma no tiene la clave |
 | `en`, `es`, …      | vacías: aquí se escribe, una columna por idioma de `module.json` |
 | `current_en`, …    | el valor firmado de cada idioma, y nada si no tiene firma válida |
+| `author`           | vacía: quien escribe pone aquí su nombre; `import` solo lo repite al final, no lo escribe en ningún lado |
+| `section`          | el encabezado de `docs/textos-borrador.md` arriba de la fila (la pantalla), para ordenar y filtrar |
 
 El título y la descripción de `module.json` son un solo texto para todos los
 idiomas: se escriben en la columna del primer idioma que declara
 `module.json` (normalmente `en`).
 
-`export` avisa, sin fallar, de cada texto por escribir sin fila en
-`docs/textos-borrador.md` (sale con la intención vacía), de cada fila cuya
-clave no existe, de una clave con dos filas y de los marcadores que no
-coinciden con los del texto; y cuenta las filas de textos ya firmados en todos
-los idiomas, que se pueden borrar.
+`export` avisa, sin fallar, de cada texto sin firma que no tiene fila en
+`docs/textos-borrador.md` (sale con la intención vacía; con `--all`, también
+los que no tienen marcador), de cada fila cuya clave no existe, de una clave
+con dos filas, de los marcadores que no coinciden con los del texto, de una
+celda del borrador que cita un texto sin firma (sale vacía), de una celda que
+empieza con `=`, `+`, `-` o `@` (Excel la abre como fórmula y muestra
+`#¿NOMBRE?`), de un `lang/*.json` que `module.json` no declara (la hoja no lo
+trae y la revisión `n` lo reporta) y de un archivo de idioma o un
+`module.json` que empieza con BOM (`sign-text` y `check-module` lo rechazan:
+se guarda como UTF-8 sin BOM antes de firmar); y cuenta las filas de textos ya
+firmados en todos los idiomas, que se pueden borrar. Un JSON roto lo reporta
+con su renglón y su columna, sin citarlo.
 
 ### Formato de `docs/textos-borrador.md`
 
@@ -384,6 +421,20 @@ los idiomas, que se pueden borrar.
   ninguno.
 - En `máx.`, cuenta el primer número de la celda.
 - Un `|` dentro de una celda se escribe `\|`, y `<br>` es un salto de línea.
+- La columna `section` de cada fila es el encabezado (`#`, `##`, `###`) que
+  está arriba de su tabla: agrupa las filas por pantalla y la hoja sigue ese
+  orden.
+- Una tabla de conceptos (con una columna `claves`, como «Claves donde
+  aparece», y sin columna `clave`) no da filas: a cada clave de un renglón le
+  agrega a su intención «mismo término que» las otras claves de ese renglón,
+  con el concepto entre paréntesis (la primera otra celda).
+- Ninguna celda trae el texto de trabajo, ni completo ni entre comillas: la
+  intención dice qué comunica, nunca cómo. Una celda que cite un texto sin
+  firma sale vacía en la hoja (ver arriba).
+
+La hoja solo trae lo de las tablas. Las reglas de la prosa del archivo
+(términos de PF2e, tono, sin HTML, el ancho del panel) también son para
+quienes escriben: `export` les pide leerlas antes de llenar la hoja.
 
 ```markdown
 | clave | dónde aparece | intención | variables | máx. |
@@ -400,24 +451,46 @@ los idiomas, que se pueden borrar.
   España), ábrela desde **Datos > Desde el texto/CSV** con origen
   «65001: Unicode (UTF-8)» y delimitador «Coma».
 - **Antes de escribir:** selecciona las columnas de idioma y dales formato
-  **Texto** (Inicio > Número), para que Excel no convierta un `1/2` en fecha.
-  Un texto que empieza con `=`, `+`, `-` o `@` Excel lo toma como fórmula:
-  escribe antes un apóstrofo (`'`), que no se guarda. Un salto de línea dentro
-  de la celda es **Alt+Enter**.
-- **Guardar en Excel:** Archivo > Guardar como > **«CSV UTF-8 (delimitado por
-  comas)»**. No «CSV (delimitado por comas)»: ese guarda en la página de
-  códigos de Windows, que ya cambió por `?` lo que no cabe, e `import` lo
-  rechaza. «Texto Unicode» también sirve. Si Excel guarda con punto y coma,
-  `import` lo detecta. Cierra el archivo en Excel antes de importar o de volver
-  a exportar: Excel lo deja bloqueado.
+  **Texto** (Inicio > Número), para que Excel no convierta lo que escribes:
+  `= nivel` en una fórmula (`#¿NOMBRE?`), `1/2` en una fecha, `+2` en `2`,
+  `1,000` en `1000`. Un salto de línea dentro de la celda es **Alt+Enter**.
+- **Trabaja en un .xlsx:** en seguida, **Guardar como > Libro de Excel
+  (.xlsx)** (`textos-hoja.xlsx`, junto a la hoja) y sigue en ese archivo
+  hasta terminar. Un CSV no guarda formatos: al volver a abrirlo con doble
+  clic, Excel lee de nuevo cada celda y convierte lo ya escrito, y el
+  siguiente «Guardar como CSV» guarda lo convertido. Nunca vuelvas a abrir el
+  CSV para seguir escribiendo.
+- **Guardar para importar:** desde el .xlsx, Archivo > Guardar como >
+  **«CSV UTF-8 (delimitado por comas)»** con el nombre `textos-hoja.csv`. No
+  «CSV (delimitado por comas)»: ese guarda en la página de códigos de
+  Windows, que ya cambió por `?` lo que no cabe, e `import` lo rechaza.
+  «Texto Unicode» también sirve. Si Excel guarda con punto y coma, `import`
+  lo detecta. Cierra el archivo en Excel antes de importar o de volver a
+  exportar: Excel lo deja bloqueado.
+- No escribas un apóstrofo para evitar una conversión: en una celda con
+  formato Texto puede quedarse en el texto (`import` avisa de un texto que
+  empieza con `'`, y de uno que es solo un número o una fecha). `import`
+  rechaza una celda con un error de hoja de cálculo (`#¿NOMBRE?`, `#NAME?`,
+  `#N/A`, `#¡VALOR!`, `#¡REF!`, …).
 - **Google Sheets:** Archivo > Importar > Subir, con «Detectar
   automáticamente» como separador y sin «Convertir texto en números, fechas y
-  fórmulas». Al terminar: Archivo > Descargar > «Valores separados por comas
-  (.csv)».
-- Se pueden ordenar o filtrar las filas, mover columnas o agregar otras (de
-  notas, por ejemplo): `import` busca cada columna por su nombre y empata cada
-  fila por su `key`. Lo que se escriba fuera de las columnas de idioma no se
-  lee (si cambió una celda de `current_<idioma>`, lo avisa).
+  fórmulas». Antes de escribir, selecciona las columnas de idioma y elige
+  Formato > Número > **Texto sin formato**. Al terminar: Archivo > Descargar >
+  «Valores separados por comas (.csv)». La descarga queda en Descargas con el
+  nombre de la hoja de cálculo y de la pestaña, `textos-hoja - textos-hoja.csv`;
+  impórtala con esa ruta entre comillas (en la ruta, Descargas se llama
+  `Downloads`; sirve en PowerShell y en Git Bash):
+  `node ../pf2e-baron-core/tools/text-sheet.mjs import "$HOME/Downloads/textos-hoja - textos-hoja.csv"`.
+  Si `import` recibe una hoja sin ningún texto en las columnas de idioma, se
+  detiene y lo recuerda: casi siempre es la hoja sin llenar que dejó `export`.
+- Se pueden ordenar o filtrar las filas (por `section`, por ejemplo) y mover
+  columnas: `import` busca cada columna por su nombre, empata cada fila por su
+  `key` y encuentra el encabezado aunque un orden lo haya dejado entre las
+  filas (ordena con «Mis datos tienen encabezados» marcado). Para notas
+  propias, agrega una columna `notas`: `import` la ignora. Una columna con
+  texto que `import` no lee la rechaza, para que un texto escrito bajo un
+  idioma mal nombrado (`es-MX`, `Español`) nunca se pierda en silencio. Lo que
+  se escriba en `current_<idioma>` no se lee (si cambió una celda, lo avisa).
 
 ### `import`
 
@@ -429,22 +502,36 @@ Lee la hoja como la guardan Excel o Google Sheets: con o sin BOM (también
 UTF-16, el «Texto Unicode» de Excel), separada por comas, punto y coma o
 tabuladores (lo decide el renglón de encabezado), con CRLF o LF, con celdas
 entre comillas que tienen saltos de línea, con renglones o columnas vacíos de
-más y con las columnas en otro orden. Cada celda de idioma con algo escrito
-se revisa, y se rechaza si:
+más, con las columnas en otro orden y con el encabezado donde lo haya dejado un
+orden. Cada celda de idioma con algo escrito se revisa, y se rechaza si:
 
 - la clave no existe en el archivo de ese idioma: `import` nunca crea claves;
+- es una lista o una clave definida dos veces (anidada y con puntos) con
+  valores distintos: esas se arreglan a mano;
 - sus `{marcadores}` no son exactamente los que debe conservar (puede
   repetirlos o cambiarlos de orden, no quitar ni agregar uno);
-- empieza con `TODO-HUMANO:`, o solo tiene espacios;
+- empieza con `TODO-HUMANO:`, solo tiene espacios o es un error de hoja de
+  cálculo (`#¿NOMBRE?`, `#NAME?`, `#N/A`, `#¡VALOR!`, …);
 - es el título o la descripción de `module.json` en otra columna que no sea la
   del primer idioma;
-- otra fila le da a la misma clave e idioma un texto distinto.
+- otra fila, u otra columna de idioma que escribe en el mismo archivo, le da a
+  la misma clave un texto distinto.
 
-Pasarse de `max_length` y tener espacios al principio o al final solo avisan.
+También rechaza una columna que no lee (ni `key`, ni `author`, ni un idioma,
+ni una de las que escribe `export`, ni una de notas) si tiene texto. Pasarse de
+`max_length`, tener espacios al principio o al final, empezar con un
+apóstrofo y ser solo un número o una fecha solo avisan. Una celda igual al
+valor que ya tiene el archivo y que no tiene firma no escribe nada ni cuenta
+como «sin cambios»: `import` lo avisa, sin citarlo (si lo escribió una
+persona, la firma; si se copió de `lang/*.json`, es el texto de trabajo y se
+escribe de nuevo). Una hoja sin ningún texto en las columnas de idioma lo
+detiene: probablemente no es el archivo que se guardó.
+
 Con una sola celda rechazada no escribe nada y lista cada motivo con su número
 de renglón (el que muestra la hoja). `--partial` escribe las celdas válidas y
 lista las rechazadas; `--dry-run` no escribe nada y muestra qué cambiaría. Sale
-con 1 si rechazó alguna celda.
+con 1 si rechazó alguna celda. Al final lista las filas de cada nombre de la
+columna `author`.
 
 En cada archivo cambia solo los valores editados, byte por byte: el orden de
 las claves, el anidamiento, la sangría, los fines de línea, el BOM, el salto de
@@ -454,8 +541,11 @@ en los dos lugares. Escribe con archivos temporales y renombrados: o se
 escriben todos los archivos, o ninguno. Nunca toca `human-text.json` ni
 firma: un texto nuevo queda sin firma (o cambiado, si reemplaza uno firmado), y
 el último renglón dice el paso siguiente, firmarlo en tu terminal con
-`sign-text --sign`. Cada autor firma lo que escribió: la pregunta de
-`--sign` es «¿Escribiste tú este texto desde cero?».
+`sign-text --sign`, con la ruta de `sign-text` y la carpeta del módulo tal como
+se corrió `text-sheet` (también las demás sugerencias de las dos órdenes).
+Cada autor firma lo que escribió: la pregunta de `--sign` es «¿Escribiste tú
+este texto desde cero?». Un archivo de idioma o un `module.json` con BOM
+conserva su BOM, pero `import` avisa que `sign-text` lo rechaza.
 
 ## Workflows reutilizables
 
