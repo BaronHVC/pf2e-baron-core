@@ -19,7 +19,8 @@ hooks, settings, helpers and sockets stay in each module's own entry files.*
   identifica a un módulo (id, prefijo i18n, clases CSS) entra como parámetro.
 - **`tools/`**: `sync-core.mjs`, `check-module.mjs`, `release-manifest.mjs`
   (la reescritura de `module.json` que corre `module-release`) y
-  `sign-text.mjs` (la firma del autor sobre los textos humanos), más
+  `sign-text.mjs` (la firma del autor sobre los textos humanos),
+  `text-sheet.mjs` (la hoja donde las personas escriben esos textos), más
   `shared.mjs`, lo que comparten. Solo usan módulos de Node y `git`; corren
   igual en Windows y en Linux, sin `npm install`.
 - **`.github/workflows/`**: la CI de este repo (`ci.yml`) y los dos workflows
@@ -99,6 +100,11 @@ node ../pf2e-baron-core/tools/check-module.mjs --online --release   # lo mismo q
 node ../pf2e-baron-core/tools/sign-text.mjs .
 node ../pf2e-baron-core/tools/sign-text.mjs . --sign
 
+# Los mismos textos en una hoja: exportar lo que falta escribir, llenarlo en
+# Excel o Google Sheets e importarlo (ver "Escribir los textos en la hoja")
+node ../pf2e-baron-core/tools/text-sheet.mjs export
+node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv
+
 # Lo que module-release escribiría en module.json. Reescribe el archivo que le
 # pasas: úsalo sobre una copia (en CI lo corre el workflow)
 node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.0 --repo BaronHVC/<id> --channel stable
@@ -106,7 +112,8 @@ node ../pf2e-baron-core/tools/release-manifest.mjs copia/module.json --tag v1.2.
 ```
 
 `sync-core`, `check-module` y `sign-text` aceptan la carpeta del módulo como
-primer argumento (por defecto, la carpeta actual).
+primer argumento (por defecto, la carpeta actual); `text-sheet export`
+también, y `text-sheet import` la recibe después de la hoja.
 
 **`sync-core --ref`** lee `baron-core.js` con `git show <commit>:baron-core.js`
 (nunca hace checkout), lo normaliza a LF, verifica la línea
@@ -276,6 +283,179 @@ y se firma todo otra vez. Las firmas de claves que ya no existen no cuentan, y
 el siguiente `--sign` las quita. Sin `humanText` (o con `"markers"`) nada de
 esto corre y `human-text.json` se ignora: los módulos que no lo piden se
 revisan como antes.
+
+## Escribir los textos en la hoja
+
+Un módulo puede tener cientos de textos por escribir (los de trabajo de la IA
+y los `TODO-HUMANO:`), y escribirlos en una terminal es lento. `text-sheet`
+los pone en una hoja de cálculo: una fila por texto, con dónde aparece, qué
+debe comunicar y qué marcadores debe llevar, y una columna vacía por idioma.
+Las personas que escriben los textos la llenan en Excel o en Google Sheets,
+`text-sheet import` los pasa a los archivos de idioma y cada autor firma
+después los suyos con `sign-text --sign`. El flujo:
+
+```sh
+# 1. Desde la carpeta del módulo: escribe textos-hoja.csv con lo que falta escribir
+node ../pf2e-baron-core/tools/text-sheet.mjs export
+
+# 2. Las personas llenan las columnas de idioma en Excel o Google Sheets y la guardan como CSV UTF-8
+
+# 3. Revisa qué cambiaría, y escríbelo en lang/*.json (y en module.json)
+node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv --dry-run
+node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv
+
+# 4. Cada autor firma los textos que escribió, en su terminal
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+```
+
+**La hoja nunca muestra un texto de IA.** Retocar el texto de la IA no cumple
+la política de IA de Foundry (§4.1): el texto se escribe desde la intención,
+no desde la frase de la IA. Por eso las columnas de idioma salen vacías, y
+`current_<idioma>` solo trae un valor cuya firma es válida (uno que una
+persona ya escribió y firmó, que sirve de original para traducir). Un texto
+sin firma, cambiado desde que se firmó o con `TODO-HUMANO:` nunca aparece, ni
+en la hoja ni en lo que imprime `import`, y no hay opción que lo muestre. Una
+sesión de Claude puede correr `export` e `import`, pero nunca llena las
+columnas de idioma.
+
+### `export`
+
+```sh
+node ../pf2e-baron-core/tools/text-sheet.mjs export [<carpeta del módulo>] [--out <archivo.csv>] [--all]
+```
+
+Escribe `textos-hoja.csv` en la raíz del módulo (o donde diga `--out`): UTF-8
+con BOM, separado por comas, con comillas de RFC 4180 (una celda puede llevar
+saltos de línea y comillas dobladas) y CRLF, para que Excel en español de
+México y Google Sheets lo abran tal cual. Nunca escribe dentro de lo que
+empaca el release (`module.json`, `scripts`, `styles`, `templates`, `lang`,
+`packs`, `LICENSE`, `NOTICE.md`) ni encima de una hoja con textos que todavía
+no se importaron. La hoja guarda borradores de personas: va en el
+`.gitignore` del módulo (la plantilla ya lo trae); si no está, `export` avisa.
+
+Por omisión trae solo los textos que todavía necesitan a una persona: con
+`"humanText": "signed"`, los mismos que listan `sign-text` y la revisión `n`
+(sin firma, cambiados desde que se firmaron, por escribir y los demás que no
+tienen firma válida); sin el candado, los que empiezan con `TODO-HUMANO:` o
+están vacíos. Con `--all`, todos los textos de los idiomas que declara
+`module.json`, más su `title` y su `description`.
+
+| columna            | qué trae |
+|--------------------|----------|
+| `key`              | la clave con puntos (`baron-traps.CardTriggered`), o `module.json:title` / `module.json:description` |
+| `where`            | dónde aparece, según `docs/textos-borrador.md`, y los `archivo:línea` de `scripts/` y `templates/` que usan la clave (el mismo rastreo de la revisión `h`; una clave armada en tiempo de ejecución apunta a donde se arma) |
+| `intent`           | la intención, de `docs/textos-borrador.md` |
+| `placeholders`     | los `{marcadores}` que el texto debe conservar: los del valor actual en los idiomas (o los de `docs/textos-borrador.md` si todos siguen con `TODO-HUMANO:`) |
+| `max_length`       | el largo máximo de `docs/textos-borrador.md`, en caracteres sin contar los marcadores |
+| `status`           | `unsigned`, `changed`, `to write`, `signed`, `conflict`, `list`, `broken` o, sin el candado, `to write` / `written`; por idioma cuando difieren (`en: signed; es: changed`), y `missing` si un idioma no tiene la clave |
+| `en`, `es`, …      | vacías: aquí se escribe, una columna por idioma de `module.json` |
+| `current_en`, …    | el valor firmado de cada idioma, y nada si no tiene firma válida |
+
+El título y la descripción de `module.json` son un solo texto para todos los
+idiomas: se escriben en la columna del primer idioma que declara
+`module.json` (normalmente `en`).
+
+`export` avisa, sin fallar, de cada texto por escribir sin fila en
+`docs/textos-borrador.md` (sale con la intención vacía), de cada fila cuya
+clave no existe, de una clave con dos filas y de los marcadores que no
+coinciden con los del texto; y cuenta las filas de textos ya firmados en todos
+los idiomas, que se pueden borrar.
+
+### Formato de `docs/textos-borrador.md`
+
+`export` lee las intenciones de las tablas de este archivo:
+
+- Lista textos cada tabla de markdown cuyo encabezado tiene una columna
+  `clave`. Las demás tablas (por ejemplo, una de conceptos con «Claves donde
+  aparece»), la prosa y lo que está dentro de un bloque de código o de un
+  comentario HTML se ignoran, así que el archivo puede tener secciones,
+  notas y varias tablas.
+- Las columnas se encuentran por el nombre de su encabezado, en cualquier
+  orden y sin importar acentos ni mayúsculas: `clave` (la única obligatoria),
+  `dónde aparece` (o `dónde`), `intención` (o `qué comunica`), `variables` (o
+  `marcadores`) y `máx.` (o `largo máximo`). Las demás, como `archivo`, se
+  ignoran.
+- En `clave`, la clave va entre backticks. Puede omitir el prefijo de idioma
+  del módulo (`` `CardTriggered` `` vale por `baron-traps.CardTriggered`).
+  Varias claves en la misma celda comparten la fila. El título y la
+  descripción se escriben `` `module.json:title` `` y
+  `` `module.json:description` ``.
+- En `variables`, cuenta cada `{nombre}` de la celda; vacía o con `—`,
+  ninguno.
+- En `máx.`, cuenta el primer número de la celda.
+- Un `|` dentro de una celda se escribe `\|`, y `<br>` es un salto de línea.
+
+```markdown
+| clave | dónde aparece | intención | variables | máx. |
+|---|---|---|---|---|
+| `CardTriggered` | título de la tarjeta de chat que reciben los GM | quién activó qué peligro, de un vistazo | `{victim}`, `{hazard}` | 60 |
+| `module.json:description` | lista de módulos de Foundry | qué agrega el módulo, en una o dos oraciones | — | 200 |
+```
+
+### Llenarla en Excel (español de México) o en Google Sheets
+
+- **Abrir en Excel:** con doble clic. El BOM le dice a Excel que es UTF-8 y
+  la coma es el separador de listas de Windows en español de México. Si todo
+  cae en la columna A (un Windows configurado con punto y coma, como el de
+  España), ábrela desde **Datos > Desde el texto/CSV** con origen
+  «65001: Unicode (UTF-8)» y delimitador «Coma».
+- **Antes de escribir:** selecciona las columnas de idioma y dales formato
+  **Texto** (Inicio > Número), para que Excel no convierta un `1/2` en fecha.
+  Un texto que empieza con `=`, `+`, `-` o `@` Excel lo toma como fórmula:
+  escribe antes un apóstrofo (`'`), que no se guarda. Un salto de línea dentro
+  de la celda es **Alt+Enter**.
+- **Guardar en Excel:** Archivo > Guardar como > **«CSV UTF-8 (delimitado por
+  comas)»**. No «CSV (delimitado por comas)»: ese guarda en la página de
+  códigos de Windows, que ya cambió por `?` lo que no cabe, e `import` lo
+  rechaza. «Texto Unicode» también sirve. Si Excel guarda con punto y coma,
+  `import` lo detecta. Cierra el archivo en Excel antes de importar o de volver
+  a exportar: Excel lo deja bloqueado.
+- **Google Sheets:** Archivo > Importar > Subir, con «Detectar
+  automáticamente» como separador y sin «Convertir texto en números, fechas y
+  fórmulas». Al terminar: Archivo > Descargar > «Valores separados por comas
+  (.csv)».
+- Se pueden ordenar o filtrar las filas, mover columnas o agregar otras (de
+  notas, por ejemplo): `import` busca cada columna por su nombre y empata cada
+  fila por su `key`. Lo que se escriba fuera de las columnas de idioma no se
+  lee (si cambió una celda de `current_<idioma>`, lo avisa).
+
+### `import`
+
+```sh
+node ../pf2e-baron-core/tools/text-sheet.mjs import <archivo.csv> [<carpeta del módulo>] [--dry-run] [--partial]
+```
+
+Lee la hoja como la guardan Excel o Google Sheets: con o sin BOM (también
+UTF-16, el «Texto Unicode» de Excel), separada por comas, punto y coma o
+tabuladores (lo decide el renglón de encabezado), con CRLF o LF, con celdas
+entre comillas que tienen saltos de línea, con renglones o columnas vacíos de
+más y con las columnas en otro orden. Cada celda de idioma con algo escrito
+se revisa, y se rechaza si:
+
+- la clave no existe en el archivo de ese idioma: `import` nunca crea claves;
+- sus `{marcadores}` no son exactamente los que debe conservar (puede
+  repetirlos o cambiarlos de orden, no quitar ni agregar uno);
+- empieza con `TODO-HUMANO:`, o solo tiene espacios;
+- es el título o la descripción de `module.json` en otra columna que no sea la
+  del primer idioma;
+- otra fila le da a la misma clave e idioma un texto distinto.
+
+Pasarse de `max_length` y tener espacios al principio o al final solo avisan.
+Con una sola celda rechazada no escribe nada y lista cada motivo con su número
+de renglón (el que muestra la hoja). `--partial` escribe las celdas válidas y
+lista las rechazadas; `--dry-run` no escribe nada y muestra qué cambiaría. Sale
+con 1 si rechazó alguna celda.
+
+En cada archivo cambia solo los valores editados, byte por byte: el orden de
+las claves, el anidamiento, la sangría, los fines de línea, el BOM, el salto de
+línea final y el estilo de los escapes (un archivo que escapa los acentos los
+sigue escapando) quedan igual. Una clave escrita anidada y con puntos cambia
+en los dos lugares. Escribe con archivos temporales y renombrados: o se
+escriben todos los archivos, o ninguno. Nunca toca `human-text.json` ni
+firma: un texto nuevo queda sin firma (o cambiado, si reemplaza uno firmado), y
+el último renglón dice el paso siguiente, firmarlo en tu terminal con
+`sign-text --sign`. Cada autor firma lo que escribió: la pregunta de
+`--sign` es «¿Escribiste tú este texto desde cero?».
 
 ## Workflows reutilizables
 
@@ -521,9 +701,10 @@ node --test test/*.test.mjs test/tools/*.test.mjs
 
 - `test/*.test.mjs`: los exports del core, incluida la paridad contra la copia
   de SWE v0.12.0 en `test/legacy/`.
-- `test/tools/*.test.mjs`: `sync-core`, `check-module`, `release-manifest` y
+- `test/tools/*.test.mjs`: `sync-core`, `check-module`, `release-manifest`,
   `sign-text` (este con una terminal falsa: la bandera TTY y las respuestas se
-  inyectan). Arman repos de git temporales (un core falso etiquetado y un
+  inyectan) y `text-sheet` (la hoja como la guardan Excel y Google Sheets, y
+  que nunca muestre un texto sin firma). Arman repos de git temporales (un core falso etiquetado y un
   módulo con pins), así que necesitan `git` en el PATH. También
   `.github/scripts/run-module-tests.mjs`, contra
   módulos temporales (sin pruebas, en verde, en rojo, con `npm test`, el

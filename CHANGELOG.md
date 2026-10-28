@@ -8,6 +8,46 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/text-sheet.mjs`, para escribir los textos humanos en una hoja de
+  cálculo (ver *Escribir los textos en la hoja* en el README). `export
+  [<carpeta>] [--out <archivo.csv>] [--all]` escribe `textos-hoja.csv` en la
+  raíz del módulo: UTF-8 con BOM, comas, comillas de RFC 4180 y CRLF, que Excel
+  en español de México y Google Sheets abren tal cual. Por omisión, solo los
+  textos que necesitan a una persona, con la misma lógica que `sign-text` y la
+  revisión `[n]` (sin el candado, la del marcador `TODO-HUMANO:`); con
+  `--all`, todos más el `title` y la `description` de `module.json`. Columnas:
+  `key`, `where` (de `docs/textos-borrador.md` y los `archivo:línea` del
+  rastreo de la revisión `[h]`), `intent`, `placeholders`, `max_length`,
+  `status`, una vacía por idioma y una `current_<idioma>` por idioma que solo
+  lleva un valor con firma válida: la hoja nunca muestra un texto de IA, y no
+  hay opción que lo haga. Nunca escribe dentro de lo que empaca el release ni
+  encima de una hoja con textos sin importar, y avisa si la hoja no está en el
+  `.gitignore`. Lee las intenciones de las tablas de `docs/textos-borrador.md`
+  con columna `clave` (formato en el README); avisa de los textos sin fila, de
+  las filas sin clave en los idiomas y de los marcadores que no coinciden.
+- `text-sheet import <archivo.csv> [<carpeta>] [--dry-run] [--partial]`: lee
+  la hoja como la guardan Excel o Google Sheets (con o sin BOM, UTF-16, coma,
+  punto y coma o tabulador, CRLF o LF, columnas en cualquier orden) y escribe
+  cada celda de idioma en su archivo, o en `module.json` el título y la
+  descripción (desde la columna del primer idioma). Rechaza una clave que no
+  existe en ese idioma (nunca crea claves), unos `{marcadores}` distintos de
+  los que el texto debe conservar, un valor que empieza con `TODO-HUMANO:` o
+  que solo tiene espacios, y dos textos distintos para la misma celda; pasarse
+  de `max_length` solo avisa. Con una celda rechazada no escribe nada y lista
+  cada motivo con su renglón; `--partial` escribe las válidas; `--dry-run` no
+  escribe y muestra qué cambiaría. Cambia solo los valores editados, byte por
+  byte (orden, anidamiento, sangría, fines de línea, BOM, salto final y estilo
+  de los escapes), con archivos temporales y renombrados, todos o ninguno.
+  Nunca toca `human-text.json` ni firma, y termina con el paso de
+  `sign-text --sign`. Exporta `exportSheet`, `importSheet`, `csvWrite`,
+  `csvParse`, `decodeSheet`, `parseDraft` y `jsonStringLeaves` para las
+  pruebas.
+- `tools/shared.mjs`: `i18nRefs` (el rastreo de claves de la revisión `[h]`,
+  que ahora devuelve también dónde empieza cada clave armada en tiempo de
+  ejecución) y `ownScripts`. `check-module` lo usa sin cambiar sus resultados.
+
 ## [1.5.0] - 2026-10-24
 
 ### Added
