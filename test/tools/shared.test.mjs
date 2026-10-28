@@ -1,17 +1,20 @@
 // Unit tests for tools/shared.mjs: the version regex, the workflow pin regex,
-// the lock format and the JavaScript scanner the static checks rely on.
+// the lock format, the JavaScript scanner the static checks rely on and the
+// language-key scan that check-module [h] and text-sheet share.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   findUsesPins,
+  i18nRefs,
   lockText,
+  ownScripts,
   readCoreVersion,
   scanJs,
   sha256Lf,
   toLf,
 } from "../../tools/shared.mjs";
-import { sha256Lf as oracle } from "./helpers.mjs";
+import { VALID_MODULE, sha256Lf as oracle } from "./helpers.mjs";
 
 test("readCoreVersion reads the export line, with either quote and any line ending", () => {
   assert.equal(readCoreVersion('// x\nexport const CORE_VERSION = "1.0.0-rc.1";\n'), "1.0.0-rc.1");
@@ -108,4 +111,24 @@ test("scanJs bare view blanks literal text but keeps code and ${} expressions", 
   assert.ok(bare.includes("${call(\" \")}"));
   assert.ok(!bare.includes('import "y"'));
   assert.equal(bare.split("\n").length, src.split("\n").length);
+});
+
+test("i18nRefs finds each static key with its file and line, and keys built at runtime apart", () => {
+  const scripts = ownScripts(VALID_MODULE);
+  assert.deepEqual(scripts, ["scripts/lib/util.js", "scripts/main.js"]);
+  const { refs, dynamic } = i18nRefs({ root: VALID_MODULE, prefix: "baron-fixture", scripts });
+  assert.deepEqual(
+    refs.map((r) => `${r.key} ${r.loc.file}:${r.loc.line}`),
+    [
+      "baron-fixture.Notice scripts/lib/util.js:5",
+      "baron-fixture.Title scripts/main.js:25",
+      "baron-fixture.Open scripts/main.js:26",
+      "baron-fixture.Title templates/panel.hbs:3",
+      "baron-fixture.Open templates/panel.hbs:4",
+      "baron-fixture.Open templates/panel.hbs:4",
+    ],
+  );
+  // i18n(`Kind_${kind}`) is a head, never a key; the commented-out localize,
+  // the prose that starts with the prefix and the hook, query and setting ids are nothing.
+  assert.deepEqual(dynamic, [{ head: "baron-fixture.Kind_", loc: { file: "scripts/main.js", line: 29 } }]);
 });

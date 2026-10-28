@@ -654,6 +654,95 @@ export function scanJs(src) {
   return { code: code.join(""), bare: bare.join(""), strings, lineOf };
 }
 
+/* ----------------------------------------------------------------------------
+ * Language keys used by a module's code: check-module rule [h] checks them
+ * against lang/en.json, and text-sheet lists them as the places that show
+ * each text. One scan, so both always agree on where a key is used.
+ * -------------------------------------------------------------------------- */
+
+// Foundry namespaces other identifiers as "<id>.<name>" too, and with the
+// default i18n prefix (the module id) they look like lang keys. A literal in
+// one of these call positions is an identifier, never a key: hook names
+// (Hooks.on/once/off/call/callAll), query names (CONFIG.queries[...],
+// user.query(...)) and setting ids (game.settings.settings.get(...)).
+const NOT_A_KEY_RE = /(?:(?<![\w$])Hooks\s*\.\s*(?:on|once|off|call|callAll)\s*\(|(?<![\w$])queries\s*\[|\.\s*query\s*\(|(?<![\w$])settings\s*\.\s*(?:get|has|set|delete)\s*\()\s*$/;
+
+/**
+ * The module's own scripts: every .js and .mjs file under scripts/ except
+ * the vendored core, as check-module reads them.
+ * @param {string} root module folder
+ * @returns {string[]}
+ */
+export function ownScripts(root) {
+  return walk(root, "scripts", (n) => /\.m?js$/i.test(n)).filter((s) => s !== VENDORED_PATH);
+}
+
+/**
+ * Static references to the language keys under `prefix` in the module's own
+ * scripts (`i18n("X")` is "<prefix>.X", and a "<prefix>.X" literal outside a
+ * hook, query or setting call) and in the .hbs and .html files under
+ * templates/ (`{{localize "<prefix>.X"}}`, Handlebars comments skipped), in
+ * that order.
+ * A key built at runtime is not a reference: the text before its first `${}`
+ * (or before a `+`) comes back as a dynamic head instead.
+ * @param {{
+ *   root: string,
+ *   prefix: string,
+ *   scripts: string[],
+ *   text?: (rel: string) => string,
+ *   scan?: (rel: string) => ReturnType<typeof scanJs>,
+ * }} opts `text` reads a file LF-normalized and `scan` scans a script; by
+ *   default both read from `root` (check-module passes its cached ones)
+ * @returns {{
+ *   refs: { key: string, loc: { file: string, line: number } }[],
+ *   dynamic: { head: string, loc: { file: string, line: number } }[],
+ * }}
+ */
+export function i18nRefs({ root, prefix, scripts, text, scan }) {
+  const read = text ?? ((rel) => toLf(fs.readFileSync(path.join(root, rel), "utf8")));
+  const scanOf = scan ?? ((rel) => scanJs(read(rel)));
+  const head = `${prefix}.`;
+  const refs = [];
+  const dynamic = [];
+
+  for (const rel of scripts) {
+    const { code, strings, lineOf } = scanOf(rel);
+    for (const s of strings) {
+      const before = code.slice(Math.max(0, s.start - 60), s.start);
+      const after = code.slice(s.end, s.end + 20);
+      const plusAfter = /^\s*\+/.test(after);
+      const plusBefore = /\+\s*$/.test(before);
+      const loc = { file: rel, line: lineOf(s.start) };
+      if (/(?<![\w$.])i18n\s*\(\s*$/.test(before)) {
+        // i18n("X") resolves to "<prefix>.X"; a computed argument is skipped.
+        if (s.value !== null && !plusAfter && /^\s*\)/.test(after)) {
+          refs.push({ key: head + s.value, loc });
+        } else if (s.head) dynamic.push({ head: head + s.head, loc });
+        continue;
+      }
+      const value = s.value ?? s.head;
+      if (!value.startsWith(head)) continue;
+      if (NOT_A_KEY_RE.test(before)) continue;
+      if (s.value === null || plusAfter || plusBefore) {
+        if (value.length > head.length) dynamic.push({ head: value, loc });
+        continue;
+      }
+      if (/\s/.test(value)) continue; // prose that happens to start with the prefix
+      refs.push({ key: value, loc });
+    }
+  }
+
+  for (const rel of walk(root, "templates", (n) => /\.(hbs|html)$/i.test(n))) {
+    // Handlebars comments may quote keys that no longer exist.
+    const src = read(rel).replace(/\{\{!--[\s\S]*?--\}\}|\{\{![\s\S]*?\}\}/g, (m) => m.replace(/[^\n]/g, " "));
+    for (const m of src.matchAll(/\blocalize\s+(["'])([^"'\n]+)\1/g)) {
+      if (!m[2].startsWith(head)) continue;
+      refs.push({ key: m[2], loc: { file: rel, line: src.slice(0, m.index).split("\n").length } });
+    }
+  }
+  return { refs, dynamic };
+}
+
 /** Resolves the escapes that can appear in an i18n key or a path; others pass through. */
 function unescapeJs(raw) {
   return raw.replace(/\\(?:\r\n|\n|(.))/g, (_, ch) => {

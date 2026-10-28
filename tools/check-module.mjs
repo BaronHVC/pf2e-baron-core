@@ -42,6 +42,7 @@ import {
   gitTry,
   httpsUrlProblem,
   humanTexts,
+  i18nRefs,
   isHumanPlaceholder,
   languageEntries,
   mentionsGitHub,
@@ -531,54 +532,12 @@ function checkImports(ctx, c) {
   c.detail(`${count} import(s) checked, none leave the module; no top-level await`);
 }
 
-// Foundry namespaces other identifiers as "<id>.<name>" too, and with the
-// default i18n prefix (the module id) they look like lang keys. A literal in
-// one of these call positions is an identifier, never a key: hook names
-// (Hooks.on/once/off/call/callAll), query names (CONFIG.queries[...],
-// user.query(...)) and setting ids (game.settings.settings.get(...)).
-const NOT_A_KEY_RE = /(?:(?<![\w$])Hooks\s*\.\s*(?:on|once|off|call|callAll)\s*\(|(?<![\w$])queries\s*\[|\.\s*query\s*\(|(?<![\w$])settings\s*\.\s*(?:get|has|set|delete)\s*\()\s*$/;
-
 function checkI18n(ctx, c, stats) {
   const prefix = ctx.baron.i18nPrefix;
   if (typeof prefix !== "string" || !prefix) return c.skip("no i18nPrefix in baron.json and no id in module.json");
-  const head = `${prefix}.`;
-  const refs = [];
-  const dynamicHeads = new Set();
-
-  for (const rel of ctx.ownScripts) {
-    const { code, strings, lineOf } = ctx.scan(rel);
-    for (const s of strings) {
-      const before = code.slice(Math.max(0, s.start - 60), s.start);
-      const after = code.slice(s.end, s.end + 20);
-      const plusAfter = /^\s*\+/.test(after);
-      const plusBefore = /\+\s*$/.test(before);
-      if (/(?<![\w$.])i18n\s*\(\s*$/.test(before)) {
-        // i18n("X") resolves to "<prefix>.X"; a computed argument is skipped.
-        if (s.value !== null && !plusAfter && /^\s*\)/.test(after)) {
-          refs.push({ key: head + s.value, loc: { file: rel, line: lineOf(s.start) } });
-        } else if (s.head) dynamicHeads.add(head + s.head);
-        continue;
-      }
-      const text = s.value ?? s.head;
-      if (!text.startsWith(head)) continue;
-      if (NOT_A_KEY_RE.test(before)) continue;
-      if (s.value === null || plusAfter || plusBefore) {
-        if (text.length > head.length) dynamicHeads.add(text);
-        continue;
-      }
-      if (/\s/.test(text)) continue; // prose that happens to start with the prefix
-      refs.push({ key: text, loc: { file: rel, line: lineOf(s.start) } });
-    }
-  }
-
-  for (const rel of walk(ctx.root, "templates", (n) => /\.(hbs|html)$/i.test(n))) {
-    // Handlebars comments may quote keys that no longer exist.
-    const src = ctx.text(rel).replace(/\{\{!--[\s\S]*?--\}\}|\{\{![\s\S]*?\}\}/g, (m) => m.replace(/[^\n]/g, " "));
-    for (const m of src.matchAll(/\blocalize\s+(["'])([^"'\n]+)\1/g)) {
-      if (!m[2].startsWith(head)) continue;
-      refs.push({ key: m[2], loc: { file: rel, line: src.slice(0, m.index).split("\n").length } });
-    }
-  }
+  // The scan lives in shared.mjs: text-sheet lists the same places.
+  const { refs, dynamic } = i18nRefs({ root: ctx.root, prefix, scripts: ctx.ownScripts, scan: ctx.scan, text: ctx.text });
+  const dynamicHeads = new Set(dynamic.map((d) => d.head));
 
   const en = ctx.langKeys.get("en");
   stats.refs = refs.length;
