@@ -266,7 +266,12 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
   se vuelve a preguntar, lo saltado sí. Si otro programa (un editor, un cliente de sincronización, el
   antivirus) tiene abierto `human-text.json`, reintenta el renombrado unos 2
   segundos; si no puede, deja las firmas en el archivo temporal y dice dónde
-  está.
+  está. Corre un solo `--sign` a la vez por módulo: si mientras uno pregunta
+  otro guarda (o un programa o git cambia `human-text.json` o
+  `human-text-authors.json`), el primero no escribe nada, porque borraría lo
+  que guardó el otro, y dice que se firme otra vez; y un listado hecho
+  mientras un `--sign` guarda puede mostrar sus temporales como si los
+  hubiera dejado una corrida que no terminó.
 - **La firma la da una persona, a mano.** Contestar `s` dice «este texto lo
   escribí yo desde cero» (con `--author` o `--sheet`, «este autor lo escribió
   desde cero», y quien firma da fe de ello; ver abajo): revisar o retocar un
@@ -278,9 +283,10 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
   idioma, y esa persona va como autor de la firma: en una traducción, la `s`
   dice que ese autor domina el idioma y revisó la traducción línea por línea,
   no que la escribió desde cero. Con `--author` o `--sheet` contesta por él
-  quien da fe (BaronHVC por IAR18, que no tiene terminal); sin ellos, el que
-  contesta es el propio revisor («domino este idioma y revisé esta
-  traducción»). Así lo explica `--sign` antes de la primera pregunta.
+  quien da fe (BaronHVC por IAR18, que no tiene terminal); cuando el revisor
+  es quien firma (BaronHVC), firma también con `--author BaronHVC` o con su
+  hoja y `--sheet`, para quedar como autor de la firma: `--sign` solo no
+  guarda autor. Así lo explica `--sign` antes de la primera pregunta.
 - **Es un compromiso, no una prueba.** El sha256 no lleva llave: un programa
   puede escribir `human-text.json`, y quitar `humanText` de `baron.json` apaga
   el candado. Lo que lo sostiene es revisar quién hace commit de esos dos
@@ -296,8 +302,9 @@ En `check-module`, un texto sin firma, cambiado, vacío o con `TODO-HUMANO:`, y
 un `lang/*.json` sin declarar, dan un WARN en cada push y un FAIL con `--release`, así que la etiqueta no publica
 un texto que una persona no firmó. Sin `human-text.json`, todos cuentan como
 sin firma. Un `human-text.json` mal formado (JSON inválido, otra forma, otra
-`version`) falla siempre, también en un push: se restaura desde git, o se borra
-y se firma todo otra vez. Las firmas de claves que ya no existen no cuentan, y
+`version`) falla siempre, también en un push: se restaura desde git (junto con
+`human-text-authors.json`, si lo hay, los dos del mismo commit), o se borra y
+se firma todo otra vez. Las firmas de claves que ya no existen no cuentan, y
 el siguiente `--sign` las quita. Sin `humanText` (o con `"markers"`) nada de
 esto corre y `human-text.json` se ignora: los módulos que no lo piden se
 revisan como antes.
@@ -395,34 +402,59 @@ entradas que la corrida quita o reemplaza, luego `human-text.json`, y al
 final el de autores con las entradas nuevas. Así, si la corrida se corta
 entre dos renombrados (se cierra la ventana), una firma puede quedar sin
 autor, pero nunca con el de otra firma. Si un renombrado falla, lo ya
-reemplazado vuelve a como estaba, del último al primero, y lo nuevo de los
-dos queda en sus temporales, y el mensaje dice dónde. Si `human-text.json` no
-puede volver, el de autores tampoco vuelve (sin las entradas que la corrida
-quita o reemplaza, ninguna firma nueva queda con el autor de la anterior), y
-el mensaje dice que se renombre el temporal de autores: firmar otra vez no
-preguntaría por esas firmas, que ya valen.
+reemplazado vuelve a como estaba, del último al primero, también por
+temporal y renombrado (nunca queda escrito a medias), y cada contenido de la
+corrida queda en su temporal: el mensaje dice que se firme otra vez, tras
+borrar esos temporales, o, para conservar las respuestas, que se renombren
+en el orden que da, que es el de la corrida (en otro orden, una firma nueva
+podría mostrar el autor de la anterior hasta el último renombrado). Si uno
+de esos contenidos no puede quedar en su temporal, borra los demás y solo
+dice que se firme otra vez. Si el de autores no puede volver, solo le faltan
+entradas de firmas que no valen, y no hay que restaurarlo. Si
+`human-text.json` no puede volver, el de autores tampoco vuelve (sin las
+entradas que la corrida quita o reemplaza, ninguna firma nueva queda con el
+autor de la anterior), y el mensaje dice que se renombre el temporal de
+autores: firmar otra vez no preguntaría por esas firmas, que ya valen.
 
 Si la corrida se corta entre los dos últimos renombrados, las firmas ya están
 en `human-text.json` y sus autores solo en `.human-text-authors.json.<pid>.tmp`.
 El listado lo reconoce (ese temporal conserva cada entrada del archivo y solo
 agrega autores a firmas válidas que no tienen) y dice que se renombre sobre
 `human-text-authors.json`; mientras siga ahí, `--sign` no corre: pide
-renombrarlo, o borrarlo para dejar esas firmas sin autor. De cualquier otro
+renombrarlo, o borrarlo para dejar esas firmas sin autor. Tampoco corre
+mientras quede cualquier otro `.human-text-authors.json.<pid>.tmp` sin su
+`.human-text.json.<pid>.tmp` al lado, porque una firma nueva hecha debajo de
+él podría, al renombrarlo después, quedar con el autor de otra; el listado
+dice qué guarda cada uno y, si esa corrida no dejó mensaje (si lo dejó, se
+hace lo que dijo), qué hacer: si solo quita entradas (como el de un `--sign`
+que solo quitaba entradas sin firma), que se renombre o se borre; si sus
+autores ya no corresponden a las firmas de `human-text.json` (un texto cambió
+o se firmó otra vez desde entonces), que se borre. De cualquier otro
 temporal que quede (`.human-text.json.<pid>.tmp`,
-`.human-text-authors.json.<pid>[.part].tmp`), el listado y `--sign` dicen que
-se haga lo que dijo el mensaje de esa corrida; si no dejó mensaje, sus firmas
-nunca se guardaron: se borran y esos textos se firman otra vez.
+`.human-text-authors.json.<pid>[.part].tmp`, `.<archivo>.<pid>.back.tmp`), el
+listado dice que se haga lo que dijo el mensaje de esa corrida; si no dejó
+mensaje, sus firmas nunca se guardaron: se borran y esos textos se firman
+otra vez.
 
 Nunca se crea vacío. Las firmas de claves que ya no existen se llevan a su
 autor, y una entrada que no tiene firma se quita, también en un `--sign` que
 deja `human-text.json` como estaba (salvo que no exista: podría haberse
-perdido, y se restaura desde git).
+perdido, y se restaura desde git junto con `human-text-authors.json`, los dos
+del mismo commit).
+
+Una entrada de autor no dice para qué firma se guardó. Por eso, una vez que
+el módulo tiene `human-text-authors.json`, se firma solo con un núcleo v1.7.0
+o posterior: el `--sign` de uno anterior no conoce el archivo y dejaría el
+autor de la firma anterior junto a la nueva. Y `human-text.json` y
+`human-text-authors.json` se restauran juntos, del mismo commit: uno más
+viejo que el otro deja autores junto a firmas que no son las suyas.
 
 `check-module` no lo lee: con este núcleo o con uno
 anterior (v1.5.0, v1.6.0), su resultado es el mismo con el archivo o sin él,
 y `human-text.json` conserva su formato. Uno mal formado detiene a
-`sign-text`, también al listar: se restaura desde git (borrarlo olvida
-quién escribió cada texto). Sin `--sign`, `sign-text` lista cada texto
+`sign-text`, también al listar: se restaura desde git junto con
+`human-text.json`, los dos del mismo commit (borrarlo olvida quién escribió
+cada texto). Sin `--sign`, `sign-text` lista cada texto
 firmado que tiene autor (`signed    lang/es.json  <clave>  by "IAR18"`) y
 cuántos lleva cada autor; sin autores guardados, lista lo mismo que v1.6.0
 salvo el renglón `next:`, que ahora nombra `--sheet` y `--author`, y el de

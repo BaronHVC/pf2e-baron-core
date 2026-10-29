@@ -29,7 +29,11 @@
 // stdin and stdout are a TTY, and there is no flag that answers for the
 // person. human-text.json is written once, at the end or on "q", through a
 // temporary file and a rename, without the signatures whose key is gone;
-// Ctrl+C or the end of input before that leaves it untouched.
+// Ctrl+C or the end of input before that leaves it untouched. Run one --sign
+// at a time per module: a run whose files changed while it asked (another
+// --sign saved meanwhile) writes nothing and says so, since writing over them
+// would erase what the other saved; and a listing made while a --sign saves
+// may show that run's temporary files as left over.
 //
 // The person who attests the texts to Foundry signs too for an author who has
 // no terminal. --author <name> asks "did <name> write this text from scratch?"
@@ -44,9 +48,13 @@
 // that leaves human-text.json as it was still drops the entries that have no
 // signature. A run stopped between its last two renames leaves the authors of
 // the signatures it saved in a temporary file: the listing says to rename it,
-// and --sign stops until it is renamed or deleted. check-module never reads
-// it, and the listing shows the author of each signed text that has one, and
-// a count per author.
+// and --sign stops until it is renamed or deleted; it stops too for any other
+// authors file a run left without its human-text.json beside it, and the
+// listing says what each one holds. check-module never reads it, and the
+// listing shows the author of each signed text that has one, and a count per
+// author. An author entry does not say which signature it was given for: sign
+// with a core older than v1.7.0 no more once a module has this file, and
+// restore human-text.json and it together, from one commit.
 //
 // --sheet <file.csv> reads a text sheet with text-sheet import's own reader
 // and asks only about its language cells with text (the module.json title and
@@ -170,8 +178,9 @@ const TO_SIGN = new Set(["unsigned", "changed"]);
 const STALE_CAP = 10;
 // A long run says this often how many of its answers a Ctrl+C would throw away.
 const UNSAVED_EVERY = 50;
-// The temporary files of a --sign that could not finish: <file>.<pid>[.part].tmp.
-const LEFTOVER_RE = /^\.human-text(?:-authors)?\.json\.\d+(?:\.part)?\.tmp$/;
+// The temporary files of a --sign that could not finish: <file>.<pid>[.part|.back].tmp
+// (.back: a file being put back as it was, after a failed rename).
+const LEFTOVER_RE = /^\.human-text(?:-authors)?\.json\.\d+(?:\.part|\.back)?\.tmp$/;
 // The last content of the authors file a run wrote, by the pid of that run.
 const FINAL_AUTHORS_RE = /^\.human-text-authors\.json\.(\d+)\.tmp$/;
 // The text sheets of a folder: textos-hoja.csv (SHEET_FILE) and one per author, such as textos-hoja-IAR18.csv.
@@ -196,9 +205,30 @@ function readModuleJson(root, rel) {
   }
 }
 
+/** A file's bytes, or null when it cannot be read (there is none). */
+function readBytes(file) {
+  try {
+    return fs.readFileSync(file);
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `file` still holds `bytes` (null: there is still no such file). */
+function holds(file, bytes) {
+  const now = readBytes(file);
+  return now === null ? bytes === null : bytes !== null && now.equals(bytes);
+}
+
+// One of the two files restored from git alone may be older or newer than the other: an author
+// entry would then sit next to a signature it was not given for.
+const restoreWith = (root, other) => `restore it from git${fs.existsSync(path.join(root, other)) ? ` together with ${other}, both from one commit` : ""}`;
+
 /**
  * Everything the listing and the questions need. A language file that cannot
  * be read stops the tool: its signatures would look stale and be dropped.
+ * `signedBytes` and `authorsBytes`: the two files as read before they were
+ * parsed, so a change made while the run asks is never written over.
  */
 function load(root) {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new SignTextError(`${root} is not a folder`);
@@ -206,9 +236,10 @@ function load(root) {
   const entries = languageEntries(root, module);
   const rels = [...new Set(entries.map((l) => l.rel))];
   const langFiles = rels.map((rel) => ({ rel, data: readModuleJson(root, rel) }));
+  const signedBytes = readBytes(path.join(root, HUMAN_TEXT_FILE));
   const read = readSignatures(root);
   if (read.error) {
-    throw new SignTextError(`${HUMAN_TEXT_FILE} ${read.error}: restore it from git, or delete it and sign every text again`);
+    throw new SignTextError(`${HUMAN_TEXT_FILE} ${read.error}: ${restoreWith(root, HUMAN_TEXT_AUTHORS_FILE)}, or delete it and sign every text again`);
   }
   // baron.json "humanText", read as check-module reads it; only for a note.
   let mode;
@@ -218,9 +249,10 @@ function load(root) {
   } catch {
     // no baron.json, or one check-module reports
   }
+  const authorsBytes = readBytes(path.join(root, HUMAN_TEXT_AUTHORS_FILE));
   const who = readAuthors(root);
   if (who.error) {
-    throw new SignTextError(`${HUMAN_TEXT_AUTHORS_FILE} ${who.error}: restore it from git (deleting it forgets who wrote each signed text)`);
+    throw new SignTextError(`${HUMAN_TEXT_AUTHORS_FILE} ${who.error}: ${restoreWith(root, HUMAN_TEXT_FILE)} (deleting it forgets who wrote each signed text)`);
   }
   const texts = signatureStatus(humanTexts(module, langFiles), read.signed);
   return {
@@ -232,7 +264,8 @@ function load(root) {
     stale: staleSignatures(texts, read.signed),
     mode,
     authors: who.authors,
-    authorsMissing: !!who.missing,
+    signedBytes,
+    authorsBytes,
   };
 }
 
@@ -253,8 +286,13 @@ function authorCounts(names) {
     .join(", ");
 }
 
-// As commandLine() quotes the folder: forward slashes work in PowerShell and in Git Bash.
-const quoteArg = (s) => (/[\s"'&|<>()^;$`\\]/.test(s) ? `"${s}"` : s);
+// As commandLine() quotes the folder: forward slashes work in PowerShell and in Git Bash. Both
+// shells expand $ and a backtick between double quotes, and PowerShell reads a brace as a script
+// block: those stay literal only between single quotes (unless the argument holds one too).
+const quoteArg = (s) => {
+  if (!/[\s"'&|<>()^;$`\\{}]/.test(s)) return s;
+  return /[$`{}]/.test(s) && !s.includes("'") ? `'${s}'` : `"${s}"`;
+};
 
 /** A path as the person types it from `cwd`: relative, with forward slashes. */
 const shownPath = (cwd, file) => path.relative(cwd, file).split(path.sep).join("/") || path.basename(file);
@@ -295,11 +333,19 @@ const idOf = (file, key) => JSON.stringify([file, key]);
 
 /**
  * The temporary files a --sign that did not finish left in the module folder
- * (LEFTOVER_RE), and among them the last authors file of a run stopped between
- * its last two renames (writeSteps): it keeps every entry the authors file has
- * and only adds authors to signatures that are valid and have none, so renaming
- * it over the authors file finishes that run.
- * @returns {{ files: string[], finish: { name: string, adds: number }[] }}
+ * (LEFTOVER_RE), and among them each last authors file of a run without its
+ * human-text.json beside it (`stuck`), which a new signature must never be made
+ * under: renaming it later could give that signature the author of the one
+ * the run saved. Each is one of:
+ *   "finish"  the run stopped between its last two renames (writeSteps): it
+ *             keeps every entry the authors file has and only adds authors to
+ *             signatures that are valid and have none, so renaming it over the
+ *             authors file finishes that run
+ *   "drops"   it holds no entry the authors file does not hold as it is: it
+ *             only removes author records, and gives no signature an author
+ *   "stale"   anything else: its authors no longer fit human-text.json (a text
+ *             changed or was signed again since), or it was cut while written
+ * @returns {{ files: string[], stuck: { name: string, kind: string, adds: number }[] }}
  */
 function leftovers(root, texts, authors) {
   const files = fs
@@ -307,38 +353,54 @@ function leftovers(root, texts, authors) {
     .filter((f) => LEFTOVER_RE.test(f))
     .sort();
   const byId = new Map(texts.map((t) => [idOf(t.file, t.key), t]));
-  const finish = [];
+  const stuck = [];
   for (const name of files) {
     const pid = FINAL_AUTHORS_RE.exec(name)?.[1];
     // With its human-text.json still beside it, that run saved no signature.
     if (pid === undefined || files.includes(`.${HUMAN_TEXT_FILE}.${pid}.tmp`)) continue;
-    let data;
+    let data = null;
     try {
       data = JSON.parse(fs.readFileSync(path.join(root, name), "utf8"));
     } catch {
+      // cut while written: stale
+    }
+    if (data === null || authorsProblem(data)) {
+      stuck.push({ name, kind: "stale", adds: 0 });
       continue;
     }
-    if (authorsProblem(data)) continue;
     const keeps = Object.entries(authors).every(([file, keys]) => Object.entries(keys).every(([key, who]) => authorOf(data.authors, file, key) === who));
-    const adds = Object.entries(data.authors).flatMap(([file, keys]) =>
-      Object.keys(keys)
-        .filter((key) => authorOf(authors, file, key) === null)
-        .map((key) => byId.get(idOf(file, key))),
+    // Its entries that the authors file does not hold as they are.
+    const changes = Object.entries(data.authors).flatMap(([file, keys]) =>
+      Object.entries(keys)
+        .filter(([key, who]) => authorOf(authors, file, key) !== who)
+        .map(([key]) => ({ file, key })),
     );
-    if (keeps && adds.length && adds.every((t) => t?.status === "signed")) finish.push({ name, adds: adds.length });
+    let kind = "stale";
+    if (!changes.length) kind = "drops";
+    else if (keeps && changes.every(({ file, key }) => byId.get(idOf(file, key))?.status === "signed")) kind = "finish";
+    stuck.push({ name, kind, adds: changes.length });
   }
-  return { files, finish };
+  return { files, stuck };
 }
 
-/** What a leftover that finishes a run holds, and what to do with it. */
-const finishLine = ({ name, adds }) =>
-  `${name} holds the authors of ${adds} valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; ` +
-  `rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`;
+/** What a leftover of `stuck` holds, and what to do with it. */
+const stuckLine = ({ name, kind, adds }) =>
+  ({
+    finish:
+      `${name} holds the authors of ${adds} valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; ` +
+      `rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`,
+    drops:
+      `${name} only removes author records from ${HUMAN_TEXT_AUTHORS_FILE}, as a --sign that did not finish was about to: if that run printed a message, do what it said; ` +
+      `if not, rename it over ${HUMAN_TEXT_AUTHORS_FILE} (it gives no text an author) or delete it`,
+    stale:
+      `${name} holds authors that a --sign did not finish saving, and they no longer fit the signatures in ${HUMAN_TEXT_FILE} (a text changed or was signed again since, or the file was cut): ` +
+      "if that run printed a message, do what it said; if not, delete it (renaming it could record an author for a signature that author was not given)",
+  })[kind];
 
 /** The leftovers of `leftovers()`, as information. */
-function reportLeftovers({ files, finish }, log) {
-  for (const x of finish) log(`info: ${finishLine(x)}`);
-  const rest = files.filter((f) => !finish.some((x) => x.name === f));
+function reportLeftovers({ files, stuck }, log) {
+  for (const x of stuck) log(`info: ${stuckLine(x)}`);
+  const rest = files.filter((f) => !stuck.some((x) => x.name === f));
   if (rest.length) {
     log(
       `info: ${rest.length} temporary file(s) left by a --sign that did not finish (${rest.join(", ")}): if that run printed a message, do what it said; ` +
@@ -384,6 +446,26 @@ const removeQuietly = (file) => {
 };
 
 /**
+ * Puts `file` back as it was (`before`; null: there was none) through a
+ * temporary file and a rename, as it was written: a put-back that fails part
+ * way leaves the file whole, never half written.
+ */
+async function putBack(file, rel, before) {
+  if (before === null) {
+    fs.rmSync(file, { force: true });
+    return;
+  }
+  const back = path.join(path.dirname(file), `.${rel}.${process.pid}.back.tmp`);
+  try {
+    fs.writeFileSync(back, before);
+    await replaceFile(back, file);
+  } catch (err) {
+    removeQuietly(back);
+    throw err;
+  }
+}
+
+/**
  * Writes human-text.json and, when they change too, human-text-authors.json,
  * as one step: every content goes to a temporary file next to its target
  * first, then each temporary file is renamed over its target, in the order of
@@ -392,10 +474,13 @@ const removeQuietly = (file) => {
  * adds, so that a stop between two renames (a closed window) can leave a
  * signature without its author but never with another one's. When a rename
  * fails, every file already replaced is put back as it was, the last one
- * first, and the last new content of each file stays in its temporary file,
- * so no answer is lost; when human-text.json cannot be put back, the authors
- * file stays without the entries the run removes or replaces, and the message
- * says to rename the authors' temporary file.
+ * first, and every content of the run stays in its temporary file, so no
+ * answer is lost: the message names those renames in the order of `steps`,
+ * where each one leaves the files as safe as the run itself does. When a
+ * content cannot be kept, it names none, and says to sign again. When
+ * human-text.json cannot be put back, the authors file stays without the
+ * entries the run removes or replaces, and the message says to rename the
+ * authors' temporary file.
  * @param {{ file: string, rel: string, text: string, before: Buffer|null }[]} steps
  *   `before`: the file as the run found it (null: there was none)
  * @param {number} signed the signatures given in this run, for the messages
@@ -422,34 +507,45 @@ async function writeSteps(steps, signed) {
   for (const s of staged) {
     try {
       await replaceFile(s.tmp, s.file);
-      done.push(s.rel);
+      done.push(s);
     } catch (err) {
-      // Put back what was replaced, the last one first, and keep the last new
-      // content of each file next to it. human-text.json goes back before the
-      // authors file, and the authors file goes back only once the signatures
-      // did: next to the new signatures it stays without the entries this run
-      // removes or replaces, so no signature is ever left with another one's author.
+      // Every content already renamed (or gone, as when someone deleted the
+      // temporary files of a run they took for a stopped one) goes back to its
+      // temporary file, so the renames can all be done again, in the same order.
+      let kept = true;
+      for (const x of staged) {
+        if (fs.existsSync(x.tmp)) continue;
+        try {
+          fs.writeFileSync(x.tmp, x.text);
+        } catch {
+          kept = false;
+        }
+      }
+      // Put back what was replaced, the last one first. human-text.json goes
+      // back before the authors file, and the authors file goes back only once
+      // the signatures did: next to the new signatures it stays without the
+      // entries this run removes or replaces, so no signature is ever left with
+      // another one's author.
       const lost = [];
       let signaturesBack = true;
-      for (const rel of [...new Set(done)].reverse()) {
+      for (const rel of [...new Set(done.map((x) => x.rel))].reverse()) {
         if (rel === HUMAN_TEXT_AUTHORS_FILE && !signaturesBack) continue;
         const { file, before } = steps.find((x) => x.rel === rel);
-        const fin = staged.find((x) => x.rel === rel && x.final);
         try {
-          if (!fs.existsSync(fin.tmp)) fs.writeFileSync(fin.tmp, fin.text);
-          if (before === null) fs.rmSync(file, { force: true });
-          else fs.writeFileSync(file, before);
+          await putBack(file, rel, before);
         } catch {
           lost.push(rel);
           if (rel === HUMAN_TEXT_FILE) signaturesBack = false;
         }
       }
-      for (const x of staged) if (!x.final) removeQuietly(x.tmp);
       const tmpOf = (rel) => staged.find((x) => x.rel === rel && x.final)?.tmp;
       const held = `could not replace ${s.file} (${err.code ?? err.message}: another program may have it open, such as an editor, a sync client or an antivirus scan). `;
       if (!signaturesBack) {
-        // The signatures stay saved: only their authors are missing, and a new --sign would not ask about them.
+        // The signatures stay saved (a rename is all or nothing): only their
+        // authors are missing, and a new --sign would not ask about them.
+        for (const x of staged) if (!x.final) removeQuietly(x.tmp);
         const tmpH = tmpOf(HUMAN_TEXT_FILE);
+        const tmpA = tmpOf(HUMAN_TEXT_AUTHORS_FILE);
         let whole = false;
         try {
           whole = fs.readFileSync(path.join(path.dirname(tmpH), HUMAN_TEXT_FILE)).equals(Buffer.from(last.get(HUMAN_TEXT_FILE).text, "utf8"));
@@ -459,18 +555,35 @@ async function writeSteps(steps, signed) {
         if (whole) removeQuietly(tmpH);
         throw new SignTextError(
           held +
-            `${HUMAN_TEXT_FILE} could not be put back as it was, so it keeps the ${signed} signature(s) given in this run; their authors are in ${tmpOf(HUMAN_TEXT_AUTHORS_FILE)}: ` +
-            `close that program and ${whole ? "" : `rename ${tmpH} over ${HUMAN_TEXT_FILE}, then `}rename that file over ${HUMAN_TEXT_AUTHORS_FILE} ` +
+            `${HUMAN_TEXT_FILE} could not be put back as it was, so it keeps the ${signed} signature(s) given in this run; their authors are in ${tmpA}: ` +
+            `close that program and ${whole ? "" : `rename ${tmpH} over ${HUMAN_TEXT_FILE}, then `}rename ${tmpA} over ${HUMAN_TEXT_AUTHORS_FILE} ` +
             "(running --sign again would not ask about those signatures, so it would not record their authors)",
         );
       }
-      const where =
-        last.size > 1
-          ? `${lost.length ? "The" : "Nothing was changed: the"} ${signed} signature(s) given in this run are in ${tmpOf(HUMAN_TEXT_FILE)}, and their authors in ${tmpOf(HUMAN_TEXT_AUTHORS_FILE)}`
-          : `The ${signed} signature(s) given in this run are in ${tmpOf(HUMAN_TEXT_FILE)}`;
-      const rename = last.size > 1 ? `rename each of those files over its target (${names})` : `rename that file over ${HUMAN_TEXT_FILE}`;
+      // Only the authors file can be left as the run made it: without the entries
+      // it removes or replaces, which belong to no valid signature.
+      const authorsNote = lost.length
+        ? `. ${HUMAN_TEXT_AUTHORS_FILE} could not be put back as it was, but it only lacks the author records of signatures that are not valid (the ones this run replaces or drops), so it needs nothing`
+        : "";
+      const changed = lost.length ? "" : "Nothing was changed: ";
+      if (!kept) {
+        // A content that cannot be kept: renaming the others alone could leave a signature with another one's author.
+        for (const x of staged) removeQuietly(x.tmp);
+        throw new SignTextError(
+          `${held}${changed}the new content${staged.length > 1 ? "s" : ""} of this run could not be kept in temporary files either, so the ${signed} signature(s) given in this run were not saved: ` +
+            `close that program and run --sign again${authorsNote}`,
+        );
+      }
+      if (staged.length === 1) {
+        // human-text.json alone, as v1.6.0 says it.
+        throw new SignTextError(`${held}The ${signed} signature(s) given in this run are in ${staged[0].tmp}: close that program and rename that file over ${HUMAN_TEXT_FILE}, or run --sign again`);
+      }
+      // Renamed in the order of the run, each step leaves the files as safe as the run does; in another, a new
+      // signature could show the author of the one it replaces until the last rename.
+      const order = staged.map((x) => `${x.tmp} over ${x.rel}`);
       throw new SignTextError(
-        `${held}${where}: close that program and ${rename}, or run --sign again` + (lost.length ? `. ${lost.join(", ")} could not be put back as it was: restore it from git` : ""),
+        `${held}${changed}close that program and run --sign again, after deleting the temporary files of this run; ` +
+          `or, to keep the ${signed} signature(s) given in this run, rename these files in this order: ${order.join(", then ")}${authorsNote}`,
       );
     }
   }
@@ -800,7 +913,7 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
   }
   if (sign && typeof ask !== "function") throw new TypeError("signTexts: --sign needs an ask() function");
   const root = path.resolve(dir);
-  const { module, entries, texts, signed, missing, stale, mode, authors, authorsMissing } = load(root);
+  const { module, entries, texts, signed, missing, stale, mode, authors, signedBytes, authorsBytes } = load(root);
   const pending = texts.filter((t) => TO_SIGN.has(t.status));
   const blocked = texts.filter((t) => !TO_SIGN.has(t.status) && t.status !== "signed");
   const done = texts.length - pending.length - blocked.length;
@@ -817,9 +930,11 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
   }
   if (missing) log(`note: there is no ${HUMAN_TEXT_FILE} yet: every text counts as unsigned`);
   const left = leftovers(root, texts, authors);
-  if (sign && left.finish.length) {
-    // A new run would write the authors file, and that leftover could no longer simply be renamed over it.
-    throw new SignTextError(`${left.finish.map(finishLine).join("; ")}; or delete it to leave them without an author. Then run this again`);
+  if (sign && left.stuck.length) {
+    // A new run would write the authors file, and could sign again a text such a leftover gives an author:
+    // renaming it afterwards would credit the new signature to the old one's author.
+    const lines = left.stuck.map((x) => `${stuckLine(x)}${x.kind === "finish" ? "; or delete it to leave them without an author" : ""}`);
+    throw new SignTextError(`${lines.join("; ")}. Then run this again`);
   }
 
   if (!sign) {
@@ -842,7 +957,7 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
     }
     const orphans = unsignedAuthors(authors, signed).length;
     if (orphans) {
-      const removes = missing ? `the first --sign that saves a signature removes them (restore ${HUMAN_TEXT_FILE} from git if it was lost)` : "--sign removes them";
+      const removes = missing ? `the first --sign that saves a signature removes them (if ${HUMAN_TEXT_FILE} was lost, restore it from git together with ${HUMAN_TEXT_AUTHORS_FILE}, both from one commit)` : "--sign removes them";
       log(`info: ${orphans} author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; ${removes}`);
     }
     reportLeftovers(left, log);
@@ -939,12 +1054,28 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
 
   const file = path.join(root, HUMAN_TEXT_FILE);
   const text = signaturesText(next);
-  const before = missing ? null : fs.readFileSync(file);
+  // Both files as this run read them: what it writes is built on them alone.
+  const before = signedBytes;
+  const authorsBefore = authorsBytes;
   const authorsFile = path.join(root, HUMAN_TEXT_AUTHORS_FILE);
+  // Another --sign may have saved while this one asked: writing over that would erase it.
+  const changedMeanwhile = () =>
+    [
+      [file, before, HUMAN_TEXT_FILE],
+      [authorsFile, authorsBefore, HUMAN_TEXT_AUTHORS_FILE],
+    ]
+      .filter(([f, bytes]) => !holds(f, bytes))
+      .map(([, , rel]) => rel);
   let dropped = 0;
   if (before === null ? Object.keys(next).length > 0 : !before.equals(Buffer.from(text, "utf8"))) {
+    const changed = changedMeanwhile();
+    if (changed.length) {
+      throw new SignTextError(
+        `${changed.join(" and ")} changed while this run asked (another --sign saved, or a program or git wrote ${changed.length > 1 ? "them" : "it"}): ` +
+          `nothing was written, so that change is kept and the ${result.signed} signature(s) given in this run were not saved; run --sign again, one --sign at a time`,
+      );
+    }
     // The authors change with the signatures, in the same step; never created empty.
-    const authorsBefore = authorsMissing ? null : fs.readFileSync(authorsFile);
     const differs = (now, map) => (now === null ? Object.keys(map).length > 0 : !Buffer.from(now).equals(Buffer.from(authorsText(map), "utf8")));
     const steps = [];
     let authorsNow = authorsBefore;
@@ -961,7 +1092,10 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
     // human-text.json stays as it was, so this run gave no signature: only the
     // author entries without one go. Not without human-text.json, which may be lost.
     dropped = unsignedAuthors(authors, next).length;
-    result.wroteAuthors = await dropAuthorEntries(authorsFile, authorsText(kept), dropped, log);
+    const changed = changedMeanwhile();
+    if (changed.length) {
+      log(`warn: ${changed.join(" and ")} changed while this run asked: ${HUMAN_TEXT_AUTHORS_FILE} is left as it is, and the next --sign removes its records without a signature`);
+    } else result.wroteAuthors = await dropAuthorEntries(authorsFile, authorsText(kept), dropped, log);
   }
   log("");
   log(
