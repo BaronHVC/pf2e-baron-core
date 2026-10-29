@@ -52,32 +52,41 @@ tengan que resincronizar.
   módulo que faltan escribir solo los cuenta. Si la hoja no está donde dice
   la ruta, el mensaje dice dónde buscó y, si la carpeta del módulo tiene una
   con ese nombre, cómo pasarla; si no, nombra las `textos-hoja*.csv` que hay
-  ahí y en la carpeta del módulo. Con `--author`, sin `--sign` o sin archivo
-  sale con 2. Lee tal cual la hoja por persona de la página web donde escribe
-  IAR18 (`textos-hoja-IAR18.csv`: UTF-8 con BOM, celdas entre comillas, CRLF,
-  encabezado `key,author,en,es`).
+  ahí y en la carpeta del módulo. Si otro programa tiene abierta la hoja sin
+  dejar leerla, lo dice y sale con 1, sin preguntar. Con `--author`, sin
+  `--sign` o sin archivo sale con 2. Lee tal cual la hoja por persona de la
+  página web donde escribe IAR18 (`textos-hoja-IAR18.csv`: UTF-8 con BOM,
+  celdas entre comillas, CRLF, encabezado `key,author,en,es`).
 - `human-text-authors.json`, junto a `human-text.json`: `{ "version": 1,
   "authors": { "<archivo>": { "<clave>": { "name": "<nombre>", "sha256":
   "<sha256 de la firma>" } } } }`, con el formato de `human-text.json` (claves
   ordenadas, `name` y luego `sha256`, dos espacios, LF y salto final). Cada
-  entrada guarda el sha256 de la firma para la que se guardó, y cuenta solo si
-  `human-text.json` firma ese texto con ese mismo hash y la firma es válida;
-  cualquier otra no nombra a nadie: el listado, las cuentas por autor,
-  `--author` y `--sheet` la ignoran, el listado solo dice cuántas hay, y la
-  siguiente escritura del archivo la quita. Un `--sign` sin `--author` ni
-  `--sheet` no guarda autor, así que el de una firma anterior de ese texto
-  deja de contar. Un núcleo anterior (v1.6.0) que vuelve a firmar un texto
-  deja su entrada vieja sin contar: el texto queda sin autor, nunca con el de
-  otra firma, y cada archivo se restaura desde git por su cuenta. Lo escribe
-  solo `sign-text`: con `human-text.json`, o solo cuando la corrida guardó el
-  autor de una firma que ya había; nunca lo crea vacío, y una corrida que no
-  cambia `human-text.json` ni guarda un autor no lo toca. Cada archivo va por
-  su cuenta, por temporal y renombrado, primero el de autores y luego
-  `human-text.json`: una corrida cortada entre los dos deja, a lo más, una
-  firma sin autor, nunca con el de otra. Si el renombrado de `human-text.json`
-  falla, nada se regresa: el mensaje dice que las firmas no se guardaron (los
-  autores ya escritos para ellas no cuentan sin ellas) y que se corra `--sign`
-  otra vez. Un temporal que deja una corrida cortada no significa nada: el
+  entrada guarda el sha256 de la firma para la que se guardó, y cuenta siempre
+  que `human-text.json` firme ese texto con ese mismo hash y la firma sea
+  válida, la haya dado el núcleo que sea; cualquier otra (el texto cambió, su
+  firma ya no está o una corrida que no terminó nunca la guardó) no nombra a
+  nadie: el listado, las cuentas por autor, `--author` y `--sheet` la
+  ignoran, el listado solo dice cuántas hay, y la siguiente escritura del
+  archivo la quita. Un `--sign` sin `--author` ni `--sheet` no guarda
+  autor: un texto que cambió y se firma así queda sin autor, nunca con el de
+  otro valor. Un núcleo anterior (v1.6.0) no toca el archivo: si vuelve a
+  firmar justo el valor para el que se guardó una entrada (un texto que se
+  regresó, o uno que dejó sin firmar una corrida cortada), esa entrada vuelve
+  a contar; por eso, con el archivo, se firma con v1.7.0 o posterior y, tras
+  firmar con uno anterior, se revisan los renglones `by` del listado. Cada
+  archivo se restaura desde git por su cuenta. Sin `human-text.json` ninguna
+  entrada cuenta: `--sign` avisa antes de la primera pregunta que al guardar
+  las quita. Lo escribe solo `sign-text`: con `human-text.json`, o solo
+  cuando la corrida guardó el autor de una firma que ya había; nunca lo crea
+  vacío, y una corrida que no cambia `human-text.json` ni guarda un autor no
+  lo toca. Cada archivo va por su cuenta, por temporal y renombrado, primero
+  el de autores y luego `human-text.json`: una corrida cortada entre los dos
+  deja, a lo más, una firma sin autor, nunca con el de otra. Si el renombrado de `human-text.json`
+  falla, o no se hace porque otro `--sign` guardó entre los dos, nada se
+  regresa: el mensaje dice que las firmas no se guardaron (los autores ya
+  escritos para ellas no cuentan sin ellas; si la corrida no dio firmas, que
+  no quitó las de claves que ya no existen) y que se corra `--sign` otra
+  vez. Un temporal que deja una corrida cortada no significa nada: el
   listado dice que se borre, y `--sign` no se detiene por él. Uno mal formado
   (otra forma, un nombre que no vale o no está en NFC, un `sha256` que no son
   64 caracteres hexadecimales en minúsculas) detiene a `sign-text`, también al
@@ -85,9 +94,9 @@ tengan que resincronizar.
 - Sin `--sign`, `sign-text` lista cada texto firmado que tiene un autor que
   cuenta (`signed … by "IAR18"`), cuántos lleva cada autor, cuántas entradas
   no nombran a nadie y los temporales que quedaron.
-- `sign-text --sign` recuerda cada 50 preguntas cuántas firmas de la corrida
-  siguen sin guardar (Ctrl+C las tira), y con `q` termina con el comando para
-  seguir (`to continue:`).
+- `sign-text --sign` recuerda cada 50 preguntas cuántas firmas y cuántos
+  autores de textos ya firmados de la corrida siguen sin guardar (Ctrl+C los
+  tira), y con `q` termina con el comando para seguir (`to continue:`).
 - `tools/shared.mjs`: `HUMAN_TEXT_AUTHORS_FILE`,
   `HUMAN_TEXT_AUTHORS_VERSION`, `AUTHOR_NAME_MAX`, `authorNameProblem`,
   `authorsProblem`, `readAuthors` y `authorsText`; y el lector de la hoja,
@@ -138,17 +147,20 @@ tengan que resincronizar.
 - La CI del core trae las etiquetas en el trabajo `tools`: una prueba corre el
   `check-module` de v1.5.0 y de v1.6.0 sobre un módulo con
   `human-text-authors.json` y comprueba que pasa igual que sin él, y otra
-  firma con el `sign-text` de v1.6.0 y comprueba que el autor viejo deja de
-  contar.
+  firma con el `sign-text` de v1.6.0 y comprueba que un valor nuevo queda
+  sin autor y que el valor para el que se guardó una entrada la hace contar
+  otra vez.
 
 ### Fixed
 
 - `sign-text --sign` ya no escribe sobre lo que otro `--sign` guardó mientras
   él preguntaba. Antes reescribía `human-text.json` desde lo que leyó al
   empezar y borraba las firmas que el otro guardó en ese rato, aun sin firmar
-  nada (`q`). Ahora, si `human-text.json` o `human-text-authors.json`
-  cambiaron desde que los leyó, no escribe nada y dice que se firme otra vez;
-  la cabecera y el README piden un solo `--sign` a la vez por módulo.
+  nada (`q`). Ahora, antes de cada renombrado (también entre los dos y en
+  cada reintento), revisa que `human-text.json` y `human-text-authors.json`
+  sigan como los leyó, o como él dejó el de autores; si cambiaron, ya no
+  renombra nada y dice que se firme otra vez; la cabecera y el README piden
+  un solo `--sign` a la vez por módulo.
 - Los comandos que imprime `sign-text` (la ruta del script, la carpeta y, en
   los renglones `next:` y `to continue:`, la hoja) van entre comillas simples
   cuando llevan `$`, una comilla invertida o una llave: entre comillas
