@@ -41,8 +41,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  AUTHOR_COLUMN,
+  AUTHOR_HEADERS,
+  CURRENT_PREFIX,
+  FIXED_COLUMNS,
   HUMAN_TEXT_FILE,
   LISTING_FIELDS,
+  LISTING_PREFIX,
+  NOTE_COLUMNS,
+  SECTION_COLUMN,
+  TextSheetError,
+  csvParse,
+  decodeSheet,
   flattenLang,
   gitTry,
   humanTexts,
@@ -50,11 +60,16 @@ import {
   isHumanPlaceholder,
   languageEntries,
   ownScripts,
+  readSheet,
   readSignatures,
   signatureStatus,
   walk,
 } from "./shared.mjs";
 import { DEFAULT_COMMAND as SIGN_COMMAND } from "./sign-text.mjs";
+
+// The sheet's columns and its CSV reader live in shared.mjs, where sign-text
+// --sheet reads the same sheet; they are still this tool's exports.
+export { AUTHOR_COLUMN, CURRENT_PREFIX, FIXED_COLUMNS, LISTING_PREFIX, NOTE_COLUMNS, SECTION_COLUMN, TextSheetError, csvParse, decodeSheet };
 
 const USAGE = [
   "usage: node text-sheet.mjs export [moduleDir] [--out <file.csv>] [--all]",
@@ -69,20 +84,6 @@ export const SIGN_TOOL = SIGN_COMMAND.replace(/ \.$/, "");
 export const SHEET_FILE = "textos-hoja.csv";
 /** The intent of each text, written by the agent that wrote the working text. */
 export const DRAFT_FILE = "docs/textos-borrador.md";
-/** The columns before the language columns, in this order. */
-export const FIXED_COLUMNS = ["key", "where", "intent", "placeholders", "max_length", "status"];
-/** current_<lang>: the signed value, the only value the sheet ever shows. */
-export const CURRENT_PREFIX = "current_";
-/** After the current_<lang> columns: who wrote the row's texts (import only echoes it). */
-export const AUTHOR_COLUMN = "author";
-/** The last column: the heading above the row's table in the draft, to sort and filter by screen. */
-export const SECTION_COLUMN = "section";
-/** Headers import reads as the author column. */
-const AUTHOR_NAMES = [AUTHOR_COLUMN, "autor"];
-/** Columns a person may add for their own notes: import ignores them. Any other column with text is refused. */
-export const NOTE_COLUMNS = ["notas", "nota", "notes", "note", "comentarios", "comments"];
-/** Key of a module.json listing field in the sheet: "module.json:title". */
-export const LISTING_PREFIX = "module.json:";
 /** What the release ZIP packs (module-release.yml): the sheet never goes there. */
 export const PACKED_PATHS = ["module.json", "scripts", "styles", "templates", "lang", "packs", "LICENSE", "NOTICE.md"];
 /** What the module's .gitignore needs: every sheet (one per author, the .xlsx a person keeps) and Excel's lock files. */
@@ -98,7 +99,6 @@ const DASH = ` ${ch(0x2014)} `;
 // the label of an enricher (@Check[...]{Label}, @UUID[...]{Name}), and one
 // that is not a name ({two words}) is text: the person rewrites those.
 const TOKEN_RE = /(?<!\])\{[A-Za-z_$][\w.$]*\}/g;
-const DELIMITERS = [",", ";", "\t"];
 // What Excel and Google Sheets save for a formula that failed, in English and
 // Spanish (#NAME?, #N/A, #REF!, #DIV/0!, #SPILL!, and the same with an opening
 // inverted mark: #?NOMBRE?, #!VALOR!; #N/D for #N/A).
@@ -113,15 +113,6 @@ const CAP = 10;
 const RENAME_RETRY = new Set(["EPERM", "EACCES", "EBUSY"]);
 const RENAME_TRIES = 10;
 const RENAME_WAIT_MS = 200;
-
-/** A problem with the module or the sheet that stops the tool (exit 1), never a crash. */
-export class TextSheetError extends Error {
-  /** @param {string} message @param {{ usage?: boolean }} [opts] usage: a mistake in the arguments, so the CLI adds its usage */
-  constructor(message, { usage = false } = {}) {
-    super(message);
-    this.usage = usage;
-  }
-}
 
 /* ----------------------------------------------------------------------------
  * The commands the hints print
@@ -160,118 +151,6 @@ function csvField(value, delimiter) {
  */
 export function csvWrite(rows, { delimiter = ",", bom = true } = {}) {
   return (bom ? BOM : "") + rows.map((r) => `${r.map((f) => csvField(f, delimiter)).join(delimiter)}\r\n`).join("");
-}
-
-const NOT_UTF8 =
-  'is not UTF-8 text. In Excel save it with "Guardar como" > "CSV UTF-8 (delimitado por comas)" (or "Texto Unicode"): plain "CSV (delimitado por comas)" uses the Windows code page and has already turned every character it lacks into "?". In Google Sheets: Archivo > Descargar > "Valores separados por comas (.csv)"';
-
-/**
- * The text of a saved sheet: UTF-8 with or without a BOM, or UTF-16 with its
- * BOM (Excel's "Texto Unicode"). Anything else is refused, never guessed.
- * @param {Buffer|Uint8Array} buf
- * @returns {string} without the BOM
- */
-export function decodeSheet(buf) {
-  const b = Buffer.from(buf);
-  if ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff)) {
-    try {
-      if (b.length % 2) throw new TypeError("odd length");
-      const body = Buffer.from(b.subarray(2));
-      if (b[0] === 0xfe) body.swap16();
-      return new TextDecoder("utf-16le", { fatal: true }).decode(body);
-    } catch {
-      throw new TextSheetError("the sheet starts like UTF-16 text but is not valid UTF-16: save it again from the spreadsheet");
-    }
-  }
-  try {
-    const bom = b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf;
-    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(b.subarray(bom ? 3 : 0));
-  } catch {
-    throw new TextSheetError(`the sheet ${NOT_UTF8}`);
-  }
-}
-
-/** The delimiter the first record uses most outside quotes: a tie goes to the comma, then the semicolon. */
-function detectDelimiter(s) {
-  const count = new Map(DELIMITERS.map((d) => [d, 0]));
-  let quoted = false;
-  for (const c of s) {
-    if (c === '"') quoted = !quoted;
-    else if (!quoted && (c === "\n" || c === "\r")) break;
-    else if (!quoted && count.has(c)) count.set(c, count.get(c) + 1);
-  }
-  return DELIMITERS.reduce((best, d) => (count.get(d) > count.get(best) ? d : best), ",");
-}
-
-/**
- * Records of a CSV text, leniently, as Excel and Google Sheets save them:
- * the delimiter is the comma, semicolon or tab that the header row uses most
- * (Excel saves with the list separator of the Windows region), or the one an
- * Excel "sep=;" first line names; a quoted field may hold the delimiter,
- * newlines and doubled quotes; a record ends in CRLF, LF or CR.
- * @param {string} text
- * @returns {{ delimiter: string, records: { row: number, fields: string[] }[] }}
- *   `row` is the row number a spreadsheet shows (the header is row 1)
- */
-export function csvParse(text) {
-  let s = text.startsWith(BOM) ? text.slice(1) : text;
-  let delimiter = null;
-  const hint = /^sep=([,;\t])(?:\r\n|\n|\r|$)/i.exec(s);
-  if (hint) {
-    delimiter = hint[1];
-    s = s.slice(hint[0].length);
-  }
-  delimiter ??= detectDelimiter(s);
-
-  const records = [];
-  let fields = [];
-  let field = "";
-  let quoted = false; // this field started with a quote
-  let open = false; // inside the quotes
-  let row = 1;
-  let openedAt = 1;
-  const endField = () => {
-    fields.push(field);
-    field = "";
-    quoted = false;
-  };
-  const endRecord = () => {
-    endField();
-    records.push({ row, fields });
-    fields = [];
-    row++;
-  };
-  for (let i = 0; i < s.length; ) {
-    const c = s[i];
-    if (open) {
-      if (c === '"' && s[i + 1] === '"') {
-        field += '"';
-        i += 2;
-      } else if (c === '"') {
-        open = false;
-        i++;
-      } else {
-        field += c;
-        i++;
-      }
-    } else if (c === '"' && field === "" && !quoted) {
-      open = quoted = true;
-      openedAt = row;
-      i++;
-    } else if (c === delimiter) {
-      endField();
-      i++;
-    } else if (c === "\r" || c === "\n") {
-      endRecord();
-      i += c === "\r" && s[i + 1] === "\n" ? 2 : 1;
-    } else {
-      field += c;
-      i++;
-    }
-  }
-  if (open) throw new TextSheetError(`the quote that opens a cell in row ${openedAt} never closes: the sheet is cut short or was not saved as CSV`);
-  if (field !== "" || quoted || fields.length) endRecord();
-  return { delimiter, records };
 }
 
 /* ----------------------------------------------------------------------------
@@ -566,7 +445,7 @@ function readMode(root) {
 
 /** A language code that cannot name a column: it would be read as another column. */
 const reservedColumn = (name) =>
-  FIXED_COLUMNS.includes(name) || AUTHOR_NAMES.includes(name) || name === SECTION_COLUMN || NOTE_COLUMNS.includes(name) || name.startsWith(CURRENT_PREFIX);
+  FIXED_COLUMNS.includes(name) || AUTHOR_HEADERS.includes(name) || name === SECTION_COLUMN || NOTE_COLUMNS.includes(name) || name.startsWith(CURRENT_PREFIX);
 
 /**
  * Everything both commands need, read once: the declared languages and their
@@ -1057,44 +936,6 @@ export async function exportSheet({ dir = process.cwd(), out, all = false, cwd =
 /* ----------------------------------------------------------------------------
  * import
  * -------------------------------------------------------------------------- */
-
-/**
- * A saved sheet: its records and where its columns are, by header name (case
- * and surrounding spaces do not matter): "key", one column per language of
- * `langs`, their current_<lang> columns and "author". The header is the record
- * with "key" and a language, wherever a sort put it (else the first with
- * "key"); every other record that is not empty is data. The export's other
- * columns are ignored; `notes` are columns for a person's notes, `unknown`
- * every other column (import refuses one that holds text).
- */
-function readSheet(buf, langs) {
-  const { delimiter, records } = csvParse(decodeSheet(buf));
-  const blank = (r) => r.fields.every((f) => !f.trim());
-  const namesOf = (r) => r.fields.map((f) => f.trim().toLowerCase());
-  const langOf = (name) => langs.find((l) => l.toLowerCase() === name);
-  let at = records.findIndex((r) => namesOf(r).includes("key") && namesOf(r).some((n) => langOf(n)));
-  if (at < 0) at = records.findIndex((r) => namesOf(r).includes("key"));
-  const data = records.filter((r, i) => i !== at && !blank(r));
-  if (at < 0) return { delimiter, records: data, keyIdx: -1, langCols: [], currentCols: [], authorIdx: -1, notes: [], unknown: [], header: null };
-  const header = records[at];
-  const names = namesOf(header);
-  const langCols = [];
-  const currentCols = [];
-  const notes = [];
-  const unknown = [];
-  let authorIdx = -1;
-  names.forEach((name, idx) => {
-    if (FIXED_COLUMNS.includes(name) || name === SECTION_COLUMN) return;
-    const lang = langOf(name);
-    const cur = name.startsWith(CURRENT_PREFIX) ? langOf(name.slice(CURRENT_PREFIX.length)) : undefined;
-    if (lang) langCols.push({ lang, idx });
-    else if (cur) currentCols.push({ lang: cur, idx });
-    else if (AUTHOR_NAMES.includes(name) && authorIdx < 0) authorIdx = idx;
-    else if (NOTE_COLUMNS.includes(name)) notes.push({ name: header.fields[idx].trim(), idx });
-    else unknown.push({ name: header.fields[idx].trim(), idx });
-  });
-  return { delimiter, records: data, keyIdx: names.indexOf("key"), langCols, currentCols, authorIdx, notes, unknown, header };
-}
 
 /**
  * Every leaf string of a JSON text with its key path and the offsets of its
