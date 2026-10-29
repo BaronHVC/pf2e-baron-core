@@ -570,7 +570,7 @@ const SHEET_BOM = String.fromCharCode(0xfeff);
 export const FIXED_COLUMNS = ["key", "where", "intent", "placeholders", "max_length", "status"];
 /** current_<lang>: the signed value, the only value the sheet ever shows. */
 export const CURRENT_PREFIX = "current_";
-/** After the current_<lang> columns: who wrote the row's texts (import only echoes it). */
+/** After the current_<lang> columns: who wrote the row's texts (import only echoes it; sign-text --sheet records it). */
 export const AUTHOR_COLUMN = "author";
 /** The last column: the heading above the row's table in the draft, to sort and filter by screen. */
 export const SECTION_COLUMN = "section";

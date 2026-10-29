@@ -35,6 +35,8 @@ const BS = ch(92);
 const oracle = (s) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
 const TEXT_SHEET = path.join(TOOLS, "text-sheet.mjs");
 const SIGN_NEXT = "node ../pf2e-baron-core/tools/sign-text.mjs . --sign";
+// What import says next: the person who attests signs the sheet's texts for their authors.
+const SIGN_SHEET_NEXT = "next: the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row (no pipe, no redirection): ";
 // Accented header words, as the modules write them.
 const DONDE = `d${ch(0xf3)}nde aparece`;
 const INTENCION = `intenci${ch(0xf3)}n`;
@@ -501,8 +503,7 @@ test("import writes the filled cells, leaves human-text.json alone and says how 
   assert.equal(readJson(dir, "module.json").description, "A fixture module.");
   assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)).equals(signatures[HUMAN_TEXT_FILE]));
   assert.match(r.out, /human-text\.json untouched/);
-  assert.ok(r.lines.at(-1).startsWith("next: sign them yourself at a terminal"));
-  assert.ok(r.lines.at(-1).endsWith(SIGN_NEXT));
+  assert.equal(r.lines.at(-1), `${SIGN_SHEET_NEXT}${SIGN_NEXT} --sheet filled.csv`);
   // Nothing signed them: they still need their authors.
   const after = await exp(dir, { out: "after.csv" });
   assert.equal(after.byKey.get("baron-fixture.Notice").status, "unsigned");
@@ -1001,7 +1002,7 @@ test("export never overwrites a sheet whose imported texts are not signed yet: a
   await fill(dir, [["baron-fixture.Notice", "es", "{count} avisos"]], { name: SHEET_FILE });
   assert.equal((await imp(dir, SHEET_FILE)).code, 0);
   const before = fs.readFileSync(path.join(dir, SHEET_FILE));
-  await assert.rejects(exp(dir), (err) => err instanceof TextSheetError && /holds a text in row 2 \(baron-fixture\.Notice, es\) that was imported but is not signed yet: its author signs it first \(node \.\.\/pf2e-baron-core\/tools\/sign-text\.mjs \. --sign\)/.test(err.message));
+  await assert.rejects(exp(dir), (err) => err instanceof TextSheetError && /holds a text in row 2 \(baron-fixture\.Notice, es\) that was imported but is not signed yet: sign it first \(node \.\.\/pf2e-baron-core\/tools\/sign-text\.mjs \. --sign --sheet textos-hoja\.csv\)/.test(err.message));
   assert.ok(fs.readFileSync(path.join(dir, SHEET_FILE)).equals(before));
   // Once signed, the sheet has done its job and a new one replaces it.
   fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), SIGNED_FILE({ ...SIGNED, "lang/es.json": { ...SIGNED["lang/es.json"], "baron-fixture.Notice": oracle("{count} avisos") } }));
@@ -1019,7 +1020,7 @@ test("export refuses to drop text that a person typed in a notes column or a col
   await assert.rejects(exp(dir), /holds text in column "notas" \(row 2\), which a new sheet would drop: move the sheet away/);
 });
 
-test("the author column: export leaves it empty, import writes it nowhere and lists the rows each author signs", async (t) => {
+test("the author column: export leaves it empty, import writes it nowhere and lists the rows of each author", async (t) => {
   const dir = sheetModule(t);
   const signatures = bytes(dir, HUMAN_TEXT_FILE);
   const e = await exp(dir);
@@ -1034,7 +1035,7 @@ test("the author column: export leaves it empty, import writes it nowhere and li
   for (const dryRun of [true, false]) {
     const r = await imp(dir, file, { dryRun });
     assert.equal(r.code, 0, r.out);
-    const at = r.lines.indexOf("by author (import writes it nowhere; each one signs the rows under their name, at their own terminal):");
+    const at = r.lines.indexOf("by author (import writes it nowhere; sign-text --sheet asks about each row for its author, and records it with the signature):");
     assert.ok(at > 0, r.out);
     assert.deepEqual(r.lines.slice(at + 1, at + 4), ["  BaronHVC: row 2", "  IAR18: row 3", "  (no author): row 5"]);
   }
@@ -1105,7 +1106,7 @@ test("the next steps name the module folder and quote paths when the tool runs f
   );
   const imported = [];
   await importSheet({ file: "mis textos/hoja.csv", dir: "baron-fixture", cwd: parent, log: (l) => imported.push(l), logError: (l) => imported.push(l) });
-  assert.ok(imported.at(-1).endsWith("node ../pf2e-baron-core/tools/sign-text.mjs baron-fixture --sign"), imported.at(-1));
+  assert.ok(imported.at(-1).endsWith('node ../pf2e-baron-core/tools/sign-text.mjs baron-fixture --sign --sheet "mis textos/hoja.csv"'), imported.at(-1));
 
   // The CLI prints the scripts it runs, relative to the folder it runs in, and the command works as printed.
   const ex = runNode(TEXT_SHEET, ["export", "baron-fixture", "--out", "x y.csv"], { cwd: parent });
@@ -1275,9 +1276,13 @@ test("the CLI exports and imports from the module folder, exits 1 on refused cel
   assert.equal(good.status, 0, good.out);
   // The sign step names the sign-text next to the text-sheet that ran, from this folder.
   const last = good.stdout.trim().split(/\r?\n/).at(-1);
-  const signText = /: node "?(.+?sign-text\.mjs)"? \. --sign$/.exec(last);
+  const signText = /: node "?(.+?sign-text\.mjs)"? \. --sign --sheet good\.csv$/.exec(last);
   assert.ok(signText, last);
   assert.equal(fs.realpathSync(path.resolve(dir, signText[1])), fs.realpathSync(path.join(TOOLS, "sign-text.mjs")));
+  // sign-text takes that command as printed: here, without a terminal, it stops at the TTY check and repeats it.
+  const sign = runNode(path.resolve(dir, signText[1]), [".", "--sign", "--sheet", "good.csv"], { cwd: dir });
+  assert.equal(sign.status, 1, sign.out);
+  assert.match(sign.stderr, / \. --sign --sheet good\.csv\r?\n/);
   assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Notice"], "{count} notices");
 
   assert.equal(runNode(TEXT_SHEET, []).status, 1);

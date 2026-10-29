@@ -34,8 +34,9 @@
 // written, unless --partial; --dry-run writes nothing and shows what would
 // change. Only the edited values change in each file, byte for byte, through
 // a temporary file and a rename. It never touches human-text.json and never
-// signs: the authors sign what they wrote, each at a terminal, with
-// sign-text --sign.
+// signs: the person who attests the texts (BaronHVC) signs them at a
+// terminal with sign-text --sign --sheet <that sheet>, answering for the
+// author of each row, which each signature records.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -130,6 +131,9 @@ function importCommand({ tool, cwd, root }, sheet) {
 
 /** `sign-text <module> --sign`, from the folder the tool runs in. */
 const signCommand = ({ signTool, cwd, root }) => `${signTool} ${quote(relPath(cwd, root) || ".")} --sign`;
+
+/** `sign-text <module> --sign --sheet <sheet>`: the person who attests signs a sheet's texts for their authors. */
+const sheetSignCommand = (hint, sheet) => `${signCommand(hint)} --sheet ${quote(relPath(hint.cwd, sheet) || sheet)}`;
 
 /* ----------------------------------------------------------------------------
  * CSV
@@ -795,7 +799,7 @@ function outProblem(m, target, hint) {
   }
   const unsigned = m.mode === "signed" && filled.find((x) => !x.list.every((t) => t.status === "signed"));
   if (unsigned) {
-    return `${target} holds a text in ${unsigned.place} that was imported but is not signed yet: its author signs it first (${signCommand(hint)}), or move the sheet away: a new sheet would list it as a text to write`;
+    return `${target} holds a text in ${unsigned.place} that was imported but is not signed yet: sign it first (${sheetSignCommand(hint, target)}), or move the sheet away: a new sheet would list it as a text to write`;
   }
   for (const col of [...sheet.notes, ...sheet.unknown]) {
     const rows = sheet.records.filter((r) => (r.fields[col.idx] ?? "").trim() !== "").map((r) => r.row);
@@ -1293,7 +1297,7 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
       if (!groupsBy.has(name)) groupsBy.set(name, []);
       if (!groupsBy.get(name).includes(c.row)) groupsBy.get(name).push(c.row);
     }
-    log("by author (import writes it nowhere; each one signs the rows under their name, at their own terminal):");
+    log("by author (import writes it nowhere; sign-text --sheet asks about each row for its author, and records it with the signature):");
     const names = [...groupsBy.keys()].filter((n) => n !== "(no author)");
     for (const name of [...names, ...(groupsBy.has("(no author)") ? ["(no author)"] : [])]) log(`  ${name}: ${rowWord(groupsBy.get(name))}`);
   };
@@ -1320,7 +1324,10 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
   if (resigned) log(`info: ${resigned} of them replace a signed text: its signature no longer matches`);
   byAuthor();
   if (changes.length) {
-    log(`next: sign them yourself at a terminal, each author the texts they wrote, before the next export (no pipe, no redirection): ${signCommand(hint)}`);
+    log(
+      "next: the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row " +
+        `(no pipe, no redirection): ${sheetSignCommand(hint, sheetPath)}`,
+    );
   }
   return result;
 }
