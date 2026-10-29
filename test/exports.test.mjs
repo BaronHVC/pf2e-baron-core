@@ -43,8 +43,8 @@ test("every export except the constants is a function", () => {
   }
 });
 
-test("CORE_VERSION is 1.6.0 and valid SemVer", () => {
-  assert.equal(core.CORE_VERSION, "1.6.0");
+test("CORE_VERSION is 1.7.0 and valid SemVer", () => {
+  assert.equal(core.CORE_VERSION, "1.7.0");
   assert.match(core.CORE_VERSION, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
 });
 

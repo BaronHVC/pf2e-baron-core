@@ -8,6 +8,8 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-10-28
+
 ### Added
 
 - `tools/sign-text.mjs --sign --author <nombre>`: quien da fe de los textos
@@ -588,7 +590,8 @@ indicadas; las referencias son `archivo:líneas` en esa versión.
 - Workflows reutilizables `module-check.yml` y `module-release.yml` (modo
   público; el protegido falla a propósito porque aún no existe).
 
-[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/BaronHVC/pf2e-baron-core/compare/v1.3.0...v1.4.0

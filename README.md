@@ -85,7 +85,7 @@ un clon normal trae las etiquetas que necesita `--online`.
 
 ```sh
 # Vendorizar una versión publicada (etiqueta) o un commit concreto
-node ../pf2e-baron-core/tools/sync-core.mjs --ref v1.6.0
+node ../pf2e-baron-core/tools/sync-core.mjs --ref v1.7.0
 
 # Desarrollo en vivo: copia el core de tu copia de trabajo en cada guardado
 # (deja el lock en "dev"; check-module lo rechaza hasta que corras --ref)
