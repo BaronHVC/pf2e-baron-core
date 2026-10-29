@@ -1,7 +1,8 @@
 // Who wrote each signed text: sign-text --sign --author <name> and --sheet
-// <file.csv>, the human-text-authors.json file next to human-text.json, and
-// what an older core's check-module makes of a module that has one. The terminal is faked
-// as in sign-text.test.mjs: the TTY flag and the answers are injected.
+// <file.csv>, the human-text-authors.json file next to human-text.json (each
+// entry bound to the hash of the signature it was recorded for), and what an
+// older core makes of a module that has one. The terminal is faked as in
+// sign-text.test.mjs: the TTY flag and the answers are injected.
 
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -30,6 +31,7 @@ const ch = (...codes) => String.fromCharCode(...codes);
 const NL = ch(10);
 const oracle = (s) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
 const SIGN_TEXT = path.join(TOOLS, "sign-text.mjs");
+const OPEN = "baron-fixture.Open";
 
 const signedModule = (t, spec = {}) => materialize(t, { ...spec, merge: { "baron.json": { humanText: "signed" }, ...(spec.merge ?? {}) } });
 
@@ -43,12 +45,35 @@ function moduleTexts(dir) {
   };
 }
 const hashesOf = (texts) => Object.fromEntries(Object.entries(texts).map(([f, keys]) => [f, Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, oracle(v)]))]));
-const writeSignatures = (dir, signed) => fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), JSON.stringify({ version: 1, signed }, null, 2) + "\n");
-const writeAuthors = (dir, authors) => fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), JSON.stringify({ version: 1, authors }, null, 2) + "\n");
-const readSigned = (dir) => readJson(dir, HUMAN_TEXT_FILE).signed;
-const readAuthorMap = (dir) => readJson(dir, HUMAN_TEXT_AUTHORS_FILE).authors;
 const exists = (dir, rel) => fs.existsSync(path.join(dir, rel));
 const tmps = (dir) => fs.readdirSync(dir).filter((f) => f.endsWith(".tmp"));
+const writeSignatures = (dir, signed) => fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), JSON.stringify({ version: 1, signed }, null, 2) + "\n");
+const readSigned = (dir) => readJson(dir, HUMAN_TEXT_FILE).signed;
+/** human-text-authors.json as given: file -> key -> { name, sha256 }. */
+const writeAuthorEntries = (dir, authors) => fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), JSON.stringify({ version: 1, authors }, null, 2) + "\n");
+const readAuthorEntries = (dir) => readJson(dir, HUMAN_TEXT_AUTHORS_FILE).authors;
+
+/** Each name of `names` (file -> key -> name) bound to the signature human-text.json holds now for its text; a text it does not sign, to the hash of another value. */
+function writeAuthors(dir, names) {
+  const signed = exists(dir, HUMAN_TEXT_FILE) ? readSigned(dir) : {};
+  const sha = (f, k) => signed[f]?.[k] ?? oracle(`never signed: ${f} ${k}`);
+  writeAuthorEntries(dir, Object.fromEntries(Object.entries(names).map(([f, keys]) => [f, Object.fromEntries(Object.entries(keys).map(([k, name]) => [k, { name, sha256: sha(f, k) }]))])));
+}
+
+/** The names of human-text-authors.json as file -> key -> name, each checked to be bound to the signature human-text.json holds now. */
+function readAuthorMap(dir) {
+  const signed = exists(dir, HUMAN_TEXT_FILE) ? readSigned(dir) : {};
+  const out = {};
+  for (const [f, keys] of Object.entries(readAuthorEntries(dir))) {
+    out[f] = {};
+    for (const [k, e] of Object.entries(keys)) {
+      assert.deepEqual(Object.keys(e), ["name", "sha256"], `${f} ${k}`);
+      assert.equal(e.sha256, signed[f]?.[k], `${f} ${k}: an entry written for another signature than the one human-text.json holds`);
+      out[f][k] = e.name;
+    }
+  }
+  return out;
+}
 
 function fakeAsk(...answers) {
   const asked = [];
@@ -69,27 +94,48 @@ async function run(dir, opts = {}) {
   return { ...res, lines, errors, out: [...lines, ...errors].join(NL) };
 }
 
+/** Every text signed for the fixture's values (human-text.json as sign-text writes it), and recorded as `older`'s when given; en Open now reads `now`. */
+function reSignModule(t, now = "Open now", older = "BaronHVC") {
+  const dir = signedModule(t, { merge: { "lang/en.json": { [OPEN]: now } } });
+  const old = moduleTexts(materialize(t));
+  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), signaturesText(hashesOf(old)));
+  if (older) writeAuthors(dir, Object.fromEntries(Object.entries(old).map(([f, keys]) => [f, Object.fromEntries(Object.keys(keys).map((k) => [k, older]))])));
+  return dir;
+}
+
+/** The author the listing names for a text, or null. */
+const listedAuthor = (listing, file, key) => {
+  const line = listing.lines.find((l) => l.startsWith(`signed    ${file}  ${key}  by `));
+  return line ? JSON.parse(line.slice(line.indexOf("  by ") + 5)) : null;
+};
+// What the listing says of the author records that name nobody.
+const IDLE = (n) =>
+  `info: ${n} author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} name nobody: the signature each one was recorded for changed or is gone; the next --sign that writes that file drops them`;
+
 /* ----------------------------------------------------------------------------
  * The file and the names
  * -------------------------------------------------------------------------- */
 
-test("authorsText writes the authors like human-text.json: keys sorted at every level, two spaces, LF, a final newline", (t) => {
-  const parsed = JSON.parse('{"module.json":{"title":"IAR18","description":"BaronHVC"},"lang/es.json":{"x.B":"IAR18","__proto__":"BaronHVC","2":"IAR18","10":"IAR18"}}');
+test("authorsText writes each entry as name and sha256, keys sorted at every level, two spaces, LF, a final newline", (t) => {
+  const H = oracle("x");
+  const e = (name) => ({ sha256: H, name });
+  const parsed = { "module.json": { title: e("IAR18"), description: e("BaronHVC") }, "lang/es.json": JSON.parse(`{"x.B":{"name":"IAR18","sha256":"${H}"},"__proto__":{"name":"BaronHVC","sha256":"${H}"},"2":{"name":"IAR18","sha256":"${H}"},"10":{"name":"IAR18","sha256":"${H}"}}`) };
   const text = authorsText(parsed);
+  const entry = (indent, key, name, last) => [`${indent}"${key}": {`, `${indent}  "name": "${name}",`, `${indent}  "sha256": "${H}"`, `${indent}}${last ? "" : ","}`];
   assert.equal(
     text,
     [
       "{",
       '  "authors": {',
       '    "lang/es.json": {',
-      '      "10": "IAR18",',
-      '      "2": "IAR18",',
-      '      "__proto__": "BaronHVC",',
-      '      "x.B": "IAR18"',
+      ...entry("      ", "10", "IAR18"),
+      ...entry("      ", "2", "IAR18"),
+      ...entry("      ", "__proto__", "BaronHVC"),
+      ...entry("      ", "x.B", "IAR18", true),
       "    },",
       '    "module.json": {',
-      '      "description": "BaronHVC",',
-      '      "title": "IAR18"',
+      ...entry("      ", "description", "BaronHVC"),
+      ...entry("      ", "title", "IAR18", true),
       "    }",
       "  },",
       '  "version": 1',
@@ -100,7 +146,7 @@ test("authorsText writes the authors like human-text.json: keys sorted at every 
   assert.ok(!text.includes(ch(13)));
   // A name outside ASCII is written as it is, in UTF-8.
   const accented = `Iv${ch(0xe1)}n`;
-  assert.ok(authorsText({ "lang/en.json": { a: accented } }).includes(`"a": "${accented}"`));
+  assert.ok(authorsText({ "lang/en.json": { a: { name: accented, sha256: H } } }).includes(`"name": "${accented}"`));
   assert.equal(authorsText({}), `{${NL}  "authors": {},${NL}  "version": 1${NL}}${NL}`);
   const dir = materialize(t);
   fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), text);
@@ -135,8 +181,12 @@ test("an author name is trimmed and has 1 to 60 characters, none of them a contr
 });
 
 test("authorsProblem refuses every other shape of human-text-authors.json", () => {
+  const H = oracle("x");
+  const one = (entry) => ({ version: 1, authors: { "lang/en.json": { a: entry } } });
   assert.equal(authorsProblem({ version: 1, authors: {} }), null);
-  assert.equal(authorsProblem({ version: 1, authors: { "lang/en.json": { a: "IAR18" } } }), null);
+  assert.equal(authorsProblem(one({ name: "IAR18", sha256: H })), null);
+  assert.equal(authorsProblem(one({ sha256: H, name: "IAR18" })), null);
+  const AT = 'has authors["lang/en.json"]["a"]';
   for (const [data, reason] of [
     [[], "must hold a JSON object"],
     [null, "must hold a JSON object"],
@@ -146,9 +196,20 @@ test("authorsProblem refuses every other shape of human-text-authors.json", () =
     [{ version: 1, authors: [] }, 'needs "authors" to be an object of files'],
     [{ version: 1, authors: {}, signed: {} }, 'has unknown key(s) "signed"'],
     [{ version: 1, authors: { "lang/en.json": "IAR18" } }, 'has authors["lang/en.json"] that is not an object of keys'],
-    [{ version: 1, authors: { "lang/en.json": { a: "" } } }, 'has authors["lang/en.json"]["a"] that is not an author name (is empty'],
-    [{ version: 1, authors: { "lang/en.json": { a: " IAR18" } } }, 'has authors["lang/en.json"]["a"] that is not an author name (spaces at an end)'],
-    [{ version: 1, authors: { "lang/en.json": { a: 18 } } }, 'has authors["lang/en.json"]["a"] that is not an author name (must be a name)'],
+    // The format before the entries were bound to their signature: a bare name.
+    [one("IAR18"), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one(null), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one([]), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one({ name: "IAR18" }), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one({ sha256: H }), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one({ name: "IAR18", sha256: H, at: "2026" }), `${AT} that is not an object with exactly "name" and "sha256"`],
+    [one({ name: "", sha256: H }), `${AT}.name that is not an author name (is empty`],
+    [one({ name: " IAR18", sha256: H }), `${AT}.name that is not an author name (spaces at an end)`],
+    [one({ name: 18, sha256: H }), `${AT}.name that is not an author name (must be a name)`],
+    [one({ name: "IAR18", sha256: H.toUpperCase() }), `${AT}.sha256 that is not a sha256 (64 lowercase hex characters)`],
+    [one({ name: "IAR18", sha256: H.slice(1) }), `${AT}.sha256 that is not a sha256`],
+    [one({ name: "IAR18", sha256: `${H}0` }), `${AT}.sha256 that is not a sha256`],
+    [one({ name: "IAR18", sha256: null }), `${AT}.sha256 that is not a sha256`],
   ]) {
     const problem = authorsProblem(data);
     assert.ok(problem?.startsWith(reason), `${JSON.stringify(data)}: ${problem}`);
@@ -159,7 +220,7 @@ test("authorsProblem refuses every other shape of human-text-authors.json", () =
  * --author
  * -------------------------------------------------------------------------- */
 
-test("--author asks whether that person wrote each text, and records the name with each signature it gives", async (t) => {
+test("--author asks whether that person wrote each text, and records the name with each signature it gives, bound to its hash", async (t) => {
   const dir = signedModule(t);
   const fake = fakeAsk("s", "n", "S", "q");
   const res = await run(dir, { sign: true, author: "  IAR18 ", isTTY: true, ask: fake.ask });
@@ -174,15 +235,35 @@ test("--author asks whether that person wrote each text, and records the name wi
   assert.deepEqual(res.lines.slice(at, at + AUTHOR_LEGEND.length), AUTHOR_LEGEND);
   assert.ok(!res.lines.includes(LEGEND[0]), res.out);
 
-  const expected = { "module.json": { title: oracle("Baron Fixture") }, "lang/en.json": { "baron-fixture.Title": oracle("Baron Fixture") } };
+  const H = oracle("Baron Fixture");
+  const expected = { "module.json": { title: H }, "lang/en.json": { "baron-fixture.Title": H } };
   assert.deepEqual(readSigned(dir), expected);
   // human-text.json is the file plain --sign writes, byte for byte.
   assert.equal(readText(dir, HUMAN_TEXT_FILE), signaturesText(expected));
   assert.equal(
     readText(dir, HUMAN_TEXT_AUTHORS_FILE),
-    ["{", '  "authors": {', '    "lang/en.json": {', '      "baron-fixture.Title": "IAR18"', "    },", '    "module.json": {', '      "title": "IAR18"', "    }", "  },", '  "version": 1', "}", ""].join(NL),
+    [
+      "{",
+      '  "authors": {',
+      '    "lang/en.json": {',
+      '      "baron-fixture.Title": {',
+      '        "name": "IAR18",',
+      `        "sha256": "${H}"`,
+      "      }",
+      "    },",
+      '    "module.json": {',
+      '      "title": {',
+      '        "name": "IAR18",',
+      `        "sha256": "${H}"`,
+      "      }",
+      "    }",
+      "  },",
+      '  "version": 1',
+      "}",
+      "",
+    ].join(NL),
   );
-  assert.deepEqual({ signed: res.signed, skipped: res.skipped, wrote: res.wrote, wroteAuthors: res.wroteAuthors }, { signed: 2, skipped: 1, wrote: true, wroteAuthors: true });
+  assert.deepEqual({ signed: res.signed, recorded: res.recorded, skipped: res.skipped, wrote: res.wrote, wroteAuthors: res.wroteAuthors }, { signed: 2, recorded: 0, skipped: 1, wrote: true, wroteAuthors: true });
   assert.ok(res.lines.includes("sign-text: 2 signed, 1 skipped, stopped with 11 left; wrote human-text.json and human-text-authors.json"), res.out);
   assert.ok(res.lines.includes('sign-text: authors recorded with the signatures of this run: "IAR18" 2'), res.out);
   assert.deepEqual(tmps(dir), []);
@@ -214,7 +295,7 @@ test("--author: a wrong answer asks again, naming the author", async (t) => {
   assert.deepEqual(readAuthorMap(dir), { "module.json": { title: "IAR18" } });
 });
 
-test("plain --sign records no author, and drops the older author of a text it signs again", async (t) => {
+test("plain --sign records no author: a text it signs again loses the author of its older signature", async (t) => {
   const dir = signedModule(t, { merge: { "lang/es.json": { "baron-fixture.Open": "Abrir el panel", "baron-fixture.Notice": "Aviso nuevo" } } });
   writeSignatures(dir, hashesOf(moduleTexts(materialize(t))));
   writeAuthors(dir, { "lang/es.json": { "baron-fixture.Open": "IAR18", "baron-fixture.Notice": "IAR18", "baron-fixture.Title": "IAR18" } });
@@ -223,13 +304,13 @@ test("plain --sign records no author, and drops the older author of a text it si
   const res = await run(dir, { sign: true, isTTY: true, ask: fake.ask });
   assert.deepEqual(fake.asked, [QUESTION, QUESTION]);
   assert.equal(readSigned(dir)["lang/es.json"]["baron-fixture.Open"], oracle("Abrir el panel"));
-  // Open lost its author; Notice keeps the author of the signature it still has; Title is untouched.
-  assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Notice": "IAR18", "baron-fixture.Title": "IAR18" } });
+  // Open lost its author; Notice's entry named nobody (its signature is not valid) and goes with the write; Title stays.
+  assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Title": "IAR18" } });
   assert.equal(res.wroteAuthors, true);
   assert.ok(res.lines.includes("sign-text: 1 signed, 1 skipped; wrote human-text.json and human-text-authors.json"), res.out);
 
-  // --author on a changed text replaces the author of the older signature.
-  const again = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s").ask });
+  // --author on a changed text records the new author for the new signature.
+  const again = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "q").ask });
   assert.equal(again.signed, 1, again.out);
   assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Notice": "BaronHVC", "baron-fixture.Title": "IAR18" } });
 
@@ -241,7 +322,7 @@ test("plain --sign records no author, and drops the older author of a text it si
   assert.equal(readText(solo, HUMAN_TEXT_AUTHORS_FILE), authorsText({}));
 });
 
-test("--sign drops the author entries of the stale signatures it drops, even with nothing to ask", async (t) => {
+test("a run that writes human-text.json drops the author entries that name nobody; a run that gives nothing writes nothing", async (t) => {
   const dir = signedModule(t);
   const signed = hashesOf(moduleTexts(dir));
   signed["lang/en.json"]["baron-fixture.Gone"] = oracle("Gone");
@@ -250,7 +331,7 @@ test("--sign drops the author entries of the stale signatures it drops, even wit
   writeAuthors(dir, {
     "lang/en.json": { "baron-fixture.Gone": "IAR18", "baron-fixture.Open": "IAR18" },
     "lang/fr.json": { "baron-fixture.Open": "IAR18" },
-    // An author entry with no signature at all describes nothing.
+    // An author entry with no signature at all names nobody.
     "lang/es.json": { "baron-fixture.Never": "IAR18" },
   });
   const res = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
@@ -259,44 +340,29 @@ test("--sign drops the author entries of the stale signatures it drops, even wit
   assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "IAR18" } });
   assert.ok(res.lines.includes("sign-text: 0 signed, 0 skipped, 2 stale signature(s) removed; wrote human-text.json and human-text-authors.json"), res.out);
 
-  // Nothing to sign and nothing stale: human-text.json is not touched, and the
-  // entry without a signature still goes, as the listing says --sign does.
+  // Nothing to sign and nothing stale: neither file is touched, and the entry that names nobody stays until a write.
   writeAuthors(dir, { "lang/en.json": { "baron-fixture.Open": "IAR18" }, "lang/es.json": { "baron-fixture.Never": "IAR18" } });
   const listed = await run(dir);
-  assert.ok(listed.lines.includes(`info: 1 author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; --sign removes them`), listed.out);
-  const signatures = readText(dir, HUMAN_TEXT_FILE);
-  const idle = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
-  assert.deepEqual({ wrote: idle.wrote, wroteAuthors: idle.wroteAuthors }, { wrote: false, wroteAuthors: true });
-  assert.equal(readText(dir, HUMAN_TEXT_FILE), signatures);
-  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), authorsText({ "lang/en.json": { "baron-fixture.Open": "IAR18" } }));
-  assert.ok(idle.lines.includes(`sign-text: 0 signed, 0 skipped; human-text.json unchanged; removed 1 author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE}`), idle.out);
-  assert.deepEqual(tmps(dir), []);
-  const after = await run(dir);
-  assert.ok(!after.out.includes("have no signature"), after.out);
-  // With nothing left to drop, neither file is touched.
+  assert.ok(listed.lines.includes(IDLE(1)), listed.out);
   const both = [readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)];
-  const again = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
-  assert.deepEqual({ wrote: again.wrote, wroteAuthors: again.wroteAuthors }, { wrote: false, wroteAuthors: false });
+  for (const answers of [[], ["q"]]) {
+    const idle = await run(dir, { sign: true, isTTY: true, ask: fakeAsk(...answers).ask });
+    assert.deepEqual({ wrote: idle.wrote, wroteAuthors: idle.wroteAuthors }, { wrote: false, wroteAuthors: false });
+    assert.ok(idle.lines.includes("sign-text: 0 signed, 0 skipped; human-text.json unchanged"), idle.out);
+  }
+  // --author with every answer "n" writes nothing either.
+  const skipped = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk(...Array(14).fill("n")).ask });
+  assert.equal(skipped.skipped, 13, skipped.out);
   assert.deepEqual([readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)], both);
-  // Held by another program: a warning, nothing else changes, no temporary file left.
-  writeAuthors(dir, { "lang/en.json": { "baron-fixture.Open": "IAR18" }, "lang/es.json": { "baron-fixture.Never": "IAR18" } });
-  const held = readText(dir, HUMAN_TEXT_AUTHORS_FILE);
-  const busy = t.mock.method(fs, "renameSync", () => {
-    throw Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
-  });
-  const blocked = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
-  busy.mock.restore();
-  assert.equal(blocked.wroteAuthors, false);
-  assert.ok(blocked.lines.includes(`warn: could not remove the 1 author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE} (EBUSY): the next --sign tries again`), blocked.out);
-  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), held);
   assert.deepEqual(tmps(dir), []);
 
-  // Without human-text.json (it may be lost) an idle --sign drops nothing, and the listing says when they go.
+  // Without human-text.json (it may be lost) no entry counts, the listing says so, and an idle --sign touches nothing.
   fs.rmSync(path.join(dir, HUMAN_TEXT_FILE));
   const noFile = await run(dir);
-  assert.ok(noFile.lines.includes(`info: 2 author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; the first --sign that saves a signature removes them (if ${HUMAN_TEXT_FILE} was lost, restore it from git together with ${HUMAN_TEXT_AUTHORS_FILE}, both from one commit)`), noFile.out);
+  assert.ok(noFile.lines.includes(`${IDLE(2)} (if ${HUMAN_TEXT_FILE} was lost, restore it from git first)`), noFile.out);
+  assert.ok(!noFile.out.includes("  by "), noFile.out);
   await run(dir, { sign: true, isTTY: true, ask: fakeAsk("q").ask });
-  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), held);
+  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), both[1]);
 });
 
 test("--sign never creates the authors file when no signature records an author", async (t) => {
@@ -319,115 +385,459 @@ test("Ctrl+C leaves human-text.json and human-text-authors.json exactly as they 
   const interrupted = new Error("Ctrl+C");
   await assert.rejects(run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "s", interrupted).ask }), interrupted);
   assert.equal(interrupted.signedBeforeStop, 2);
+  assert.equal(interrupted.recordedBeforeStop, 0);
   assert.deepEqual([readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)], before);
   assert.deepEqual(tmps(dir), []);
 });
 
-test("the two files change in one step: a failed rename puts back what was replaced and keeps both new contents", async (t) => {
-  const dir = signedModule(t);
-  writeSignatures(dir, { "module.json": { title: oracle("Baron Fixture") } });
-  writeAuthors(dir, { "module.json": { title: "IAR18" } });
-  const before = [fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)), fs.readFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE))];
-  const realRename = fs.renameSync;
-  const busy = Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
-  const order = [];
-  // Only an entry is added: human-text.json goes first, and stays held.
-  const held = t.mock.method(fs, "renameSync", (from, to) => {
-    order.push(path.basename(to));
-    if (path.basename(to) === HUMAN_TEXT_FILE) throw busy;
-    return realRename(from, to);
-  });
-  let message = "";
-  await assert.rejects(run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "q").ask }), (err) => {
-    message = err.message;
-    return err instanceof SignTextError;
-  });
-  held.mock.restore();
-  assert.deepEqual(order, Array(10).fill(HUMAN_TEXT_FILE));
-  // Both files are as they were, and both new contents wait next to them.
-  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)).equals(before[0]));
-  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE)).equals(before[1]));
-  const tmpH = path.join(dir, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`);
-  const tmpA = path.join(dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
-  assert.deepEqual(tmps(dir).sort(), [path.basename(tmpA), path.basename(tmpH)].sort());
-  const description = readJson(dir, "module.json").description;
-  assert.deepEqual(JSON.parse(fs.readFileSync(tmpH, "utf8")).signed, { "module.json": { title: oracle("Baron Fixture"), description: oracle(description) } });
-  assert.deepEqual(JSON.parse(fs.readFileSync(tmpA, "utf8")).authors, { "module.json": { title: "IAR18", description: "BaronHVC" } });
-  for (const words of [
-    `could not replace ${path.join(dir, HUMAN_TEXT_FILE)} (EBUSY: another program may have it open`,
-    "Nothing was changed: close that program and run --sign again, after deleting the temporary files of this run; ",
-    `or, to keep the 1 signature(s) given in this run, rename these files in this order: ${tmpH} over ${HUMAN_TEXT_FILE}, then ${tmpA} over ${HUMAN_TEXT_AUTHORS_FILE}`,
-  ]) {
-    assert.ok(message.includes(words), `${words}${NL}${message}`);
-  }
-  fs.rmSync(tmpH);
-  fs.rmSync(tmpA);
-
-  // The authors file held after human-text.json landed: human-text.json is put back (here: removed again).
-  const fresh = signedModule(t);
-  const held2 = t.mock.method(fs, "renameSync", (from, to) => {
-    if (path.basename(to) === HUMAN_TEXT_AUTHORS_FILE) throw busy;
-    return realRename(from, to);
-  });
-  await assert.rejects(run(fresh, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", "q").ask }), (err) => err instanceof SignTextError && /^could not replace .*human-text-authors\.json .*Nothing was changed/.test(err.message));
-  held2.mock.restore();
-  assert.ok(!exists(fresh, HUMAN_TEXT_FILE) && !exists(fresh, HUMAN_TEXT_AUTHORS_FILE));
-  assert.deepEqual(tmps(fresh).sort(), [`.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`]);
-  assert.deepEqual(JSON.parse(readText(fresh, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`)).signed, { "module.json": { title: oracle("Baron Fixture") } });
-
-  // Three steps (an author replaced): the authors file without that entry, human-text.json, the new entry.
-  // human-text.json held: the authors file is put back, and every content waits, the intermediate one too.
-  const three = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Open": "Open now" } } });
-  writeSignatures(three, hashesOf(moduleTexts(signedModule(t))));
-  writeAuthors(three, { "lang/en.json": { "baron-fixture.Open": "BaronHVC", "baron-fixture.Title": "IAR18" } });
-  const before3 = [fs.readFileSync(path.join(three, HUMAN_TEXT_FILE)), fs.readFileSync(path.join(three, HUMAN_TEXT_AUTHORS_FILE))];
-  const order3 = [];
-  const held3 = t.mock.method(fs, "renameSync", (from, to) => {
-    order3.push(`${path.basename(from).includes(".part.") ? "part " : ""}${path.basename(to)}`);
-    if (path.basename(to) === HUMAN_TEXT_FILE) throw busy;
-    return realRename(from, to);
-  });
-  await assert.rejects(run(three, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), SignTextError);
-  held3.mock.restore();
-  assert.deepEqual(order3, [`part ${HUMAN_TEXT_AUTHORS_FILE}`, ...Array(10).fill(HUMAN_TEXT_FILE), HUMAN_TEXT_AUTHORS_FILE]);
-  assert.ok(fs.readFileSync(path.join(three, HUMAN_TEXT_FILE)).equals(before3[0]));
-  assert.ok(fs.readFileSync(path.join(three, HUMAN_TEXT_AUTHORS_FILE)).equals(before3[1]));
-  const THREE_TMPS = [`.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.part.tmp`, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`];
-  assert.deepEqual(tmps(three).sort(), THREE_TMPS);
-  assert.deepEqual(JSON.parse(readText(three, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`)).authors, { "lang/en.json": { "baron-fixture.Open": "IAR18", "baron-fixture.Title": "IAR18" } });
-  // The first rename itself held: nothing changed, and every content waits.
-  for (const name of THREE_TMPS) fs.rmSync(path.join(three, name));
-  const held4 = t.mock.method(fs, "renameSync", (from, to) => {
-    if (path.basename(from).includes(".part.")) throw busy;
-    return realRename(from, to);
-  });
-  await assert.rejects(run(three, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), SignTextError);
-  held4.mock.restore();
-  assert.ok(fs.readFileSync(path.join(three, HUMAN_TEXT_FILE)).equals(before3[0]));
-  assert.ok(fs.readFileSync(path.join(three, HUMAN_TEXT_AUTHORS_FILE)).equals(before3[1]));
-  assert.deepEqual(tmps(three).sort(), THREE_TMPS);
-
-  // A temporary file that cannot be written: nothing changes and nothing is left behind.
-  const realWrite = fs.writeFileSync;
-  const full = t.mock.method(fs, "writeFileSync", (file, ...rest) => {
-    if (String(file).endsWith(`.${HUMAN_TEXT_FILE}.${process.pid}.tmp`)) throw Object.assign(new Error("ENOSPC: full"), { code: "ENOSPC" });
-    return realWrite(file, ...rest);
-  });
-  await assert.rejects(run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "q").ask }), (err) => err instanceof SignTextError && /human-text\.json and human-text-authors\.json are unchanged, and the 1 signature\(s\) given in this run were not saved/.test(err.message));
-  full.mock.restore();
-  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)).equals(before[0]));
-  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE)).equals(before[1]));
-  assert.deepEqual(tmps(dir), []);
-});
-
 test("a malformed human-text-authors.json stops the tool, listing too, without touching anything", async (t) => {
-  for (const text of ['{"version": 1, "authors": {"lang/en.json": {"a": ""}}}\n', "{ not json", '{"version": 2, "authors": {}}']) {
+  const H = oracle("x");
+  for (const text of [
+    '{"version": 1, "authors": {"lang/en.json": {"a": {"name": "", "sha256": "' + H + '"}}}}\n',
+    // The format before the entries were bound to their signature.
+    '{"version": 1, "authors": {"lang/en.json": {"a": "IAR18"}}}\n',
+    "{ not json",
+    '{"version": 2, "authors": {}}',
+  ]) {
     const dir = signedModule(t, { write: { [HUMAN_TEXT_AUTHORS_FILE]: text } });
     for (const sign of [false, true]) {
-      await assert.rejects(run(dir, { sign, isTTY: true, ask: fakeAsk("s").ask }), (err) => err instanceof SignTextError && err.message.startsWith(`${HUMAN_TEXT_AUTHORS_FILE} `) && /restore it from git/.test(err.message));
+      await assert.rejects(
+        run(dir, { sign, isTTY: true, ask: fakeAsk("s").ask }),
+        (err) => err instanceof SignTextError && err.message.startsWith(`${HUMAN_TEXT_AUTHORS_FILE} `) && err.message.endsWith(": restore it from git (deleting it forgets who wrote each signed text)"),
+      );
     }
     assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), text);
     assert.ok(!exists(dir, HUMAN_TEXT_FILE));
+  }
+  // A broken human-text.json says what v1.6.0 says: each file is restored on its own.
+  const dir = reSignModule(t, "Open");
+  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), "{ not json");
+  await assert.rejects(run(dir), (err) => err instanceof SignTextError && err.message.endsWith(": restore it from git, or delete it and sign every text again"));
+});
+
+/* ----------------------------------------------------------------------------
+ * Which entries count
+ * -------------------------------------------------------------------------- */
+
+test("an entry counts only when its text is validly signed with the very hash it was recorded for: every reader ignores the others", async (t) => {
+  // Everything signed for the fixture's values; en Open now reads "Open now", es Notice lost its signature.
+  const dir = reSignModule(t, "Open now", null);
+  const signed = readSigned(dir);
+  delete signed["lang/es.json"]["baron-fixture.Notice"];
+  signed["lang/en.json"]["baron-fixture.Gone"] = oracle("Gone");
+  writeSignatures(dir, signed);
+  const H = (v) => oracle(v);
+  writeAuthorEntries(dir, {
+    // Counts: validly signed, with this hash.
+    "lang/en.json": {
+      "baron-fixture.Title": { name: "IAR18", sha256: H("Baron Fixture") },
+      // A stale hash: the signature is valid, but for another value than the one this entry was recorded for.
+      "baron-fixture.Notice": { name: "iar18", sha256: H("Notice, as it read before") },
+      // The hash of the signature, but the signature is not valid: the text changed since.
+      [OPEN]: { name: "BaronHVC", sha256: H("Open") },
+      // Its key is gone, and so is the text.
+      "baron-fixture.Gone": { name: "IAR18", sha256: H("Gone") },
+      // Counts.
+      "baron-fixture.Kind_b": { name: "BaronHVC", sha256: H("Kind B") },
+      // A stale hash again.
+      "baron-fixture.Kind_a": { name: "IAR18", sha256: H("Kind A, as it read before") },
+    },
+    // No signature at all.
+    "lang/es.json": { "baron-fixture.Notice": { name: "BaronHVC", sha256: H("Aviso") } },
+  });
+
+  // The listing: two authors, a count of the rest, and one line for the entries that name nobody.
+  const listing = await run(dir);
+  assert.deepEqual(
+    listing.lines.filter((l) => l.includes("  by ")),
+    ['signed    lang/en.json  baron-fixture.Title  by "IAR18"', 'signed    lang/en.json  baron-fixture.Kind_b  by "BaronHVC"'],
+  );
+  assert.ok(listing.lines.includes('sign-text: authors of the 12 signed text(s): "BaronHVC" 1, "IAR18" 1; 10 with no author recorded'), listing.out);
+  assert.ok(listing.lines.includes(IDLE(5)), listing.out);
+  // Never a value or a name of an entry that names nobody.
+  assert.ok(!listing.out.includes("iar18") && !listing.out.includes("as it read before"), listing.out);
+
+  // --author: en Notice (stale hash) is asked about as a text with no author; Kind_b is BaronHVC's, so not asked;
+  // the stale "iar18" is no recorded name, so no case warning.
+  const fake = fakeAsk("q");
+  const byAuthor = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fake.ask });
+  assert.ok(byAuthor.lines.includes('info: 1 signed text(s) whose recorded author is not "IAR18": not asked (sign-text never changes the author of a valid signature)'), byAuthor.out);
+  assert.ok(!byAuthor.out.includes("differ only in case"), byAuthor.out);
+  // Pending first (en Open, es Notice), then each signed text with no author that counts (10 of them).
+  assert.ok(byAuthor.lines.includes("[1/12] lang/en.json  baron-fixture.Open  (changed since it was signed)"), byAuthor.out);
+
+  // --sheet: rows that would be "another author" or "replaces a text signed by" if those entries counted.
+  const sheet = writeSheet(dir, [
+    ["baron-fixture.Notice", "Notice", "", "BaronHVC"],
+    ["baron-fixture.Kind_a", "Kind A, again", "", "IAR18"],
+    ["baron-fixture.Kind_b", "Kind B", "", "IAR18"],
+  ]);
+  const bySheet = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fakeAsk("q").ask });
+  for (const line of [
+    'sheet: hoja.csv: 1 text(s) to ask about (1 of them signed with no author recorded: s records it), each for the author of its row ("BaronHVC" 1)',
+    "[1/1] lang/en.json  baron-fixture.Notice  (signed, with no author recorded)  (sheet row 2)",
+    REPLACES(1),
+    "  row 3  en  baron-fixture.Kind_a -> lang/en.json  (no author recorded)",
+    OTHER_AUTHOR(1),
+    '  row 4  en  baron-fixture.Kind_b  (sheet "IAR18", recorded "BaronHVC")',
+  ]) {
+    assert.ok(bySheet.lines.includes(line), `${line}${NL}${bySheet.out}`);
+  }
+
+  // A run that writes the files keeps the two entries that count and drops the five others.
+  const signs = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", "q").ask });
+  assert.equal(signs.signed, 1, signs.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Title": "IAR18", "baron-fixture.Kind_b": "BaronHVC", [OPEN]: "IAR18" } });
+  assert.ok(!(await run(dir)).out.includes("name nobody"));
+});
+
+/* ----------------------------------------------------------------------------
+ * Recording the author of a text already signed
+ * -------------------------------------------------------------------------- */
+
+test("--author asks about a validly signed text with no author after the texts to sign, and s records it without rewriting human-text.json", async (t) => {
+  // Every text signed, with no author (plain --sign, or a core older than v1.7.0); en Open and en Notice recorded.
+  const dir = reSignModule(t, "Open", null);
+  writeAuthors(dir, { "lang/en.json": { [OPEN]: "IAR18", "baron-fixture.Notice": "BaronHVC" } });
+  const signatures = fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE));
+  const fake = fakeAsk("n", "s", "s", "q");
+  const res = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fake.ask });
+  assert.equal(res.code, 0, res.out);
+  assert.deepEqual(fake.asked, Array(4).fill(authorQuestion("IAR18")));
+  // The legend says what s does for such a text, and each question says it is signed.
+  assert.ok(res.lines.includes(`Each signature records its author in ${HUMAN_TEXT_AUTHORS_FILE}; for a text already signed with no author, s records that author.`), res.out);
+  for (const line of ["[1/12] module.json  title  (signed, with no author recorded)", "[2/12] module.json  description  (signed, with no author recorded)", "[3/12] lang/en.json  baron-fixture.Title  (signed, with no author recorded)"]) {
+    assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
+  }
+  // IAR18's own en Open is done; BaronHVC's en Notice is reported, never asked.
+  assert.ok(!res.out.includes(`lang/en.json  ${OPEN}  (signed`) && !res.out.includes("baron-fixture.Notice  (signed"), res.out);
+  assert.ok(res.lines.includes('info: 1 signed text(s) whose recorded author is not "IAR18": not asked (sign-text never changes the author of a valid signature)'), res.out);
+  assert.deepEqual({ signed: res.signed, recorded: res.recorded, skipped: res.skipped, wrote: res.wrote, wroteAuthors: res.wroteAuthors }, { signed: 0, recorded: 2, skipped: 1, wrote: false, wroteAuthors: true });
+  assert.ok(res.lines.includes("sign-text: 0 signed, 2 author(s) recorded for signed text(s), 1 skipped, stopped with 9 left; human-text.json unchanged; wrote human-text-authors.json"), res.out);
+  assert.ok(res.lines.includes('sign-text: authors recorded with the signatures of this run: "IAR18" 2'), res.out);
+  // human-text.json is not rewritten: the same bytes.
+  assert.ok(fs.readFileSync(path.join(dir, HUMAN_TEXT_FILE)).equals(signatures));
+  assert.deepEqual(readAuthorMap(dir), {
+    "module.json": { description: "IAR18" },
+    "lang/en.json": { [OPEN]: "IAR18", "baron-fixture.Notice": "BaronHVC", "baron-fixture.Title": "IAR18" },
+  });
+  assert.deepEqual(tmps(dir), []);
+
+  // A pending text is asked before them; the summary counts both kinds.
+  fs.writeFileSync(path.join(dir, "lang", "en.json"), JSON.stringify({ ...readJson(dir, "lang", "en.json"), "baron-fixture.Kind_a": "Kind A, rewritten" }, null, 2) + "\n");
+  const mixed = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", "s", "q").ask });
+  assert.ok(mixed.lines.includes("[1/10] lang/en.json  baron-fixture.Kind_a  (changed since it was signed)"), mixed.out);
+  assert.ok(mixed.lines.includes("[2/10] module.json  title  (signed, with no author recorded)"), mixed.out);
+  assert.ok(mixed.lines.includes("sign-text: 1 signed, 1 author(s) recorded for signed text(s), 0 skipped, stopped with 8 left; wrote human-text.json and human-text-authors.json"), mixed.out);
+  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Kind_a"], "IAR18");
+
+  // Plain --sign never asks about a validly signed text, as before.
+  const plain = fakeAsk();
+  assert.equal((await run(dir, { sign: true, isTTY: true, ask: plain.ask })).code, 0);
+  assert.deepEqual(plain.asked, []);
+
+  // Ctrl+C says how many records it threw away.
+  const interrupted = new Error("Ctrl+C");
+  await assert.rejects(run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", interrupted).ask }), interrupted);
+  assert.deepEqual([interrupted.signedBeforeStop, interrupted.recordedBeforeStop], [0, 1]);
+});
+
+test("--sheet asks about a validly signed text with no author as about a pending one, only when its cell is the value and every row names the same valid author", async (t) => {
+  const dir = reSignModule(t, "Open", null);
+  writeAuthors(dir, { "lang/en.json": { "baron-fixture.Kind_b": "BaronHVC" } });
+  const sheet = pageSheet(dir, "IAR18", {
+    [OPEN]: { en: "Open" },
+    "baron-fixture.Notice": { en: "Notice" },
+    "baron-fixture.Title": { en: "Another title" },
+    "baron-fixture.Kind_b": { en: "Kind B" },
+  });
+  const signatures = readText(dir, HUMAN_TEXT_FILE);
+  const fake = fakeAsk("s", "s");
+  const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
+  assert.deepEqual(fake.asked, [authorQuestion("IAR18"), authorQuestion("IAR18")], res.out);
+  for (const line of [
+    'sheet: textos-hoja-IAR18.csv: 2 text(s) to ask about (2 of them signed with no author recorded: s records it), each for the author of its row ("IAR18" 2)',
+    "[1/2] lang/en.json  baron-fixture.Open  (signed, with no author recorded)  (sheet row 2)",
+    "[2/2] lang/en.json  baron-fixture.Notice  (signed, with no author recorded)  (sheet row 3)",
+    // A cell that is not the module's value is never asked about.
+    REPLACES(1),
+    "  row 4  en  baron-fixture.Title -> lang/en.json  (no author recorded)",
+    OTHER_AUTHOR(1),
+    '  row 5  en  baron-fixture.Kind_b  (sheet "IAR18", recorded "BaronHVC")',
+    "sign-text: 0 signed, 2 author(s) recorded for signed text(s), 0 skipped; human-text.json unchanged; wrote human-text-authors.json",
+  ]) {
+    assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
+  }
+  assert.equal(readText(dir, HUMAN_TEXT_FILE), signatures);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { [OPEN]: "IAR18", "baron-fixture.Notice": "IAR18", "baron-fixture.Kind_b": "BaronHVC" } });
+  // Run again: both are done now.
+  const again = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fakeAsk().ask });
+  assert.ok(again.lines.includes("info: 2 cell(s) already validly signed: not asked"), again.out);
+
+  // Two rows with two authors for a text with no author, or a row without one: never asked.
+  const mixed = reSignModule(t, "Open", null);
+  writeSheet(mixed, [
+    ["baron-fixture.Notice", "Notice", "", "BaronHVC"],
+    ["baron-fixture.Notice", "Notice", "", "IAR18"],
+    ["baron-fixture.Kind_a", "Kind A", "", ""],
+  ]);
+  const none = fakeAsk();
+  const skip = await run(mixed, { sign: true, sheet: "hoja.csv", cwd: mixed, isTTY: true, ask: none.ask });
+  assert.deepEqual(none.asked, [], skip.out);
+  assert.ok(skip.out.includes("info: 2 cell(s) that give one text with different authors: keep one row for it; not asked:"), skip.out);
+  assert.ok(skip.out.includes('info: 1 cell(s) in rows without an author: write in "author" the name of the person who wrote each one'), skip.out);
+  assert.ok(!exists(mixed, HUMAN_TEXT_AUTHORS_FILE), skip.out);
+});
+
+/* ----------------------------------------------------------------------------
+ * Writing the two files
+ * -------------------------------------------------------------------------- */
+
+test("each file is written on its own, the authors first; a rename that fails leaves no temporary file and says the signatures were not saved", async (t) => {
+  const realRename = fs.renameSync;
+  const busy = Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
+  // en Open was signed as "Open" by BaronHVC; it now reads "Open now", and IAR18 signs it.
+  const setup = () => {
+    const dir = reSignModule(t);
+    return { dir, before: [readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)] };
+  };
+  // The order: the authors file, then human-text.json.
+  const ok = setup();
+  const order = [];
+  const watch = t.mock.method(fs, "renameSync", (from, to) => {
+    order.push(path.basename(to));
+    return realRename(from, to);
+  });
+  await run(ok.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask });
+  watch.mock.restore();
+  assert.deepEqual(order, [HUMAN_TEXT_AUTHORS_FILE, HUMAN_TEXT_FILE]);
+
+  // The authors file held: nothing changed.
+  const a = setup();
+  const heldA = t.mock.method(fs, "renameSync", (from, to) => (path.basename(to) === HUMAN_TEXT_AUTHORS_FILE ? (() => { throw busy; })() : realRename(from, to)));
+  let message = "";
+  await assert.rejects(run(a.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  heldA.mock.restore();
+  assert.equal(message, `could not replace ${path.join(a.dir, HUMAN_TEXT_AUTHORS_FILE)} (EBUSY: another program may have it open, such as an editor, a sync client or an antivirus scan): nothing was changed, and the 1 signature(s) given in this run were not saved; run --sign again`);
+  assert.deepEqual([readText(a.dir, HUMAN_TEXT_FILE), readText(a.dir, HUMAN_TEXT_AUTHORS_FILE)], a.before);
+  assert.deepEqual(tmps(a.dir), []);
+
+  // human-text.json held after the authors landed: nothing is put back, and the new author names nobody.
+  const h = setup();
+  const heldH = t.mock.method(fs, "renameSync", (from, to) => (path.basename(to) === HUMAN_TEXT_FILE ? (() => { throw busy; })() : realRename(from, to)));
+  await assert.rejects(run(h.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  heldH.mock.restore();
+  assert.equal(
+    message,
+    `could not replace ${path.join(h.dir, HUMAN_TEXT_FILE)} (EBUSY: another program may have it open, such as an editor, a sync client or an antivirus scan): ` +
+      `${HUMAN_TEXT_FILE} is unchanged, so the 1 signature(s) given in this run were not saved (the authors written for them in ${HUMAN_TEXT_AUTHORS_FILE} do not count without them); run --sign again`,
+  );
+  assert.equal(readText(h.dir, HUMAN_TEXT_FILE), h.before[0]);
+  assert.equal(readAuthorEntries(h.dir)["lang/en.json"][OPEN].name, "IAR18");
+  assert.deepEqual(tmps(h.dir), []);
+  const listing = await run(h.dir);
+  assert.equal(listedAuthor(listing, "lang/en.json", OPEN), null);
+  assert.ok(listing.lines.includes(IDLE(1)), listing.out);
+  // As the message says: signing again saves it, with its author.
+  assert.equal((await run(h.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask })).signed, 1);
+  assert.equal(listedAuthor(await run(h.dir), "lang/en.json", OPEN), "IAR18");
+
+  // A temporary file that cannot be written: nothing changes and nothing is left behind.
+  const w = setup();
+  const realWrite = fs.writeFileSync;
+  const full = t.mock.method(fs, "writeFileSync", (file, ...rest) => {
+    if (String(file).endsWith(".tmp")) throw Object.assign(new Error("ENOSPC: full"), { code: "ENOSPC" });
+    return realWrite(file, ...rest);
+  });
+  await assert.rejects(run(w.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  full.mock.restore();
+  assert.equal(message, `could not write ${path.join(w.dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`)} (ENOSPC): nothing was changed, and the 1 signature(s) given in this run were not saved; run --sign again`);
+  assert.deepEqual([readText(w.dir, HUMAN_TEXT_FILE), readText(w.dir, HUMAN_TEXT_AUTHORS_FILE)], w.before);
+  assert.deepEqual(tmps(w.dir), []);
+
+  // A run that also records an author for a text already signed: that record is saved, and the message says so.
+  const r = setup();
+  writeAuthors(r.dir, { "lang/en.json": { "baron-fixture.Title": "BaronHVC" } });
+  const heldR = t.mock.method(fs, "renameSync", (from, to) => (path.basename(to) === HUMAN_TEXT_FILE ? (() => { throw busy; })() : realRename(from, to)));
+  await assert.rejects(run(r.dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", "s", "q").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  heldR.mock.restore();
+  assert.ok(message.endsWith("do not count without them); the 1 author record(s) for texts already signed were saved; run --sign again"), message);
+  assert.equal(listedAuthor(await run(r.dir), "module.json", "title"), "IAR18");
+
+  // Only records, while a stale signature goes: no signature of this run is lost, so none is said to have authors waiting.
+  const s = reSignModule(t, "Open", null);
+  const stale = readSigned(s);
+  stale["lang/en.json"]["baron-fixture.Gone"] = oracle("Gone");
+  fs.writeFileSync(path.join(s, HUMAN_TEXT_FILE), signaturesText(stale));
+  const heldS = t.mock.method(fs, "renameSync", (from, to) => (path.basename(to) === HUMAN_TEXT_FILE ? (() => { throw busy; })() : realRename(from, to)));
+  await assert.rejects(run(s, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s", "q").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  heldS.mock.restore();
+  assert.equal(
+    message,
+    `could not replace ${path.join(s, HUMAN_TEXT_FILE)} (EBUSY: another program may have it open, such as an editor, a sync client or an antivirus scan): ` +
+      `${HUMAN_TEXT_FILE} is unchanged, so the 0 signature(s) given in this run were not saved; the 1 author record(s) for texts already signed were saved; run --sign again`,
+  );
+  assert.equal(listedAuthor(await run(s), "module.json", "title"), "IAR18");
+
+  // Plain --sign: the authors file lost the entry that named nobody, and no author waits for the lost signature.
+  const p = reSignModule(t, "Open now", "IAR18");
+  const heldP = t.mock.method(fs, "renameSync", (from, to) => (path.basename(to) === HUMAN_TEXT_FILE ? (() => { throw busy; })() : realRename(from, to)));
+  await assert.rejects(run(p, { sign: true, isTTY: true, ask: fakeAsk("s").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  heldP.mock.restore();
+  assert.ok(message.endsWith(`: ${HUMAN_TEXT_FILE} is unchanged, so the 1 signature(s) given in this run were not saved; run --sign again`), message);
+  assert.equal(readAuthorEntries(p)["lang/en.json"][OPEN], undefined);
+});
+
+test("a run cut at either rename never shows a wrong author, never leaves a broken file, and signing again recovers", async (t) => {
+  // A child cut, as by a closed window, right before its n-th rename (0: never): process.exit, nothing runs after it.
+  const script = path.join(tempDir(t, "cut"), "cut.mjs");
+  fs.writeFileSync(
+    script,
+    [
+      'import fs from "node:fs";',
+      `import { signTexts } from ${JSON.stringify(pathToFileURL(SIGN_TEXT).href)};`,
+      "const [dir, flag, value, stopAt, ...answers] = process.argv.slice(2);",
+      "const rename = fs.renameSync;",
+      "let n = 0;",
+      "fs.renameSync = (from, to) => (++n === Number(stopAt) ? process.exit(137) : rename(from, to));",
+      'await signTexts({ dir, cwd: dir, sign: true, ...(flag ? { [flag]: value } : {}), isTTY: true, ask: async () => answers.shift() ?? "q", log: () => {} });',
+      "",
+    ].join(NL),
+  );
+  // Each case: the module before the run, the run, and the author en Open may show for each of its values.
+  const CASES = [
+    // A text never signed: IAR18 signs it.
+    ["a new key", () => {
+      const dir = reSignModule(t, "Open now");
+      const signed = readSigned(dir);
+      delete signed["lang/en.json"][OPEN];
+      writeSignatures(dir, signed);
+      return dir;
+    }, ["author", "IAR18"], { "Open now": "IAR18" }],
+    // Signed as "Open" by BaronHVC; it reads "Open now", and IAR18 signs it.
+    ["a key signed again with another author", () => reSignModule(t, "Open now", "BaronHVC"), ["author", "IAR18"], { Open: "BaronHVC", "Open now": "IAR18" }],
+    ["a key signed again from a sheet", () => {
+      const dir = reSignModule(t, "Open now", "BaronHVC");
+      pageSheet(dir, "IAR18", { [OPEN]: { en: "Open now" } });
+      return dir;
+    }, ["sheet", "textos-hoja-IAR18.csv"], { Open: "BaronHVC", "Open now": "IAR18" }],
+    // Signed as "Open" for IAR18; BaronHVC rewrote it, and signs it with plain --sign: no author.
+    ["a key signed again by plain --sign", () => reSignModule(t, "Open now", "IAR18"), ["", ""], { Open: "IAR18", "Open now": null }],
+    // Nothing to ask: a stale signature and entries that name nobody go.
+    ["pruning", () => {
+      const dir = reSignModule(t, "Open", "BaronHVC");
+      const signed = readSigned(dir);
+      signed["lang/en.json"]["baron-fixture.Gone"] = oracle("Gone");
+      writeSignatures(dir, signed);
+      const entries = readAuthorEntries(dir);
+      entries["lang/en.json"]["baron-fixture.Gone"] = { name: "IAR18", sha256: oracle("Gone") };
+      entries["lang/en.json"]["baron-fixture.Title"] = { name: "IAR18", sha256: oracle("an older title") };
+      writeAuthorEntries(dir, entries);
+      return dir;
+    }, ["", ""], { Open: "BaronHVC" }],
+  ];
+  const setValue = (dir, v) => fs.writeFileSync(path.join(dir, "lang", "en.json"), JSON.stringify({ ...readJson(dir, "lang", "en.json"), [OPEN]: v }, null, 2) + "\n");
+  for (const [label, setup, [flag, value], allowed] of CASES) {
+    for (const stopAt of [1, 2, 0]) {
+      const at = `${label}, cut at rename ${stopAt}`;
+      const dir = setup();
+      const now = readJson(dir, "lang", "en.json")[OPEN];
+      const before = { signed: readText(dir, HUMAN_TEXT_FILE), authors: readText(dir, HUMAN_TEXT_AUTHORS_FILE) };
+      const res = runNode(script, [dir, flag, value, String(stopAt), "s"]);
+      assert.equal(res.status, stopAt ? 137 : 0, `${at}${NL}${res.out}`);
+      // Never a broken file.
+      assert.equal(shared.readSignatures(dir).error, undefined, at);
+      assert.equal(readAuthors(dir).error, undefined, at);
+      // The authors land first: cut before the second rename, human-text.json is as it was.
+      if (stopAt) assert.equal(readText(dir, HUMAN_TEXT_FILE), before.signed, at);
+      if (stopAt === 1) assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), before.authors, at);
+      if (stopAt === 2) assert.notEqual(readText(dir, HUMAN_TEXT_AUTHORS_FILE), before.authors, at);
+      // Whatever value en Open has, the listing names its own author or none.
+      for (const v of Object.keys(allowed)) {
+        setValue(dir, v);
+        const shown = listedAuthor(await run(dir), "lang/en.json", OPEN);
+        assert.ok(shown === null || shown === allowed[v], `${at}, en Open as ${JSON.stringify(v)}: shown as ${shown}'s`);
+      }
+      setValue(dir, now);
+      // What a cut run left is reported as meaning nothing; --sign does not stop for it, and signing again recovers.
+      const listing = await run(dir);
+      const left = tmps(dir);
+      assert.equal(left.length, stopAt ? 1 : 0, at);
+      if (stopAt) {
+        assert.ok(listing.lines.includes(`info: 1 temporary file(s) left by a --sign that did not finish (${left[0]}): nothing in it counts; delete it, and sign again what that run did not save`), `${at}${NL}${listing.out}`);
+        assert.ok(!listing.out.includes("rename"), listing.out);
+        const again = await run(dir, { sign: true, cwd: dir, ...(flag ? { [flag]: value } : {}), isTTY: true, ask: async () => "s" });
+        assert.equal(again.code, 0, `${at}${NL}${again.out}`);
+        fs.rmSync(path.join(dir, left[0]));
+      }
+      const final = await run(dir);
+      assert.equal(listedAuthor(final, "lang/en.json", OPEN), allowed[now] ?? null, `${at}${NL}${final.out}`);
+      assert.ok(!final.out.includes("temporary file") && !final.out.includes("name nobody"), `${at}${NL}${final.out}`);
+    }
+  }
+});
+
+test("a --sign never writes over what another --sign saved while it asked", async (t) => {
+  for (const [label, answer, recordOnly] of [
+    ["gave nothing", "q", false],
+    ["signed", "s", false],
+    ["only recorded an author", "s", true],
+  ]) {
+    // Every text signed but en and es Notice; P1 (IAR18) waits at its first question while P2 (BaronHVC) signs both.
+    const dir = signedModule(t);
+    const hashes = hashesOf(moduleTexts(dir));
+    delete hashes["lang/en.json"]["baron-fixture.Notice"];
+    delete hashes["lang/es.json"]["baron-fixture.Notice"];
+    // As sign-text writes it: a run that gives nothing leaves it as it is.
+    fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), signaturesText(hashes));
+    // Signed already, with no author: P1 is asked about it only to record its author.
+    if (recordOnly) writeSheet(dir, [["baron-fixture.Title", "Baron Fixture", "", "IAR18"]]);
+    let other;
+    const ask = async () => {
+      if (other) return "q";
+      other = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "s", "q").ask });
+      return answer;
+    };
+    const p1 = { sign: true, isTTY: true, ask, ...(recordOnly ? { sheet: "hoja.csv", cwd: dir } : { author: "IAR18" }) };
+    if (answer === "q") {
+      // P1 gave nothing: it writes nothing, and P2's signatures and authors stay.
+      const res = await run(dir, p1);
+      assert.equal(other.signed, 2, other.out);
+      assert.equal(res.wrote || res.wroteAuthors, false, res.out);
+    } else {
+      // P1 answered s: it stops without writing, and says why.
+      const lost = recordOnly ? "the 0 signature(s) and 1 author record(s) given in this run" : "the 1 signature(s) given in this run";
+      await assert.rejects(
+        run(dir, p1),
+        (err) =>
+          err instanceof SignTextError &&
+          err.message ===
+            `${HUMAN_TEXT_FILE} and ${HUMAN_TEXT_AUTHORS_FILE} changed while this run asked (another --sign saved, or a program or git wrote them): ` +
+              `nothing was written, so that change is kept and ${lost} were not saved; run --sign again, one --sign at a time`,
+      );
+    }
+    assert.equal(readSigned(dir)["lang/en.json"]["baron-fixture.Notice"], oracle("Notice"), label);
+    assert.equal(readSigned(dir)["lang/es.json"]["baron-fixture.Notice"], oracle("Aviso"), label);
+    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Notice": "BaronHVC" }, "lang/es.json": { "baron-fixture.Notice": "BaronHVC" } }, label);
+    assert.deepEqual(tmps(dir), [], label);
   }
 });
 
@@ -443,7 +853,7 @@ test("the listing shows the author of each signed text that has one, and a count
   writeAuthors(dir, {
     "module.json": { title: "IAR18" },
     "lang/en.json": { "baron-fixture.Title": "IAR18", "baron-fixture.Open": "BaronHVC", "baron-fixture.Kind_a": "IAR18" },
-    // Changed since IAR18 signed it: not a signed text, so not listed with an author.
+    // Changed since IAR18 signed it, and a key that is gone: they name nobody.
     "lang/es.json": { "baron-fixture.Open": "IAR18", "baron-fixture.Gone": "IAR18" },
   });
   const res = await run(dir);
@@ -456,7 +866,7 @@ test("the listing shows the author of each signed text that has one, and a count
   ]);
   assert.ok(res.lines.includes("sign-text: 2 text(s) need a signature (1 unsigned, 1 changed since signed); 12 of 14 signed"), res.out);
   assert.ok(res.lines.includes('sign-text: authors of the 12 signed text(s): "IAR18" 3, "BaronHVC" 1; 8 with no author recorded'), res.out);
-  assert.ok(res.lines.includes(`info: 1 author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; --sign removes them`), res.out);
+  assert.ok(res.lines.includes(IDLE(2)), res.out);
 
   // Without any author recorded the listing is what it always was: no new line.
   const bare = signedModule(t, { merge: { "lang/es.json": { "baron-fixture.Open": "Abrir el panel" } } });
@@ -558,21 +968,51 @@ test("the check-module of an older core (v1.5.0, v1.6.0) still passes a module w
       continue;
     }
     const check = (args) => runNode(path.join(core, "tools", "check-module.mjs"), args, { cwd: REPO });
-    const withFile = check([dir, "--release"]);
-    assert.equal(withFile.status, 0, `${tag}${NL}${withFile.out}`);
-    assert.match(withFile.stdout, /^PASS {3}\[n\] human text/m, `${tag}${NL}${withFile.out}`);
-    // The same output without the file: it reads it nowhere.
-    fs.rmSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-    const without = check([dir, "--release"]);
-    fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), sidecar);
-    assert.equal(without.out, withFile.out, tag);
+    for (const args of [[dir], [dir, "--release"]]) {
+      const withFile = check(args);
+      assert.equal(withFile.status, 0, `${tag}${NL}${withFile.out}`);
+      assert.match(withFile.stdout, /^PASS {3}\[n\] human text/m, `${tag}${NL}${withFile.out}`);
+      // The same output without the file: it reads it nowhere.
+      fs.rmSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
+      const without = check(args);
+      fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), sidecar);
+      assert.equal(without.out, withFile.out, `${tag} ${args.join(" ")}`);
+      // This core's check-module is v1.6.0's, byte for byte in what it prints.
+      if (tag === "v1.6.0" && args.length > 1) assert.equal(current.out, withFile.out);
+    }
     // Its sign-text reads the human-text.json this one wrote: nothing left to sign.
     const listing = runNode(path.join(core, "tools", "sign-text.mjs"), [dir], { cwd: REPO });
     assert.equal(listing.status, 0, listing.out);
     assert.ok(listing.stdout.includes("sign-text: 0 text(s) need a signature (0 unsigned, 0 changed since signed); 14 of 14 signed"), `${tag}${NL}${listing.out}`);
-    // This core's check-module is v1.6.0's, byte for byte in what it prints.
-    if (tag === "v1.6.0") assert.equal(current.out, withFile.out);
   }
+});
+
+test("a text v1.6.0's sign-text signs again keeps no author: its old entry names nobody, and --author can record the new one", async (t) => {
+  const core = oldCore(t, "v1.6.0");
+  if (!core) return t.diagnostic("v1.6.0 is not in this clone (a shallow checkout): skipped");
+  // Every text signed and recorded as IAR18's; BaronHVC rewrote en Open and signs it with v1.6.0, which knows no authors file.
+  const dir = reSignModule(t, "Open now", "IAR18");
+  const sidecar = readText(dir, HUMAN_TEXT_AUTHORS_FILE);
+  const { signTexts: oldSign } = await import(pathToFileURL(path.join(core, "tools", "sign-text.mjs")).href);
+  const old = await oldSign({ dir, sign: true, isTTY: true, ask: fakeAsk("s").ask, log: () => {}, logError: () => {} });
+  assert.deepEqual({ signed: old.signed, wrote: old.wrote }, { signed: 1, wrote: true });
+  assert.equal(readSigned(dir)["lang/en.json"][OPEN], oracle("Open now"));
+  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), sidecar);
+  // This core's listing: no author for en Open, never IAR18's; the others keep theirs.
+  const listing = await run(dir);
+  assert.equal(listedAuthor(listing, "lang/en.json", OPEN), null);
+  assert.equal(listedAuthor(listing, "lang/en.json", "baron-fixture.Title"), "IAR18");
+  assert.ok(listing.lines.includes('sign-text: authors of the 14 signed text(s): "IAR18" 13; 1 with no author recorded'), listing.out);
+  assert.ok(listing.lines.includes(IDLE(1)), listing.out);
+  // --author BaronHVC asks about it, a validly signed text with no author, and records him; IAR18's 13 are not asked.
+  const fake = fakeAsk("s");
+  const rec = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fake.ask });
+  assert.equal(fake.asked.length, 1, rec.out);
+  assert.ok(rec.lines.includes(`[1/1] lang/en.json  ${OPEN}  (signed, with no author recorded)`), rec.out);
+  assert.ok(rec.lines.includes('info: 13 signed text(s) whose recorded author is not "BaronHVC": not asked (sign-text never changes the author of a valid signature)'), rec.out);
+  assert.deepEqual({ recorded: rec.recorded, wrote: rec.wrote, wroteAuthors: rec.wroteAuthors }, { recorded: 1, wrote: false, wroteAuthors: true });
+  assert.equal(readAuthorMap(dir)["lang/en.json"][OPEN], "BaronHVC");
+  assert.ok(!(await run(dir)).out.includes("name nobody"));
 });
 
 /* ----------------------------------------------------------------------------
@@ -587,13 +1027,21 @@ const REPLACES = (n) =>
   `info: ${n} cell(s) whose key holds another text, validly signed: importing this sheet would replace that signed text; keep one of the two texts (drop this row, or import the sheet and sign it); not asked:`;
 const OTHER_AUTHOR = (n) =>
   `info: ${n} cell(s) already validly signed whose recorded author is not their row's: the record keeps its author (sign-text never changes the author of a valid signature); not asked:`;
-const UNATTRIBUTED = (n) =>
-  `info: ${n} cell(s) already validly signed with no author recorded (a plain --sign records none): sign-text never gives a valid signature an author afterwards; not asked:`;
 
 /** Writes `rows` (after SHEET_HEADER, unless `header` says otherwise) as a CSV the way text-sheet export writes it. */
 function writeSheet(dir, rows, { name = "hoja.csv", header = SHEET_HEADER } = {}) {
   fs.writeFileSync(path.join(dir, name), csvWrite([header, ...rows]));
   return name;
+}
+
+/** A sheet as the web page exports it for one person (textos-hoja-<name>.csv): header key,author,en,es, every cell quoted, CRLF, a UTF-8 BOM. */
+function pageSheet(dir, name, cells) {
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [["key", "author", "en", "es"].join(",")];
+  for (const [k, c] of Object.entries(cells)) lines.push([q(k), q(name), q(c.en ?? ""), q(c.es ?? "")].join(","));
+  const file = `textos-hoja-${name}.csv`;
+  fs.writeFileSync(path.join(dir, file), ch(0xfeff) + lines.join(ch(13, 10)) + ch(13, 10));
+  return file;
 }
 
 /** The module of the --sheet tests: five texts signed, the rest imported from a sheet and not signed yet. */
@@ -627,21 +1075,18 @@ test("--sheet asks only about the cells whose value in the module is the sheet's
     /* 12 */ ["baron-fixture.Open", "Open", "", "BaronHVC"],
   ]);
   const before = readText(dir, "lang", "en.json") + readText(dir, "lang", "es.json") + readText(dir, "module.json");
-  const fake = fakeAsk("s", "s", "s", "n", "s");
+  const fake = fakeAsk("s", "s", "s", "s", "n", "s");
   const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
   assert.equal(res.code, 0, res.out);
-  assert.deepEqual(fake.asked, [authorQuestion("IAR18"), authorQuestion("BaronHVC"), authorQuestion("IAR18"), authorQuestion("IAR18"), authorQuestion("BaronHVC")]);
+  assert.deepEqual(fake.asked, [authorQuestion("IAR18"), authorQuestion("BaronHVC"), authorQuestion("IAR18"), authorQuestion("IAR18"), authorQuestion("IAR18"), authorQuestion("BaronHVC")]);
   assert.ok(res.lines[0].endsWith(" --sign --sheet hoja.csv"), res.lines[0]);
   for (const line of [
-    'sheet: hoja.csv: 5 text(s) to ask about, each for the author of its row ("IAR18" 3, "BaronHVC" 2)',
+    'sheet: hoja.csv: 6 text(s) to ask about (1 of them signed with no author recorded: s records it), each for the author of its row ("IAR18" 4, "BaronHVC" 2)',
     "info: 2 cell(s) that text-sheet import writes nowhere (no key, a key that is not in the files of that language, or a module.json row outside the first language column); not asked:",
     "  row 7  es  module.json:title",
     "  row 8  en  baron-fixture.Nope",
     DIFFERS(1),
     "  row 3  es  baron-fixture.Notice -> lang/es.json",
-    // Signed before by plain --sign: the record names nobody, the row names IAR18.
-    UNATTRIBUTED(1),
-    '  row 5  en  baron-fixture.Kind_b  (sheet "IAR18")',
     'info: 1 cell(s) in rows without an author: write in "author" the name of the person who wrote each one, save the sheet and run this again; not asked:',
     "  row 4  en  baron-fixture.Kind_a",
     "info: 1 cell(s) whose author is not a valid name (1 to 60 characters, none of them a control character or one that prints nothing); not asked:",
@@ -650,22 +1095,24 @@ test("--sheet asks only about the cells whose value in the module is the sheet's
     '  row 2  en  baron-fixture.Open  ("IAR18")',
     '  row 12  en  baron-fixture.Open  ("BaronHVC")',
     "info: 4 other text(s) need a signature and are not asked about from this sheet; sign-text without --sign lists them",
-    "[1/5] lang/es.json  baron-fixture.Open  (sheet row 2)",
-    "[2/5] lang/en.json  baron-fixture.Notice  (sheet row 3)",
-    "[3/5] module.json  description  (sheet row 6)",
-    "[4/5] lang/es.json  baron-fixture.Unused  (sheet row 10)",
-    "[5/5] lang/es.json  baron-fixture.Kind_a  (sheet row 11)",
-    "sign-text: 4 signed, 1 skipped; wrote human-text.json and human-text-authors.json",
-    'sign-text: authors recorded with the signatures of this run: "BaronHVC" 2, "IAR18" 2',
+    "[1/6] lang/es.json  baron-fixture.Open  (sheet row 2)",
+    "[2/6] lang/en.json  baron-fixture.Notice  (sheet row 3)",
+    // Signed before by plain --sign, which records nobody: s records the row's author.
+    "[3/6] lang/en.json  baron-fixture.Kind_b  (signed, with no author recorded)  (sheet row 5)",
+    "[4/6] module.json  description  (sheet row 6)",
+    "[5/6] lang/es.json  baron-fixture.Unused  (sheet row 10)",
+    "[6/6] lang/es.json  baron-fixture.Kind_a  (sheet row 11)",
+    "sign-text: 4 signed, 1 author(s) recorded for signed text(s), 1 skipped; wrote human-text.json and human-text-authors.json",
+    'sign-text: authors recorded with the signatures of this run: "IAR18" 3, "BaronHVC" 2',
   ]) {
     assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
   }
   // The legend of --author, before the first question.
-  assert.ok(res.lines.indexOf(AUTHOR_LEGEND[0]) < res.lines.indexOf("[1/5] lang/es.json  baron-fixture.Open  (sheet row 2)"), res.out);
+  assert.ok(res.lines.indexOf(AUTHOR_LEGEND[0]) < res.lines.indexOf("[1/6] lang/es.json  baron-fixture.Open  (sheet row 2)"), res.out);
   // A value that differs is never printed: it may be an AI working text.
   assert.ok(!res.out.includes('"Aviso"'), res.out);
   assert.deepEqual(readAuthorMap(dir), {
-    "lang/en.json": { "baron-fixture.Notice": "BaronHVC" },
+    "lang/en.json": { "baron-fixture.Kind_b": "IAR18", "baron-fixture.Notice": "BaronHVC" },
     "lang/es.json": { "baron-fixture.Kind_a": "BaronHVC", "baron-fixture.Open": "IAR18" },
     "module.json": { description: "IAR18" },
   });
@@ -678,12 +1125,11 @@ test("--sheet asks only about the cells whose value in the module is the sheet's
   // It only signs: the module's texts are untouched.
   assert.equal(readText(dir, "lang", "en.json") + readText(dir, "lang", "es.json") + readText(dir, "module.json"), before);
 
-  // Run again: what it signed is now reported as signed, and only the skipped text is asked about.
+  // Run again: what it signed or recorded is now reported as signed, and only the skipped text is asked about.
   const again = fakeAsk("s");
   const second = await run(dir, { sign: true, sheet: path.join(dir, sheet), isTTY: true, ask: again.ask });
   assert.deepEqual(again.asked, [authorQuestion("IAR18")]);
-  assert.ok(second.lines.includes("info: 4 cell(s) already validly signed: not asked"), second.out);
-  assert.ok(second.lines.includes('  row 5  en  baron-fixture.Kind_b  (sheet "IAR18")'), second.out);
+  assert.ok(second.lines.includes("info: 5 cell(s) already validly signed: not asked"), second.out);
   assert.ok(!second.out.includes("recorded author is not"), second.out);
   assert.equal(readAuthorMap(dir)["lang/es.json"]["baron-fixture.Unused"], "IAR18");
 });
@@ -790,8 +1236,7 @@ test("--sheet: its mistakes exit 2, and a sheet it cannot read stops it before a
 });
 
 /* ----------------------------------------------------------------------------
- * What --sheet never asks about, names that only look alike, and records
- * that a stop or a second sheet could make wrong
+ * What --sheet never asks about, and names that only look alike
  * -------------------------------------------------------------------------- */
 
 test("--sheet never asks about a cell that text-sheet import refuses: a placeholder it lacks, two rows with two texts for one key", async (t) => {
@@ -834,6 +1279,7 @@ test("--sheet never asks about a cell that text-sheet import refuses: a placehol
 test("an author name that only looks like another is refused, and one name typed two ways is one author", async (t) => {
   const BS = ch(92);
   const ZWSP = ch(0x200b);
+  const H = oracle("x");
   const looksAlike = [`IAR18${ZWSP}`, `IAR${ch(0xad)}18`, `${ch(0x202e)}81RAI${ch(0x202c)}`, `IAR${ch(0x2028)}18`, `IAR${ch(0x2029)}18`, `IAR${ch(0xe000)}18`, `IAR${ch(0xfdd0)}18`, `IAR${ch(0xd83f, 0xdffe)}18`, `IAR18${ch(0x200e)}`, `I${ch(0x2060)}AR18`];
   for (const name of looksAlike) assert.match(String(authorNameProblem(name)), /holds a character that prints nothing/, JSON.stringify(name));
   // The message shows the hidden character as its escape.
@@ -843,8 +1289,8 @@ test("an author name that only looks like another is refused, and one name typed
   const nfc = `Jos${ch(0xe9)}`;
   assert.equal(authorNameProblem(nfd), null);
   assert.equal(shared.authorName(`  ${nfd} `), nfc);
-  assert.match(String(authorsProblem({ version: 1, authors: { "lang/en.json": { a: nfd } } })), /not an author name \(not in Unicode NFC/);
-  assert.match(String(authorsProblem({ version: 1, authors: { "lang/en.json": { a: `IAR18${ZWSP}` } } })), /prints nothing/);
+  assert.match(String(authorsProblem({ version: 1, authors: { "lang/en.json": { a: { name: nfd, sha256: H } } } })), /not an author name \(not in Unicode NFC/);
+  assert.match(String(authorsProblem({ version: 1, authors: { "lang/en.json": { a: { name: `IAR18${ZWSP}`, sha256: H } } } })), /prints nothing/);
 
   // --author: exit 2 before any question, the name escaped.
   const dir = signedModule(t);
@@ -874,14 +1320,13 @@ test("--sheet reports a signed text whose recorded author is not its row's, with
   // IAR18 signed Open through a sheet; Notice was signed with plain --sign, which records nobody.
   writeAuthors(dir, { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
   const other = writeSheet(dir, [["baron-fixture.Open", "", "Abrir", "BaronHVC"], ["baron-fixture.Notice", "", "Aviso", "BaronHVC"]], { name: "otra.csv" });
-  const fake = fakeAsk();
+  // Notice has no author: asked, to record BaronHVC's; Open keeps IAR18 and is reported.
+  const fake = fakeAsk("n");
   const res = await run(dir, { sign: true, sheet: other, cwd: dir, isTTY: true, ask: fake.ask });
-  assert.deepEqual(fake.asked, []);
-  // A record that names someone else keeps its author; one that names nobody is said apart: there is no author to keep.
-  for (const line of [OTHER_AUTHOR(1), '  row 2  es  baron-fixture.Open  (sheet "BaronHVC", recorded "IAR18")', UNATTRIBUTED(1), '  row 3  es  baron-fixture.Notice  (sheet "BaronHVC")']) {
+  assert.deepEqual(fake.asked, [authorQuestion("BaronHVC")]);
+  for (const line of [OTHER_AUTHOR(1), '  row 2  es  baron-fixture.Open  (sheet "BaronHVC", recorded "IAR18")', "[1/1] lang/es.json  baron-fixture.Notice  (signed, with no author recorded)  (sheet row 3)"]) {
     assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
   }
-  assert.ok(!res.out.includes("none recorded"), res.out);
   assert.ok(!res.lines.some((l) => l.startsWith("info: 2 cell(s) already validly signed")), res.out);
   assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
   // The row that names the recorded author is only counted.
@@ -889,47 +1334,10 @@ test("--sheet reports a signed text whose recorded author is not its row's, with
   const ok = await run(dir, { sign: true, sheet: same, cwd: dir, isTTY: true, ask: fakeAsk().ask });
   assert.ok(ok.lines.includes("info: 1 cell(s) already validly signed: not asked"), ok.out);
   assert.ok(!ok.out.includes("recorded author is not"), ok.out);
-});
-
-test("a stop between the renames can leave a signature without its author, never with another one's", async (t) => {
-  // The run is cut, as by a closed window, right before its n-th rename: process.exit, no rollback.
-  const script = path.join(tempDir(t, "stop"), "stop.mjs");
-  fs.writeFileSync(
-    script,
-    [
-      'import fs from "node:fs";',
-      `import { signTexts } from ${JSON.stringify(pathToFileURL(SIGN_TEXT).href)};`,
-      "const [dir, author, stopAt, ...answers] = process.argv.slice(2);",
-      "const rename = fs.renameSync;",
-      "let n = 0;",
-      "fs.renameSync = (from, to) => (++n === Number(stopAt) ? process.exit(137) : rename(from, to));",
-      'await signTexts({ dir, sign: true, author: author || undefined, isTTY: true, ask: async () => answers.shift() ?? "q", log: () => {} });',
-      "",
-    ].join(NL),
-  );
-  const OPEN = "baron-fixture.Open";
-  for (const [label, older] of [["no author recorded", null], ["another author recorded", "BaronHVC"]]) {
-    for (const stopAt of [1, 2, 3, 0]) {
-      // en Open was signed as "Open", by `older` (or by plain --sign); it now reads "Open now", and IAR18 signs it.
-      const dir = signedModule(t, { merge: { "lang/en.json": { [OPEN]: "Open now" } } });
-      writeSignatures(dir, hashesOf(moduleTexts(materialize(t))));
-      if (older) writeAuthors(dir, { "lang/en.json": { [OPEN]: older } });
-      const res = runNode(script, [dir, "IAR18", String(stopAt), "s"]);
-      assert.equal(res.status, stopAt && stopAt <= (older ? 3 : 2) ? 137 : 0, `${label} ${stopAt}${NL}${res.out}`);
-      const hash = readSigned(dir)["lang/en.json"][OPEN];
-      const author = exists(dir, HUMAN_TEXT_AUTHORS_FILE) ? (readAuthorMap(dir)["lang/en.json"]?.[OPEN] ?? null) : null;
-      // The old signature keeps its own author or none; the new one has IAR18 or none.
-      if (hash === oracle("Open")) assert.ok(author === null || author === older, `${label}, stop at ${stopAt}: the old signature is credited to ${author}`);
-      else assert.ok(hash === oracle("Open now") && (author === null || author === "IAR18"), `${label}, stop at ${stopAt}: ${hash} by ${author}`);
-      // With the old value back, the listing never credits IAR18 with a signature someone else gave.
-      fs.writeFileSync(path.join(dir, "lang", "en.json"), JSON.stringify({ ...readJson(dir, "lang", "en.json"), [OPEN]: "Open" }, null, 2) + "\n");
-      const listing = await run(dir);
-      assert.ok(!listing.out.includes(`${OPEN}  by "IAR18"`), `${label}, stop at ${stopAt}${NL}${listing.out}`);
-      if (stopAt === 0) assert.equal(author, "IAR18", label);
-      // What the stopped run left behind is reported, never silent.
-      if (res.status === 137) assert.ok(listing.lines.some((l) => /^info: .*\.human-text(?:-authors)?\.json\.\d+(?:\.part)?\.tmp/.test(l)), listing.out);
-    }
-  }
+  // --author never changes it either.
+  const byAuthor = await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("q").ask });
+  assert.ok(byAuthor.lines.includes('info: 1 signed text(s) whose recorded author is not "BaronHVC": not asked (sign-text never changes the author of a valid signature)'), byAuthor.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
 });
 
 test("a long run says how many answers Ctrl+C would lose, q says how to continue, and a sheet run counts the module's other texts", async (t) => {
@@ -995,20 +1403,8 @@ test("--sheet: a sheet that is not where its path points says where it looked, a
 });
 
 /* ----------------------------------------------------------------------------
- * The second review: the real flow of one sheet per author, the write order
- * when a rename fails, a stop between the last two renames, rows without a
- * valid author, names that only look alike, and the docs
+ * The real flow of one sheet per author
  * -------------------------------------------------------------------------- */
-
-/** A sheet as the web page exports it for one person (textos-hoja-<name>.csv): header key,author,en,es, every cell quoted, CRLF, a UTF-8 BOM. */
-function pageSheet(dir, name, cells) {
-  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const lines = [["key", "author", "en", "es"].join(",")];
-  for (const [k, c] of Object.entries(cells)) lines.push([q(k), q(name), q(c.en ?? ""), q(c.es ?? "")].join(","));
-  const file = `textos-hoja-${name}.csv`;
-  fs.writeFileSync(path.join(dir, file), ch(0xfeff) + lines.join(ch(13, 10)) + ch(13, 10));
-  return file;
-}
 
 test("the listing and a --sheet that is not there name the sheets of the folder, one per author", async (t) => {
   const dir = signedModule(t);
@@ -1075,7 +1471,7 @@ test("two sheets that give one key two texts: --sheet names the other sheet, and
   // A signature with no author recorded is said as such.
   writeAuthors(dir, { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
   const four = await run(dir, { sign: true, sheet: iar, cwd: dir, isTTY: true, ask: fakeAsk().ask });
-  assert.ok(four.lines.includes('  row 2  en  baron-fixture.Open -> lang/en.json  (no author recorded; the text of textos-hoja-BaronHVC.csv row 2)'), four.out);
+  assert.ok(four.lines.includes("  row 2  en  baron-fixture.Open -> lang/en.json  (no author recorded; the text of textos-hoja-BaronHVC.csv row 2)"), four.out);
 });
 
 test("--sheet never asks about a text that another row gives without a valid author", async (t) => {
@@ -1140,465 +1536,6 @@ test("a name with a default-ignorable character is refused, and an astral charac
   assert.ok(bad.errors[0].includes(`"IAR18${esc(0xfe0f)}"`), bad.errors[0]);
 });
 
-test("a rename that fails after human-text.json landed never leaves the new signature with the old author, even when human-text.json cannot be put back", async (t) => {
-  // Every text signed and recorded as BaronHVC's; en Open changed since, and IAR18 signs it now: three steps.
-  const dir = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Open": "Open now" } } });
-  const old = moduleTexts(materialize(t));
-  writeSignatures(dir, hashesOf(old));
-  writeAuthors(dir, Object.fromEntries(Object.entries(old).map(([f, keys]) => [f, Object.fromEntries(Object.keys(keys).map((k) => [k, "BaronHVC"]))])));
-  const authorsTmp = path.join(dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
-  const humanFile = path.join(dir, HUMAN_TEXT_FILE);
-  const realRename = fs.renameSync;
-  const realWrite = fs.writeFileSync;
-  const busy = () => {
-    throw Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
-  };
-  // The authors file is held for its last rename, and human-text.json cannot be put back (its put-back is renamed over it).
-  const backTmp = path.join(dir, `.${HUMAN_TEXT_FILE}.${process.pid}.back.tmp`);
-  const rename = t.mock.method(fs, "renameSync", (from, to) => (from === authorsTmp || from === backTmp ? busy() : realRename(from, to)));
-  const write = t.mock.method(fs, "writeFileSync", (file, ...rest) => (file === humanFile ? busy() : realWrite(file, ...rest)));
-  let message = "";
-  await assert.rejects(run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
-    message = err.message;
-    return err instanceof SignTextError;
-  });
-  rename.mock.restore();
-  write.mock.restore();
-  // The new signature is saved, without an author yet, and never with BaronHVC's.
-  assert.equal(readSigned(dir)["lang/en.json"]["baron-fixture.Open"], oracle("Open now"));
-  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Open"], undefined);
-  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Title"], "BaronHVC");
-  const listing = await run(dir);
-  assert.ok(!listing.out.includes("lang/en.json  baron-fixture.Open  by "), listing.out);
-  // The message says how to finish; not to sign again, which would ask nothing about a valid signature.
-  for (const words of [
-    `could not replace ${path.join(dir, HUMAN_TEXT_AUTHORS_FILE)} (EBUSY: another program may have it open`,
-    `${HUMAN_TEXT_FILE} could not be put back as it was, so it keeps the 1 signature(s) given in this run; their authors are in ${authorsTmp}: close that program and rename ${authorsTmp} over ${HUMAN_TEXT_AUTHORS_FILE}`,
-    "running --sign again would not ask about those signatures",
-  ]) {
-    assert.ok(message.includes(words), `${words}${NL}${message}`);
-  }
-  assert.ok(!message.includes("or run --sign again"), message);
-  // Only the authors' temporary file is left, and the listing says that it finishes the run.
-  assert.deepEqual(tmps(dir), [path.basename(authorsTmp)]);
-  const FINISH = `info: ${path.basename(authorsTmp)} holds the authors of 1 valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`;
-  assert.ok(listing.lines.includes(FINISH), listing.out);
-  fs.renameSync(authorsTmp, path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-  const after = await run(dir);
-  assert.ok(after.lines.includes('signed    lang/en.json  baron-fixture.Open  by "IAR18"'), after.out);
-  assert.ok(!after.out.includes(".tmp"), after.out);
-});
-
-test("a run stopped between its last two renames: the listing names the file that finishes it, and --sign waits for it", async (t) => {
-  // The run is cut, as by a closed window, right before its n-th rename: process.exit, no rollback.
-  const script = path.join(tempDir(t, "stop-last"), "stop.mjs");
-  fs.writeFileSync(
-    script,
-    [
-      'import fs from "node:fs";',
-      `import { signTexts } from ${JSON.stringify(pathToFileURL(SIGN_TEXT).href)};`,
-      "const [dir, flag, value, stopAt, ...answers] = process.argv.slice(2);",
-      "const rename = fs.renameSync;",
-      "let n = 0;",
-      "fs.renameSync = (from, to) => (++n === Number(stopAt) ? process.exit(137) : rename(from, to));",
-      'await signTexts({ dir, cwd: dir, sign: true, [flag]: value, isTTY: true, ask: async () => answers.shift() ?? "q", log: () => {} });',
-      "",
-    ].join(NL),
-  );
-  const OPEN = "baron-fixture.Open";
-  const setup = () => {
-    // en Open was signed as "Open", by BaronHVC; it now reads "Open now", and IAR18 signs it: three renames.
-    const dir = signedModule(t, { merge: { "lang/en.json": { [OPEN]: "Open now" } } });
-    writeSignatures(dir, hashesOf(moduleTexts(materialize(t))));
-    writeAuthors(dir, { "lang/en.json": { [OPEN]: "BaronHVC", "baron-fixture.Title": "IAR18" } });
-    pageSheet(dir, "IAR18", { [OPEN]: { en: "Open now" } });
-    return dir;
-  };
-  for (const [flag, value] of [
-    ["author", "IAR18"],
-    ["sheet", "textos-hoja-IAR18.csv"],
-  ]) {
-    const dir = setup();
-    const res = runNode(script, [dir, flag, value, "3", "s"]);
-    assert.equal(res.status, 137, res.out);
-    // The signature is saved, its author not yet: the authors file lost BaronHVC's entry and has not got IAR18's.
-    assert.equal(readSigned(dir)["lang/en.json"][OPEN], oracle("Open now"));
-    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Title": "IAR18" } });
-    const [left] = tmps(dir);
-    assert.deepEqual(tmps(dir), [left]);
-    const listing = await run(dir);
-    assert.ok(
-      listing.lines.includes(
-        `info: ${left} holds the authors of 1 valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`,
-      ),
-      listing.out,
-    );
-    assert.ok(!listing.out.includes("never saved"), listing.out);
-    // Signing again would ask nothing about that signature, and would write the authors file: it stops first.
-    for (const opts of [{ author: "IAR18" }, { sheet: "textos-hoja-IAR18.csv", cwd: dir }, {}]) {
-      const fake = fakeAsk("s");
-      await assert.rejects(
-        run(dir, { sign: true, isTTY: true, ask: fake.ask, ...opts }),
-        (err) => err instanceof SignTextError && err.message.startsWith(`${left} holds the authors of 1 valid signature(s)`) && err.message.endsWith("or delete it to leave them without an author. Then run this again"),
-      );
-      assert.deepEqual(fake.asked, []);
-    }
-    fs.renameSync(path.join(dir, left), path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-    const after = await run(dir);
-    assert.ok(after.lines.includes(`signed    lang/en.json  ${OPEN}  by "IAR18"`), after.out);
-    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { [OPEN]: "IAR18", "baron-fixture.Title": "IAR18" } });
-    assert.equal((await run(dir, { sign: true, isTTY: true, ask: fakeAsk("q").ask })).code, 0);
-  }
-
-  // Stopped before human-text.json landed: nothing to finish; the files hold signatures never saved, and --sign asks again.
-  const dir = setup();
-  assert.equal(runNode(script, [dir, "author", "IAR18", "2", "s"]).status, 137);
-  assert.equal(readSigned(dir)["lang/en.json"][OPEN], oracle("Open"));
-  const GENERIC = /^info: 2 temporary file\(s\) left by a --sign that did not finish \(.+\): if that run printed a message, do what it said; if not \(a closed window\), the signatures in them were never saved: delete them, and sign those texts again$/;
-  assert.ok((await run(dir)).lines.some((l) => GENERIC.test(l)));
-  const fake = fakeAsk("s");
-  const again = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fake.ask });
-  assert.ok(again.lines.some((l) => GENERIC.test(l)), again.out);
-  assert.equal(fake.asked.length, 1, again.out);
-  assert.equal(readAuthorMap(dir)["lang/en.json"][OPEN], "IAR18");
-});
-
-test("text-sheet.mjs still exports what v1.6.0 exported, and the docs say which module exports the sheet reader", async (t) => {
-  const TS = await import(pathToFileURL(path.join(TOOLS, "text-sheet.mjs")).href);
-  // readSheet and AUTHOR_HEADERS are v1.6.0's private readSheet and AUTHOR_NAMES, exported only by shared.mjs.
-  assert.equal("readSheet" in TS, false);
-  assert.equal("AUTHOR_HEADERS" in TS, false);
-  assert.equal(typeof shared.readSheet, "function");
-  assert.deepEqual(shared.AUTHOR_HEADERS, ["author", "autor"]);
-  const core = oldCore(t, "v1.6.0");
-  if (core) {
-    const old = await import(pathToFileURL(path.join(core, "tools", "text-sheet.mjs")).href);
-    for (const name of Object.keys(old)) assert.ok(Object.hasOwn(TS, name), name);
-  } else t.diagnostic("v1.6.0 is not in this clone (a shallow checkout): its exports not compared");
-  const changelog = readText(REPO, "CHANGELOG.md");
-  // Its paragraphs as one line each: the wording is checked, not where it wraps.
-  const unreleased = changelog.slice(changelog.indexOf("## [Unreleased]"), changelog.indexOf("## [1.6.0]")).replace(/\s+/g, " ");
-  assert.ok(!unreleased.includes("`text-sheet.mjs` los sigue exportando."), unreleased);
-  assert.ok(unreleased.includes("`readSheet` y `AUTHOR_HEADERS` solo los exporta `shared.mjs`"), unreleased);
-  assert.ok(!readText(TOOLS, "text-sheet.mjs").includes("they are still this tool's exports"));
-});
-
-/* ----------------------------------------------------------------------------
- * Third review: leftovers that a new signature must never be made under,
- * runs that change the same files, failed put-backs, and the docs
- * -------------------------------------------------------------------------- */
-
-const TEMPLATE = path.resolve(process.env.BARON_TEMPLATE_DIR ?? path.join(REPO, "..", "pf2e-module-template"));
-/** A document as one line: its wording is checked, not where it wraps. */
-const flat = (text) => text.replace(/\s+/g, " ");
-
-/** A child that runs one --sign and is cut, as by a closed window, right before its n-th rename. */
-function stopScript(t) {
-  const script = path.join(tempDir(t, "stop3"), "stop.mjs");
-  fs.writeFileSync(
-    script,
-    [
-      'import fs from "node:fs";',
-      `import { signTexts } from ${JSON.stringify(pathToFileURL(SIGN_TEXT).href)};`,
-      "const [dir, author, stopAt, ...answers] = process.argv.slice(2);",
-      "const rename = fs.renameSync;",
-      "let n = 0;",
-      "fs.renameSync = (from, to) => (++n === Number(stopAt) ? process.exit(137) : rename(from, to));",
-      'await signTexts({ dir, cwd: dir, sign: true, author: author || undefined, isTTY: true, ask: async () => answers.shift() ?? "q", log: () => {} });',
-      "",
-    ].join(NL),
-  );
-  return script;
-}
-
-/** Every text signed, and recorded as `older`'s when given; en Open now reads `now`. */
-function reSignModule(t, now = "Open now", older = "BaronHVC") {
-  const dir = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Open": now } } });
-  const old = moduleTexts(materialize(t));
-  writeSignatures(dir, hashesOf(old));
-  if (older) writeAuthors(dir, Object.fromEntries(Object.entries(old).map(([f, keys]) => [f, Object.fromEntries(Object.keys(keys).map((k) => [k, older]))])));
-  return dir;
-}
-
-/** en Open as the two files have it: the value its signature is for, and its recorded author. */
-function openState(dir) {
-  const hash = readSigned(dir)["lang/en.json"]?.["baron-fixture.Open"] ?? null;
-  const author = exists(dir, HUMAN_TEXT_AUTHORS_FILE) ? (readAuthorMap(dir)["lang/en.json"]?.["baron-fixture.Open"] ?? null) : null;
-  const value = hash === null ? null : ({ [oracle("Open")]: "Open", [oracle("Open now")]: "Open now" }[hash] ?? hash);
-  return { value, author };
-}
-
-test("an authors file a stopped run left never finishes over a signature given after its text changed: --sign stops and says to delete it", async (t) => {
-  const OPEN = "baron-fixture.Open";
-  // IAR18's text, signed for IAR18; the window closes between the last two renames.
-  const dir = reSignModule(t);
-  assert.equal(runNode(stopScript(t), [dir, "IAR18", "3", "s"]).status, 137);
-  const [left] = tmps(dir);
-  assert.deepEqual(tmps(dir), [left]);
-  // BaronHVC writes the text again, from scratch: that leftover's author is no longer the text's.
-  fs.writeFileSync(path.join(dir, "lang", "en.json"), JSON.stringify({ ...readJson(dir, "lang", "en.json"), [OPEN]: "Open, rewritten by BaronHVC" }, null, 2) + "\n");
-  const STALE = `${left} holds authors that a --sign did not finish saving, and they no longer fit the signatures in ${HUMAN_TEXT_FILE} (a text changed or was signed again since, or the file was cut): if that run printed a message, do what it said; if not, delete it (renaming it could record an author for a signature that author was not given)`;
-  const listing = await run(dir);
-  assert.ok(listing.lines.includes(`info: ${STALE}`), listing.out);
-  assert.ok(!listing.out.includes("never saved") && !listing.out.includes("holds the authors of"), listing.out);
-  // He signs it as his own: --sign stops before asking, so no signature is made under that file.
-  const fake = fakeAsk("s");
-  await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fake.ask }), (err) => err instanceof SignTextError && err.message === `${STALE}. Then run this again`);
-  assert.deepEqual(fake.asked, []);
-  // Done as it says: his signature has no author, and IAR18 is never credited with his text.
-  fs.rmSync(path.join(dir, left));
-  const signed = await run(dir, { sign: true, isTTY: true, ask: fakeAsk("s").ask });
-  assert.equal(signed.signed, 1, signed.out);
-  const after = await run(dir);
-  assert.ok(!after.out.includes(`lang/en.json  ${OPEN}  by `) && !after.out.includes(".tmp"), after.out);
-  assert.equal(readAuthorMap(dir)["lang/en.json"][OPEN], undefined);
-});
-
-test("an authors file that only removes records, left by a stopped --sign, says so; --sign waits for it", async (t) => {
-  // Everything signed by BaronHVC, plus an author record whose signature is gone: --sign only drops it.
-  const dir = reSignModule(t, "Open");
-  // human-text.json as sign-text writes it, so --sign leaves it as it is.
-  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), signaturesText(readSigned(dir)));
-  writeAuthors(dir, { ...readAuthorMap(dir), "lang/fr.json": { "baron-fixture.Open": "IAR18" } });
-  const held = readText(dir, HUMAN_TEXT_AUTHORS_FILE);
-  assert.equal(runNode(stopScript(t), [dir, "", "1"]).status, 137);
-  const [left] = tmps(dir);
-  assert.deepEqual(tmps(dir), [left]);
-  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), held);
-  const DROPS = `${left} only removes author records from ${HUMAN_TEXT_AUTHORS_FILE}, as a --sign that did not finish was about to: if that run printed a message, do what it said; if not, rename it over ${HUMAN_TEXT_AUTHORS_FILE} (it gives no text an author) or delete it`;
-  const listing = await run(dir);
-  assert.ok(listing.lines.includes(`info: ${DROPS}`), listing.out);
-  assert.ok(!listing.out.includes("never saved"), listing.out);
-  await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask }), (err) => err instanceof SignTextError && err.message === `${DROPS}. Then run this again`);
-  // Renamed as it says: the record without a signature is gone, and nothing else changed.
-  fs.renameSync(path.join(dir, left), path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-  assert.equal(readAuthorMap(dir)["lang/fr.json"], undefined);
-  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Open"], "BaronHVC");
-  const after = await run(dir);
-  assert.ok(!after.out.includes("have no signature") && !after.out.includes(".tmp"), after.out);
-});
-
-test("a --sign never writes over what another --sign saved while it asked", async (t) => {
-  for (const [answer, orphan] of [
-    ["q", false],
-    ["s", false],
-    ["q", true],
-  ]) {
-    // Every text signed but en and es Notice; P1 (IAR18) waits at its first question while P2 (BaronHVC) signs both.
-    const dir = signedModule(t);
-    const hashes = hashesOf(moduleTexts(dir));
-    delete hashes["lang/en.json"]["baron-fixture.Notice"];
-    delete hashes["lang/es.json"]["baron-fixture.Notice"];
-    // As sign-text writes it: a run that gives nothing leaves it as it is.
-    fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), signaturesText(hashes));
-    // An author record without a signature: a run that gives nothing still drops it, writing the authors file alone.
-    if (orphan) writeAuthors(dir, { "lang/fr.json": { "baron-fixture.Open": "IAR18" } });
-    let other;
-    const ask = async () => {
-      other ??= await run(dir, { sign: true, author: "BaronHVC", isTTY: true, ask: fakeAsk("s", "s").ask });
-      return answer;
-    };
-    if (answer === "q") {
-      // P1 gave nothing: it writes nothing, and P2's signatures and authors stay.
-      const res = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask });
-      assert.equal(other.signed, 2, other.out);
-      assert.equal(res.wrote || res.wroteAuthors, false, res.out);
-      if (orphan) {
-        assert.ok(
-          res.lines.includes(`warn: ${HUMAN_TEXT_FILE} and ${HUMAN_TEXT_AUTHORS_FILE} changed while this run asked: ${HUMAN_TEXT_AUTHORS_FILE} is left as it is, and the next --sign removes its records without a signature`),
-          res.out,
-        );
-      }
-    } else {
-      // P1 signed both: it stops without writing, and says why.
-      await assert.rejects(
-        run(dir, { sign: true, author: "IAR18", isTTY: true, ask }),
-        (err) =>
-          err instanceof SignTextError &&
-          err.message ===
-            `${HUMAN_TEXT_FILE} and ${HUMAN_TEXT_AUTHORS_FILE} changed while this run asked (another --sign saved, or a program or git wrote them): ` +
-              "nothing was written, so that change is kept and the 2 signature(s) given in this run were not saved; run --sign again, one --sign at a time",
-      );
-    }
-    const label = `${answer}${orphan ? " with an author record to drop" : ""}`;
-    assert.equal(readSigned(dir)["lang/en.json"]["baron-fixture.Notice"], oracle("Notice"), label);
-    assert.equal(readSigned(dir)["lang/es.json"]["baron-fixture.Notice"], oracle("Aviso"), label);
-    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Notice": "BaronHVC" }, "lang/es.json": { "baron-fixture.Notice": "BaronHVC" } }, label);
-    assert.deepEqual(tmps(dir), [], label);
-  }
-});
-
-test("a temporary file that cannot be written again after a failed rename: the message names no rename, and signing again is safe", async (t) => {
-  for (const [label, backFails] of [
-    ["the authors file goes back", false],
-    ["the authors file cannot go back either", true],
-  ]) {
-    // en Open was signed as "Open" and recorded as IAR18's; BaronHVC rewrote it and signs it as his own (plain --sign).
-    const dir = reSignModule(t, "Open now", "IAR18");
-    const humanTmp = path.join(dir, `.${HUMAN_TEXT_FILE}.${process.pid}.tmp`);
-    const authorsTmp = path.join(dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
-    const before = [readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)];
-    const realRename = fs.renameSync;
-    const realWrite = fs.writeFileSync;
-    let failed = false;
-    const fail = (code) => {
-      throw Object.assign(new Error(`${code}: injected`), { code });
-    };
-    const rename = t.mock.method(fs, "renameSync", (from, to) => {
-      if (from !== humanTmp) return realRename(from, to);
-      failed = true;
-      return fail("EIO");
-    });
-    const write = t.mock.method(fs, "writeFileSync", (file, ...rest) =>
-      failed && (file === authorsTmp || (backFails && String(file).endsWith(".back.tmp"))) ? fail("ENOSPC") : realWrite(file, ...rest),
-    );
-    let message = "";
-    await assert.rejects(run(dir, { sign: true, isTTY: true, ask: fakeAsk("s").ask }), (err) => {
-      message = err.message;
-      return err instanceof SignTextError;
-    });
-    rename.mock.restore();
-    write.mock.restore();
-    assert.ok(message.includes("could not be kept in temporary files either, so the 1 signature(s) given in this run were not saved: close that program and run --sign again"), `${label}${NL}${message}`);
-    assert.ok(!message.includes("restore it from git") && !message.includes(".tmp"), `${label}${NL}${message}`);
-    assert.deepEqual(tmps(dir), [], label);
-    assert.equal(readText(dir, HUMAN_TEXT_FILE), before[0], label);
-    // The authors file is as it was, or without Open's record: never IAR18's next to a new signature.
-    if (backFails) assert.ok(message.endsWith("it only lacks the author records of signatures that are not valid (the ones this run replaces or drops), so it needs nothing"), message);
-    else assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), before[1], label);
-    // As the message says: signing again gives the new signature no author.
-    assert.equal((await run(dir, { sign: true, isTTY: true, ask: fakeAsk("s").ask })).signed, 1, label);
-    assert.deepEqual(openState(dir), { value: "Open now", author: null }, label);
-  }
-});
-
-test("after a failed rename the message names the renames in the order of the run, and no step shows a signature with another one's author", async (t) => {
-  const realRename = fs.renameSync;
-  const fail = () => {
-    throw Object.assign(new Error("EIO: injected"), { code: "EIO" });
-  };
-  for (const [label, older, author, heldFile, steps, expected] of [
-    ["an author replaced: the authors file, human-text.json, the authors file", "BaronHVC", "IAR18", HUMAN_TEXT_FILE, 3, "IAR18"],
-    ["an author dropped by a plain --sign: the authors file, human-text.json", "IAR18", undefined, HUMAN_TEXT_FILE, 2, null],
-    ["an author added: human-text.json, the authors file", null, "IAR18", HUMAN_TEXT_AUTHORS_FILE, 2, "IAR18"],
-  ]) {
-    const dir = reSignModule(t, "Open now", older);
-    if (!older) {
-      const hashes = readSigned(dir);
-      delete hashes["lang/en.json"]["baron-fixture.Open"];
-      writeSignatures(dir, hashes);
-    }
-    // The run's own rename of `heldFile` fails; the put-back and the first authors step go through.
-    const held = t.mock.method(fs, "renameSync", (from, to) => (to === path.join(dir, heldFile) && !from.endsWith(".back.tmp") && !from.endsWith(".part.tmp") ? fail() : realRename(from, to)));
-    let message = "";
-    await assert.rejects(run(dir, { sign: true, author, isTTY: true, ask: fakeAsk("s").ask }), (err) => {
-      message = err.message;
-      return err instanceof SignTextError;
-    });
-    held.mock.restore();
-    assert.ok(message.includes("Nothing was changed: close that program and run --sign again, after deleting the temporary files of this run; "), `${label}${NL}${message}`);
-    const order = /rename these files in this order: (.+)$/.exec(message)?.[1];
-    assert.ok(order, `${label}${NL}${message}`);
-    const renames = order.split(", then ").map((r) => [r.slice(0, r.lastIndexOf(" over ")), r.slice(r.lastIndexOf(" over ") + " over ".length)]);
-    assert.equal(renames.length, steps, `${label}${NL}${message}`);
-    assert.deepEqual(tmps(dir).sort(), renames.map(([tmp]) => path.basename(tmp)).sort(), label);
-    assert.deepEqual(openState(dir), { value: older ? "Open" : null, author: older }, label);
-    // One rename at a time, as the message says: the old signature keeps its author or none; the new one, the run's or none.
-    for (const [tmp, target] of renames) {
-      realRename(tmp, path.join(dir, target));
-      const now = openState(dir);
-      const allowed = now.value === "Open now" ? expected : older;
-      assert.ok(now.author === null || now.author === allowed, `${label}, after ${path.basename(tmp)}: ${JSON.stringify(now)}`);
-    }
-    // Every rename done: as the run would have left them.
-    assert.deepEqual(openState(dir), { value: "Open now", author: expected }, label);
-    assert.deepEqual(tmps(dir), [], label);
-  }
-});
-
-test("a live --sign whose temporary files someone deleted, taking it for a stopped one, names only files that exist", async (t) => {
-  // IAR18 signs en Open, unsigned until now: human-text.json, then the authors file. Before the first rename,
-  // the person follows a listing made meanwhile and deletes the run's temporary files.
-  const dir = reSignModule(t, "Open now", null);
-  const hashes = readSigned(dir);
-  delete hashes["lang/en.json"]["baron-fixture.Open"];
-  writeSignatures(dir, hashes);
-  const realRename = fs.renameSync;
-  let first = true;
-  const rename = t.mock.method(fs, "renameSync", (from, to) => {
-    if (first) {
-      first = false;
-      for (const f of tmps(dir)) fs.rmSync(path.join(dir, f));
-    }
-    return realRename(from, to);
-  });
-  let message = "";
-  await assert.rejects(run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
-    message = err.message;
-    return err instanceof SignTextError;
-  });
-  rename.mock.restore();
-  assert.deepEqual(openState(dir), { value: null, author: null });
-  const order = /rename these files in this order: (.+)$/.exec(message)?.[1];
-  assert.ok(order, message);
-  const renames = order.split(", then ").map((r) => [r.slice(0, r.lastIndexOf(" over ")), r.slice(r.lastIndexOf(" over ") + " over ".length)]);
-  for (const [tmp] of renames) assert.ok(fs.existsSync(tmp), `${tmp}${NL}${message}`);
-  for (const [tmp, target] of renames) realRename(tmp, path.join(dir, target));
-  assert.deepEqual(openState(dir), { value: "Open now", author: "IAR18" });
-});
-
-test("a put-back that fails never leaves human-text.json half written, and the message names each file to rename", async (t) => {
-  // Every text signed and recorded as BaronHVC's; en Open changed since, and IAR18 signs it now: three steps.
-  const dir = reSignModule(t);
-  const humanFile = path.join(dir, HUMAN_TEXT_FILE);
-  const authorsTmp = path.join(dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
-  const backTmp = path.join(dir, `.${HUMAN_TEXT_FILE}.${process.pid}.back.tmp`);
-  const realRename = fs.renameSync;
-  const realWrite = fs.writeFileSync;
-  const fail = () => {
-    throw Object.assign(new Error("EIO: injected"), { code: "EIO" });
-  };
-  // The last rename fails; a put-back written in place stops half way, and one renamed fails whole.
-  const rename = t.mock.method(fs, "renameSync", (from, to) => (from === authorsTmp || from === backTmp ? fail() : realRename(from, to)));
-  const write = t.mock.method(fs, "writeFileSync", (file, data, ...rest) => {
-    if (file !== humanFile) return realWrite(file, data, ...rest);
-    realWrite(file, Buffer.from(data).subarray(0, Math.floor(Buffer.from(data).length / 2)));
-    return fail();
-  });
-  let message = "";
-  await assert.rejects(run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
-    message = err.message;
-    return err instanceof SignTextError;
-  });
-  rename.mock.restore();
-  write.mock.restore();
-  // human-text.json is whole: the new signature, still without an author.
-  assert.equal(shared.readSignatures(dir).error, undefined);
-  assert.deepEqual(openState(dir), { value: "Open now", author: null });
-  assert.deepEqual(tmps(dir), [path.basename(authorsTmp)]);
-  assert.ok(message.includes(`their authors are in ${authorsTmp}: close that program and rename ${authorsTmp} over ${HUMAN_TEXT_AUTHORS_FILE} `), message);
-  assert.ok(!message.includes("that file"), message);
-  realRename(authorsTmp, path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-  assert.deepEqual(openState(dir), { value: "Open now", author: "IAR18" });
-});
-
-test("a broken human-text.json or human-text-authors.json says to restore both from one commit", async (t) => {
-  const dir = reSignModule(t, "Open");
-  const good = readText(dir, HUMAN_TEXT_FILE);
-  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), "{ not json");
-  await assert.rejects(run(dir), (err) => err instanceof SignTextError && err.message.endsWith(`: restore it from git together with ${HUMAN_TEXT_AUTHORS_FILE}, both from one commit, or delete it and sign every text again`));
-  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), good);
-  fs.writeFileSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE), "{ not json");
-  await assert.rejects(
-    run(dir),
-    (err) => err instanceof SignTextError && err.message.endsWith(`: restore it from git together with ${HUMAN_TEXT_FILE}, both from one commit (deleting it forgets who wrote each signed text)`),
-  );
-  // Without an authors file there is nothing to restore with it.
-  fs.rmSync(path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
-  fs.writeFileSync(path.join(dir, HUMAN_TEXT_FILE), "{ not json");
-  await assert.rejects(run(dir), (err) => err instanceof SignTextError && err.message.endsWith(": restore it from git, or delete it and sign every text again"));
-});
-
 test("the commands sign-text prints keep $, a backtick and braces literal in PowerShell and in Git Bash", async (t) => {
   const dir = signedModule(t);
   const COMMAND = "node ../pf2e-baron-core/tools/sign-text.mjs .";
@@ -1613,28 +1550,82 @@ test("the commands sign-text prints keep $, a backtick and braces literal in Pow
   assert.ok(((await run(dir, { cwd: dir })).lines.find((l) => l.startsWith("next: ")) ?? "").includes('"textos-hoja-IAR18 (1).csv"'));
 });
 
-test("the docs: one --sign at a time, both files restored together and a core from v1.7.0 on, the reviewer as author, when the authors file is written", (t) => {
-  const readme = flat(readText(REPO, "README.md"));
+/* ----------------------------------------------------------------------------
+ * Exports and the docs
+ * -------------------------------------------------------------------------- */
+
+const TEMPLATE = path.resolve(process.env.BARON_TEMPLATE_DIR ?? path.join(REPO, "..", "pf2e-module-template"));
+/** A document as one line: its wording is checked, not where it wraps. */
+const flat = (text) => text.replace(/\s+/g, " ");
+
+test("text-sheet.mjs still exports what v1.6.0 exported, and the docs say which module exports the sheet reader", async (t) => {
+  const TS = await import(pathToFileURL(path.join(TOOLS, "text-sheet.mjs")).href);
+  // readSheet and AUTHOR_HEADERS are v1.6.0's private readSheet and AUTHOR_NAMES, exported only by shared.mjs.
+  assert.equal("readSheet" in TS, false);
+  assert.equal("AUTHOR_HEADERS" in TS, false);
+  assert.equal(typeof shared.readSheet, "function");
+  assert.deepEqual(shared.AUTHOR_HEADERS, ["author", "autor"]);
+  const core = oldCore(t, "v1.6.0");
+  if (core) {
+    const old = await import(pathToFileURL(path.join(core, "tools", "text-sheet.mjs")).href);
+    for (const name of Object.keys(old)) assert.ok(Object.hasOwn(TS, name), name);
+  } else t.diagnostic("v1.6.0 is not in this clone (a shallow checkout): its exports not compared");
+  const changelog = readText(REPO, "CHANGELOG.md");
+  const unreleased = flat(changelog.slice(changelog.indexOf("## [Unreleased]"), changelog.indexOf("## [1.6.0]")));
+  assert.ok(!unreleased.includes("`text-sheet.mjs` los sigue exportando."), unreleased);
+  assert.ok(unreleased.includes("`readSheet` y `AUTHOR_HEADERS` solo los exporta `shared.mjs`"), unreleased);
+  assert.ok(!readText(TOOLS, "text-sheet.mjs").includes("they are still this tool's exports"));
+});
+
+test("the docs: each author bound to its signature, an older core leaves an author that names nobody, a leftover is deleted, one --sign at a time", (t) => {
+  const readmeAll = readText(REPO, "README.md");
+  const part = (text, from, to) => text.slice(text.indexOf(from), text.indexOf(to, text.indexOf(from)));
+  // The sign-text sections of the README: the rest of it may rename and restore other things.
+  const readme = flat(part(readmeAll, "## Firmar los textos humanos", "## Escribir los textos en la hoja") + part(readmeAll, "### Una hoja hecha en otra parte", "### `import`"));
   const header = flat(readText(TOOLS, "sign-text.mjs").split(`${NL}import `)[0].replace(/^\/\/ ?/gm, ""));
   const changelog = readText(REPO, "CHANGELOG.md");
   const unreleased = flat(changelog.slice(changelog.indexOf("## [Unreleased]"), changelog.indexOf("## [1.6.0]")));
+  // What the leftover and rollback machinery of the third review said is gone everywhere.
+  for (const [where, text] of Object.entries({ header, README: readme, CHANGELOG: unreleased })) {
+    for (const gone of ["writeSteps", ".part.tmp", ".back.tmp", "restore human-text.json and it together", "older than v1.7.0 no more", "rename it", "del mismo commit", "en este orden", "se renombre", "renombrarlo", "no corre mientras"]) {
+      assert.ok(!text.includes(gone), `${where} still says ${JSON.stringify(gone)}`);
+    }
+  }
   // One --sign at a time.
   assert.ok(header.includes("Run one --sign at a time per module"), header);
   assert.ok(readme.includes("Corre un solo `--sign` a la vez por"), "README: one --sign at a time");
-  // An author entry binds no signature: a core from v1.7.0 on, and both files from one commit.
-  assert.ok(header.includes("sign with a core older than v1.7.0 no more once a module has this file, and restore human-text.json and it together, from one commit"), header);
-  assert.ok(readme.includes("v1.7.0 o posterior: el `--sign` de uno anterior no conoce el archivo"), "README: older cores");
-  assert.ok(readme.includes("`human-text.json` y `human-text-authors.json` se restauran juntos, del mismo commit"), "README: restored together");
+  // Each entry is bound to its signature, and an older core's signature leaves it naming nobody.
+  assert.ok(header.includes("by plain --sign or by a core older than v1.7.0, or its signature is gone) names nobody"), header);
+  assert.ok(readme.includes(`el sha256 de la firma para la que se guard${ch(0xf3)}`), "README: the entry's sha256");
+  const OLDER = `Un n${ch(0xfa)}cleo anterior (v1.6.0) que vuelve a firmar un texto deja su entrada vieja sin contar`;
+  assert.ok(readme.includes(OLDER), "README: older cores");
+  assert.ok(unreleased.includes(OLDER), "CHANGELOG: older cores");
+  // A leftover is deleted, and --sign does not stop for it.
+  assert.ok(readme.includes("el listado dice que se borre, y `--sign` no se detiene por"), "README: a leftover is deleted");
+  assert.ok(header.includes("A temporary file a run left behind means nothing, and the listing says to delete it"), header);
   // The reviewer of a translation is the signature's author only with --author or --sheet.
   assert.ok(!readme.includes("el que contesta es el propio revisor"), "README: the reviewer answers with plain --sign");
   assert.ok(readme.includes("con `--author BaronHVC` o con su hoja y `--sheet`, para quedar como autor de la firma"), "README: the reviewer as author");
-  // The authors file is written with human-text.json, or alone to drop entries without a signature.
-  assert.ok(!unreleased.includes("y solo cuando este cambia"), unreleased);
-  assert.ok(unreleased.includes("cuando cambia `human-text.json`, en el mismo paso, o solo para quitar entradas sin firma"), unreleased);
-  if (!fs.existsSync(path.join(TEMPLATE, "README.md"))) return t.diagnostic(`no pf2e-module-template at ${TEMPLATE}: its README not checked`);
+  // A signed text without an author that counts is asked about with --author and --sheet.
+  assert.ok(readme.includes(`una firma v${ch(0xe1)}lida sin autor que cuente tambi${ch(0xe9)}n se pregunta`), "README: recording a missing author");
+  // The page's own sheet, and the commands BaronHVC runs on it.
+  for (const command of ["text-sheet.mjs import textos-hoja-IAR18.csv --dry-run", "sign-text.mjs . --sign --sheet textos-hoja-IAR18.csv"]) {
+    assert.ok(readme.includes(command), `README: ${command}`);
+  }
+  if (!fs.existsSync(path.join(TEMPLATE, "README.md"))) return t.diagnostic(`no pf2e-module-template at ${TEMPLATE}: its docs not checked`);
   const template = flat(readText(TEMPLATE, "README.md"));
+  const rule15 = flat(readText(TEMPLATE, "CLAUDE.md"));
+  const init = flat(readText(TEMPLATE, "tools", "init-module.mjs"));
+  for (const [where, text] of [
+    ["template README", template],
+    ["template CLAUDE.md", rule15],
+    ["template init-module.mjs", init],
+  ]) {
+    assert.ok(!text.includes("del mismo commit") && !text.includes("el autor de la firma anterior junto a la nueva"), `${where}: the old rules of the authors file`);
+  }
   assert.ok(!template.includes("el que contesta es el propio revisor"), "template README: the reviewer answers with plain --sign");
   assert.ok(template.includes("con `--author BaronHVC` o con su hoja y `--sheet`, para quedar como autor de la firma"), "template README: the reviewer as author");
-  assert.ok(template.includes("posterior a v1.6.0: el `--sign` de uno anterior no conoce ese archivo"), "template README: older cores");
-  assert.ok(template.includes("se restauran juntos, del mismo commit, y se corre un solo `--sign` a la vez"), "template README: restored together, one at a time");
+  assert.ok(template.includes(`un n${ch(0xfa)}cleo anterior (v1.6.0) que vuelve a firmar un texto deja su autor sin contar`), "template README: older cores");
+  assert.ok(template.includes("se corre un solo `--sign` a la vez"), "template README: one at a time");
+  assert.ok(rule15.includes("atado al sha256 de esa firma"), "template CLAUDE.md: each author bound to its signature");
 });

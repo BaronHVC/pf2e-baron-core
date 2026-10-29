@@ -477,8 +477,10 @@ export function signaturesText(signed) {
  * Who wrote each signed text: human-text-authors.json, next to
  * human-text.json. sign-text --sign --author <name> and --sign --sheet record
  * the author with each signature they give, for the person who attests the
- * texts to Foundry and signs for an author without a terminal. check-module
- * never reads it, and the release ZIP never packs it.
+ * texts to Foundry and signs for an author without a terminal, together with
+ * the hash of that signature: an entry counts only while human-text.json signs
+ * its text with that very hash. check-module never reads it, and the release
+ * ZIP never packs it.
  * -------------------------------------------------------------------------- */
 
 /** The authors, at the module root, committed like human-text.json. */
@@ -542,8 +544,9 @@ export function authorNameProblem(name) {
 
 /**
  * Why `data` is not a valid human-text-authors.json, or null:
- * { "version": 1, "authors": { "<file>": { "<key>": "<name>" } } }, each name
- * as authorNameProblem() accepts it and as authorName() records it.
+ * { "version": 1, "authors": { "<file>": { "<key>": { "name": "<name>", "sha256": "<sha256 hex>" } } } },
+ * each name as authorNameProblem() accepts it and as authorName() records it,
+ * each sha256 the hash of the signature the name was recorded for.
  * @param {unknown} data
  * @returns {string|null}
  */
@@ -556,9 +559,13 @@ export function authorsProblem(data) {
   if (!isPlainObject(data.authors)) return 'needs "authors" to be an object of files';
   for (const [file, keys] of Object.entries(data.authors)) {
     if (!isPlainObject(keys)) return `has authors[${show(file)}] that is not an object of keys`;
-    for (const [key, name] of Object.entries(keys)) {
+    for (const [key, entry] of Object.entries(keys)) {
+      const at = `authors[${show(file)}][${show(key)}]`;
+      if (!isPlainObject(entry) || Object.keys(entry).sort().join() !== "name,sha256") return `has ${at} that is not an object with exactly "name" and "sha256"`;
+      const { name, sha256 } = entry;
       const problem = authorNameProblem(name) ?? (name !== name.trim() ? "spaces at an end" : name !== authorName(name) ? "not in Unicode NFC, as sign-text records it" : null);
-      if (problem) return `has authors[${show(file)}][${show(key)}] that is not an author name (${problem})`;
+      if (problem) return `has ${at}.name that is not an author name (${problem})`;
+      if (typeof sha256 !== "string" || !SHA256_HEX_RE.test(sha256)) return `has ${at}.sha256 that is not a sha256 (64 lowercase hex characters)`;
     }
   }
   return null;
@@ -592,8 +599,9 @@ export function readAuthors(root) {
 
 /**
  * human-text-authors.json text, in the format of human-text.json: keys sorted
- * at every level, 2-space indent, LF and a trailing newline.
- * @param {object} authors file -> key -> name
+ * at every level (so each entry reads "name", then "sha256"), 2-space indent,
+ * LF and a trailing newline.
+ * @param {object} authors file -> key -> { name, sha256 }
  * @returns {string}
  */
 export function authorsText(authors) {

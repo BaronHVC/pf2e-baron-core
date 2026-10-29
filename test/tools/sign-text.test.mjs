@@ -423,7 +423,7 @@ test("--sign: Ctrl+C tells the caller how many answers it threw away", async (t)
   assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
 });
 
-test("--sign tries the rename again while another program holds human-text.json, and keeps the answers when it cannot", async (t) => {
+test("--sign tries the rename again while another program holds human-text.json, and says plainly what was lost when it cannot", async (t) => {
   const dir = signedModule(t);
   const file = path.join(dir, HUMAN_TEXT_FILE);
   const realRename = fs.renameSync;
@@ -444,7 +444,7 @@ test("--sign tries the rename again while another program holds human-text.json,
   assert.deepEqual(readSigned(dir), { "module.json": { title: oracle("Baron Fixture") } });
   assert.deepEqual(tmps(), []);
 
-  // Held for good: the file stays as it was and the answers stay in the temporary file.
+  // Held for good: the file stays as it was, no temporary file is left (one would mean nothing), and the message says to sign again.
   const before = readText(dir, HUMAN_TEXT_FILE);
   const held = t.mock.method(fs, "renameSync", () => {
     throw busy("EBUSY");
@@ -457,13 +457,11 @@ test("--sign tries the rename again while another program holds human-text.json,
   assert.equal(held.mock.callCount(), 10);
   held.mock.restore();
   assert.equal(readText(dir, HUMAN_TEXT_FILE), before);
-  assert.equal(tmps().length, 1);
-  const tmp = path.join(dir, tmps()[0]);
-  assert.deepEqual(JSON.parse(fs.readFileSync(tmp, "utf8")).signed, { "module.json": { title: oracle("Baron Fixture"), description: oracle(readJson(dir, "module.json").description) } });
-  for (const words of [`could not replace ${file} (EBUSY: another program may have it open`, `The 1 signature(s) given in this run are in ${tmp}`, "rename that file over human-text.json, or run --sign again"]) {
+  assert.deepEqual(tmps(), []);
+  for (const words of [`could not replace ${file} (EBUSY: another program may have it open`, ": nothing was changed, and the 1 signature(s) given in this run were not saved; run --sign again"]) {
     assert.ok(message.includes(words), `${words}${NL}${message}`);
   }
-  fs.rmSync(tmp);
+  assert.ok(!message.includes(" rename "), message);
 
   // Any other error is not tried again.
   const other = t.mock.method(fs, "renameSync", () => {
