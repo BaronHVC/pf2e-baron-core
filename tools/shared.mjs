@@ -286,6 +286,12 @@ export const HUMAN_TEXT_MODES = ["markers", "signed"];
 /** The signatures, at the module root. The release ZIP never packs it. */
 export const HUMAN_TEXT_FILE = "human-text.json";
 export const HUMAN_TEXT_VERSION = 1;
+/**
+ * How sign-text is run from the module folder, as the docs write it: its
+ * DEFAULT_COMMAND, here so that text-sheet can name it without importing
+ * sign-text, which imports text-sheet.
+ */
+export const SIGN_TEXT_COMMAND = "node ../pf2e-baron-core/tools/sign-text.mjs .";
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 const isPlainObject = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
@@ -481,18 +487,51 @@ export const HUMAN_TEXT_AUTHORS_VERSION = 1;
 /** The longest author name, in characters (code points), after trimming. */
 export const AUTHOR_NAME_MAX = 60;
 
+// What a name cannot hold besides a control character: a character that prints
+// nothing (format characters such as a zero-width space, a soft hyphen or a
+// direction mark; the line and paragraph separators) or nothing defined (private
+// use), so "IAR18" plus one of them would look like IAR18 and be another author.
+const INVISIBLE_RE = /[\p{Cf}\p{Co}\p{Zl}\p{Zp}]/u;
+// Noncharacters: U+FDD0 to U+FDEF and the last two code points of every plane.
+const isNonCharacter = (cp) => (cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe;
+const BACKSLASH = String.fromCharCode(92);
+
 /**
- * Why `name` cannot name an author, or null. It is trimmed first: what is left
- * must be 1 to AUTHOR_NAME_MAX characters, with no control character.
+ * An author name as it is recorded: trimmed and in Unicode NFC, so a name
+ * typed with a precomposed accent or with a combining one is one author.
+ * @param {string} name
+ * @returns {string}
+ */
+export const authorName = (name) => name.trim().normalize("NFC");
+
+/**
+ * A name for a message: as JSON, with every control, invisible or
+ * noncharacter written as its escape, so a name that only looks like another
+ * one shows the difference.
+ * @param {string} name
+ * @returns {string}
+ */
+export function showName(name) {
+  const escape = (c) => [...c].map((_, i) => `${BACKSLASH}u${c.charCodeAt(i).toString(16).padStart(4, "0")}`).join("");
+  return [...JSON.stringify(String(name))].map((c) => (/\p{Cc}/u.test(c) || INVISIBLE_RE.test(c) || isNonCharacter(c.codePointAt(0)) ? escape(c) : c)).join("");
+}
+
+/**
+ * Why `name` cannot name an author, or null. It is trimmed and put in NFC
+ * first (authorName()): what is left must be 1 to AUTHOR_NAME_MAX characters,
+ * none of them a control character or one that prints nothing.
  * @param {unknown} name
  * @returns {string|null}
  */
 export function authorNameProblem(name) {
   if (typeof name !== "string") return "must be a name";
-  const s = name.trim();
+  if (!name.isWellFormed()) return "holds a lone UTF-16 surrogate";
+  const s = authorName(name);
   if (!s) return "is empty: give the name of the person who wrote the texts";
-  if (/\p{Cc}/u.test(s)) return `${JSON.stringify(s)} holds a control character (a tab, a line break or another invisible one)`;
-  if (!s.isWellFormed()) return "holds a lone UTF-16 surrogate";
+  if (/\p{Cc}/u.test(s)) return `${showName(s)} holds a control character (a tab, a line break or another invisible one)`;
+  if (INVISIBLE_RE.test(s) || [...s].some((c) => isNonCharacter(c.codePointAt(0)))) {
+    return `${showName(s)} holds a character that prints nothing (a zero-width space, a soft hyphen, a direction mark, a line or paragraph separator, a private-use character or a noncharacter): it would look like another name`;
+  }
   const length = [...s].length;
   if (length > AUTHOR_NAME_MAX) return `is ${length} characters long: an author name has ${AUTHOR_NAME_MAX} at most`;
   return null;
@@ -501,7 +540,7 @@ export function authorNameProblem(name) {
 /**
  * Why `data` is not a valid human-text-authors.json, or null:
  * { "version": 1, "authors": { "<file>": { "<key>": "<name>" } } }, each name
- * as authorNameProblem() accepts it, already trimmed.
+ * as authorNameProblem() accepts it and as authorName() records it.
  * @param {unknown} data
  * @returns {string|null}
  */
@@ -515,8 +554,8 @@ export function authorsProblem(data) {
   for (const [file, keys] of Object.entries(data.authors)) {
     if (!isPlainObject(keys)) return `has authors[${show(file)}] that is not an object of keys`;
     for (const [key, name] of Object.entries(keys)) {
-      const problem = authorNameProblem(name);
-      if (problem || name !== name.trim()) return `has authors[${show(file)}][${show(key)}] that is not an author name (${problem ?? "spaces at an end"})`;
+      const problem = authorNameProblem(name) ?? (name !== name.trim() ? "spaces at an end" : name !== authorName(name) ? "not in Unicode NFC, as sign-text records it" : null);
+      if (problem) return `has authors[${show(file)}][${show(key)}] that is not an author name (${problem})`;
     }
   }
   return null;

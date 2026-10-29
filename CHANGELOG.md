@@ -14,32 +14,49 @@ tengan que resincronizar.
   ante Foundry (BaronHVC) firma por el autor que los escribió sin terminal
   (IAR18). Es el mismo `--sign`, pero pregunta «¿<nombre> escribió este texto
   desde cero? [s/N/q]» y cada `s` guarda `<nombre>` como autor de esa firma.
-  El nombre se recorta y debe quedar de 1 a 60 caracteres sin caracteres de
-  control; si no, sale con 2 sin preguntar.
+  El nombre se recorta y se guarda en Unicode NFC, y debe quedar de 1 a 60
+  caracteres, sin caracteres de control ni caracteres que no se ven (formato,
+  como un espacio de ancho cero o una marca de dirección; separadores de
+  línea y de párrafo; uso privado; no caracteres), que harían pasar un nombre
+  por otro; si no, sale con 2 sin preguntar, y el mensaje muestra el carácter
+  escondido como escape. Avisa antes de preguntar si el nombre solo difiere
+  en mayúsculas de uno ya guardado.
 - `sign-text --sign --sheet <archivo.csv>`: lee la hoja con el mismo lector de
   `text-sheet import` y solo pregunta por las celdas de idioma con texto (más
   `module.json:title` y `module.json:description` en la columna del primer
-  idioma), con la clave y el idioma con que `import` las escribe, cuyo valor
-  en el módulo es el de la celda byte por byte y que necesitan firma; la
-  pregunta nombra al `author` de la fila y la firma lo guarda. Lista sin
-  preguntar, con renglón, idioma y clave y nunca el valor: las filas sin
-  autor o con un nombre que no vale, las celdas sin importar o cambiadas
-  después, los textos ya firmados, las celdas que `import` no escribe y un
-  texto que dos filas dan con autores distintos. Con `--author`, sin `--sign`
+  idioma), con la clave y el idioma con que `import` las escribe, que `import`
+  acepta, cuyo valor en el módulo es el de la celda byte por byte y que
+  necesitan firma; la pregunta nombra al `author` de la fila y la firma lo
+  guarda. Antes de preguntar cuenta los textos de cada autor y avisa de dos
+  nombres que solo difieren en mayúsculas. Lista sin preguntar, con renglón,
+  idioma y clave y nunca el valor: las celdas que `import` rechaza (con su
+  motivo) y las columnas que rechaza, las filas sin autor o con un nombre que
+  no vale, las celdas sin importar o cambiadas después, los textos ya
+  firmados (y aparte, con los dos nombres, los que tienen guardado otro autor
+  que el de su fila, o ninguno; el registro no cambia), las celdas que
+  `import` no escribe y un texto que dos filas dan con autores distintos.
+  Los textos del módulo que faltan escribir solo los cuenta. Si la hoja no
+  está donde dice la ruta, el mensaje dice dónde buscó y, si la carpeta del
+  módulo tiene una con ese nombre, cómo pasarla. Con `--author`, sin `--sign`
   o sin archivo sale con 2.
 - `human-text-authors.json`, junto a `human-text.json`: `{ "version": 1,
   "authors": { "<archivo>": { "<clave>": "<nombre>" } } }`, con el formato de
   `human-text.json` (claves ordenadas, dos espacios, LF y salto final). Lo
   escribe solo `sign-text`, en el mismo paso que `human-text.json` y solo
-  cuando este cambia (los dos por temporal y renombrado; si un renombrado
-  falla, el ya reemplazado vuelve a como estaba y lo nuevo queda en los
-  temporales); nunca lo crea vacío. Las firmas de claves que ya no existen se
+  cuando este cambia, por temporal y renombrado y en este orden: el de autores
+  sin las entradas que la corrida quita o reemplaza, `human-text.json`, y el
+  de autores con las entradas nuevas; una corrida cortada entre dos
+  renombrados deja, a lo más, una firma sin autor, nunca con el de otra. Si
+  un renombrado falla, lo ya reemplazado vuelve a como estaba y lo nuevo queda
+  en los temporales, y el listado avisa de los que queden. Nunca lo crea vacío. Las firmas de claves que ya no existen se
   llevan a su autor, y una entrada sin firma se quita. Un `--sign` sin
   `--author` ni `--sheet` pregunta como siempre, no guarda autor y quita el
   que tenía una firma anterior de ese texto. Va al repo y nunca al ZIP.
 - Sin `--sign`, `sign-text` lista cada texto firmado que tiene autor (`signed
-  … by "IAR18"`), cuántos lleva cada autor y las entradas sin firma; sin
-  autores guardados, lista exactamente lo mismo que antes.
+  … by "IAR18"`), cuántos lleva cada autor y las entradas sin firma.
+- `sign-text --sign` recuerda cada 50 preguntas cuántas firmas de la corrida
+  siguen sin guardar (Ctrl+C las tira), y con `q` termina con el comando para
+  seguir (`to continue:`).
 - `tools/shared.mjs`: `HUMAN_TEXT_AUTHORS_FILE`,
   `HUMAN_TEXT_AUTHORS_VERSION`, `AUTHOR_NAME_MAX`, `authorNameProblem`,
   `authorsProblem`, `readAuthors` y `authorsText`; y el lector de la hoja,
@@ -47,6 +64,11 @@ tengan que resincronizar.
   `readSheet`, `TextSheetError` y los nombres de columna (`FIXED_COLUMNS`,
   `CURRENT_PREFIX`, `AUTHOR_COLUMN`, `AUTHOR_HEADERS`, `SECTION_COLUMN`,
   `NOTE_COLUMNS`, `LISTING_PREFIX`). `text-sheet.mjs` los sigue exportando.
+  También `authorName` (recorta y pasa a NFC), `showName` (un nombre con sus
+  caracteres invisibles como escapes) y `SIGN_TEXT_COMMAND`, el comando que
+  `text-sheet` nombra sin importar `sign-text`.
+- `text-sheet.mjs` exporta `sheetRefusals`: las celdas y columnas de una hoja
+  que `import` rechaza, revisadas como él las revisa.
 - `sign-text.mjs` exporta además `authorQuestion` y `AUTHOR_LEGEND`, y
   `signTexts` acepta `author`, `sheet` y `cwd`.
 
@@ -58,6 +80,16 @@ tengan que resincronizar.
   BaronHVC, contestando por el autor de cada fila. La lista por autor y el
   rechazo de `export` a una hoja con textos importados sin firma nombran el
   mismo comando.
+- `text-sheet import` de una hoja ya importada y sin firmar: avisa de las
+  celdas que ya tienen su valor sin firma una por renglón solo hasta 10 (luego
+  cuántas más), con una sola explicación que dice que las firma quien da fe
+  (BaronHVC) por su autor si una persona las escribió; la lista por autor
+  cuenta también esas celdas, y si no escribió nada termina con el mismo
+  comando, condicionado a que una persona los haya escrito.
+- El renglón `next:` del listado de `sign-text` ya no dice «reescríbelos tú y
+  fírmalos»: dice que, una vez que una persona escribió cada texto desde cero,
+  quien da fe (BaronHVC) los firma nombrando al autor, con `--sheet
+  textos-hoja.csv` o `--author <nombre>`.
 - La CI del core trae las etiquetas en el trabajo `tools`: una prueba corre el
   `check-module` de v1.5.0 y de v1.6.0 sobre un módulo con
   `human-text-authors.json` y comprueba que pasa igual que sin él.

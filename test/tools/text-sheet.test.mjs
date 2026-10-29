@@ -27,7 +27,7 @@ import {
   jsonStringLeaves,
   parseDraft,
 } from "../../tools/text-sheet.mjs";
-import { TOOLS, checkModule, git, materialize, readJson, readText, runNode } from "./helpers.mjs";
+import { REPO, TOOLS, checkModule, git, materialize, readJson, readText, runNode } from "./helpers.mjs";
 
 const ch = (...codes) => String.fromCharCode(...codes);
 const BOM = ch(0xfeff);
@@ -891,7 +891,7 @@ test("a brace group that is not a {name} is text: an enricher label after ] and 
   assert.match(missing.out, /lacks \{count\}: it must keep exactly \{count\}/);
 });
 
-test("import never counts a cell that repeats the unsigned value as written or unchanged, and never asks to sign for it", async (t) => {
+test("import never counts a cell that repeats the unsigned value as written or unchanged, and names the signing only if a person wrote it", async (t) => {
   const dir = sheetModule(t);
   const before = bytes(dir, ...TRACKED);
   fs.writeFileSync(path.join(dir, "s.csv"), csvWrite([
@@ -911,7 +911,10 @@ test("import never counts a cell that repeats the unsigned value as written or u
     assert.ok(r.lines.some((l) => l.startsWith("warn: row 3  es  baron-fixture.Unused: is already the value")), r.out);
     assert.ok(r.lines.some((l) => l.startsWith("warn: row 5  en  module.json:description: is already the value in module.json")), r.out);
     assert.ok(!r.out.includes("AI-"), r.out);
-    assert.ok(!/^next: /m.test(r.out), r.out);
+    // A copied AI working text is written again; signing is named only for words a person wrote.
+    assert.ok(r.lines.some((l) => l.includes("if they were copied from the module, they are the AI working text: write them again from scratch")), r.out);
+    if (dryRun) assert.ok(!/^next: /m.test(r.out), r.out);
+    else assert.equal(r.lines.at(-1), `next: if a person wrote those 4 text(s), the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row (no pipe, no redirection): ${SIGN_NEXT} --sheet s.csv`, r.out);
   }
   for (const [f, b] of Object.entries(before)) assert.ok(fs.readFileSync(path.join(dir, f)).equals(b), f);
 });
@@ -1311,4 +1314,59 @@ test("export suggests ignoring every sheet and Excel's lock file, and a textos-h
   fs.writeFileSync(path.join(dir, ".gitignore"), "textos-hoja*\n~$*\n");
   assert.ok(!/gitignore/.test((await exp(dir)).out));
   assert.ok(!/gitignore/.test((await exp(dir, { out: "textos-hoja-IAR18.csv" })).out));
+});
+
+test("importing a sheet again before its signatures lists ten cells at most, and still names the signing for each author", async (t) => {
+  const dir = sheetModule(t);
+  const values = {
+    "baron-fixture.Title": ["Fixture uno", "Fixture dos", "IAR18"],
+    "baron-fixture.Open": ["Open it", "Abrelo", "IAR18"],
+    "baron-fixture.Kind_a": ["Kind uno", "Tipo uno", "IAR18"],
+    "baron-fixture.Kind_b": ["Kind dos", "Tipo dos", "BaronHVC"],
+    "baron-fixture.Unused": ["Unused uno", "Sin uso", "BaronHVC"],
+    "baron-fixture.Notice": ["{count} new", "{count} nuevos", "BaronHVC"],
+  };
+  const cells = Object.entries(values).flatMap(([key, [en, es, author]]) => [[key, "en", en], [key, "es", es], [key, "author", author]]);
+  const file = await fill(dir, [...cells, ["module.json:description", "en", "A new description"], ["module.json:description", "author", "IAR18"]]);
+  const first = await imp(dir, file);
+  assert.equal(first.written, 13, first.out);
+  // As after a q in sign-text, or a sheet downloaded again: the same sheet, imported again.
+  const again = await imp(dir, file);
+  assert.equal(again.code, 0, again.out);
+  assert.equal(again.unsignedSame, 13, again.out);
+  assert.equal(again.lines.filter((l) => /^warn: row \d+ {2}\w+ {2}\S+: is already the value in /.test(l)).length, 10, again.out);
+  assert.ok(again.lines.includes("  and 3 more"), again.out);
+  assert.ok(again.lines.includes("by author (import writes it nowhere; sign-text --sheet asks about each row for its author, and records it with the signature):"), again.out);
+  assert.ok(again.lines.some((l) => /^ {2}IAR18: rows /.test(l)) && again.lines.some((l) => /^ {2}BaronHVC: rows /.test(l)), again.out);
+  assert.equal(
+    again.lines.at(-1),
+    `next: if a person wrote those 13 text(s), the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row (no pipe, no redirection): ${SIGN_NEXT} --sheet ${file}`,
+    again.out,
+  );
+  // Never the old advice that each author signs: the person who attests does.
+  assert.ok(!again.out.includes("that person signs it"), again.out);
+});
+
+test("a sheet made elsewhere imports when its columns have the export's names, and the README lists every one", async (t) => {
+  const dir = sheetModule(t);
+  const header = ["key", ...FIXED_COLUMNS.filter((c) => c !== "key"), "section", `${CURRENT_PREFIX}en`, `${CURRENT_PREFIX}es`, "author", ...TS.NOTE_COLUMNS, "en", "es"];
+  const row = (extra = []) => ["baron-fixture.Open", "el panel", "abre el panel", "", "20", "signed", "Panel", "Open", "Abrir", "IAR18", ...TS.NOTE_COLUMNS.map(() => "una nota"), "Open the panel", "Abrir el panel", ...extra];
+  fs.writeFileSync(path.join(dir, "web.csv"), csvWrite([header, row()]));
+  const ok = await imp(dir, "web.csv", { dryRun: true });
+  assert.equal(ok.code, 0, ok.out);
+  assert.ok(ok.lines.some((l) => l.startsWith("text-sheet: --dry-run: would write 2 text(s)")), ok.out);
+  // A context column under a name of its own, with text: refused, and nothing written without --partial.
+  fs.writeFileSync(path.join(dir, "own.csv"), csvWrite([[...header, "antes_en"], row(["lo de antes"])]));
+  const own = await imp(dir, "own.csv", { dryRun: true });
+  assert.equal(own.code, 1, own.out);
+  assert.ok(own.errors.some((l) => l.includes('"antes_en": has text in row 2, but import reads only "key", "author" and the language columns')), own.out);
+
+  // What a page that builds the sheet needs to know, in the README.
+  const readme = fs.readFileSync(path.join(REPO, "README.md"), "utf8");
+  const at = readme.indexOf("### Una hoja hecha en otra parte");
+  assert.ok(at > 0, "the README has no section for a sheet made elsewhere");
+  // The README wraps its lines anywhere: every run of whitespace counts as one space.
+  const section = readme.slice(at, readme.indexOf("\n#", at + 4)).replace(/\s+/g, " ");
+  for (const name of [...FIXED_COLUMNS, "section", "author", "autor", `${CURRENT_PREFIX}<idioma>`, ...TS.NOTE_COLUMNS]) assert.ok(section.includes(`\`${name}\``), name);
+  for (const words of ["intent", "where", `firma v${ch(0xe1)}lida`, "--partial", "primer idioma"]) assert.ok(section.includes(words), words);
 });

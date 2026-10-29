@@ -51,6 +51,7 @@ import {
   LISTING_PREFIX,
   NOTE_COLUMNS,
   SECTION_COLUMN,
+  SIGN_TEXT_COMMAND as SIGN_COMMAND,
   TextSheetError,
   csvParse,
   decodeSheet,
@@ -66,7 +67,6 @@ import {
   signatureStatus,
   walk,
 } from "./shared.mjs";
-import { DEFAULT_COMMAND as SIGN_COMMAND } from "./sign-text.mjs";
 
 // The sheet's columns and its CSV reader live in shared.mjs, where sign-text
 // --sheet reads the same sheet; they are still this tool's exports.
@@ -1136,9 +1136,132 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
   if (!sheet.langCols.length) throw new TextSheetError(`${file} has no language column: the module declares ${m.langs.join(", ")}`);
 
   log(`text-sheet: ${m.module.id ?? path.basename(root)} (${root}) import ${relPath(cwd, sheetPath) || file}${dryRun ? " --dry-run" : ""}${partial ? " --partial" : ""}`);
+  const { notes, rejects, cells, clash, textsFor, idsOf } = planCells(m, sheet);
+
+  // Nothing written in any language cell: most likely not the file the person saved.
+  if (!rejects.length && !sheet.records.some((r) => sheet.langCols.some((c) => (r.fields[c.idx] ?? "") !== ""))) {
+    throw new TextSheetError(
+      `no ${sheet.langCols.map((c) => c.lang).join(" or ")} cell of ${file} has text: is it the file you saved? ` +
+        'Google Sheets saves its download in Downloads (Descargas) as "<spreadsheet> - <tab>.csv": pass that path, in quotes, ' +
+        `as in ${tool} import "$HOME/Downloads/textos-hoja - textos-hoja.csv"; Excel writes the file only with Guardar como > "CSV UTF-8 (delimitado por comas)"`,
+    );
+  }
+
+  // What changes, file by file. A text equal to its current value changes
+  // nothing: unchanged when that value is signed (or there is no lock), and
+  // reported apart when it has no valid signature (the working text copied
+  // into the sheet, or a text imported before and not signed yet).
+  const claimed = new Set();
+  const edits = new Map();
+  const changes = [];
+  const same = [];
+  let unchanged = 0;
+  for (const c of cells) {
+    if (clash.has(c)) continue;
+    const fresh = idsOf(c).filter((id) => !claimed.has(id));
+    if (!fresh.length) continue;
+    for (const id of fresh) claimed.add(id);
+    const texts = textsFor(c).filter((t) => fresh.includes(`${t.file}\n${c.target.field ?? c.key}`));
+    if (texts.every((t) => t.value === c.value)) {
+      if (m.mode === "signed" && texts.some((t) => t.status !== "signed")) same.push({ ...c, rels: [...new Set(texts.map((t) => t.file))] });
+      else unchanged++;
+      continue;
+    }
+    const rels = [...new Set(texts.map((t) => t.file))];
+    for (const rel of rels) {
+      if (!edits.has(rel)) edits.set(rel, []);
+      edits.get(rel).push(c.target.field ? { field: c.target.field, value: c.value } : { key: c.key, value: c.value });
+    }
+    changes.push({ ...c, rels, was: texts.every((t) => t.status === "signed") ? "signed" : texts[0].label });
+  }
+
+  for (const c of cells.filter((x) => x.warnings.length && !clash.has(x))) for (const w of c.warnings) log(`warn: row ${c.row}  ${c.lang}  ${c.key}: ${w}`);
+  // One line per cell up to CAP: a sheet imported again before its signatures repeats every one of them.
+  listCapped(same, log, (c) => `warn: row ${c.row}  ${c.lang}  ${c.key}: is already the value in ${c.rels.join(", ")}, which has no valid signature: nothing to write`);
+  if (same.length) {
+    log(
+      `info: ${same.length} cell(s) already hold their value without a valid signature. If a person wrote those words (imported before and not signed yet, or the same words by chance), ` +
+        "the person who attests the texts (BaronHVC) signs them for their author with sign-text --sheet; if they were copied from the module, they are the AI working text: write them again from scratch",
+    );
+  }
+  for (const w of bomWarnings(m)) log(`warn: ${w}`);
+  for (const n of notes) log(`note: ${n}`);
+  const result = { code: rejects.length ? 1 : 0, written: 0, unchanged, unsignedSame: same.length, rejected: rejects.length, files: [] };
+  if (rejects.length) {
+    logError(`text-sheet: ${rejects.length} cell(s) refused:`);
+    for (const x of rejects) logError(`  row ${x.row}  ${x.lang}  ${x.key}: ${x.reason}`);
+    if (!partial) {
+      logError(`text-sheet: nothing written: fix those cells in the sheet and import it again, or pass --partial to write the ${changes.length} valid change(s) and leave these out`);
+      return result;
+    }
+  }
+
+  const showChange = (c) => {
+    // Through the leak guard: an old value shows only when it was signed.
+    const shown = shownValue(c.target.field ? [m.listing.get(c.target.field)] : m.byLang.get(c.lang).get(c.key));
+    const old = shown ? ` (replaces the signed text ${JSON.stringify(shown)})` : ` (was ${c.was})`;
+    return `  row ${c.row}  ${c.lang}  ${c.key} -> ${c.rels.join(", ")}: ${JSON.stringify(c.value)}${old}`;
+  };
+  // Who wrote what, of every text still to sign from this sheet: the author
+  // column, written nowhere here; sign-text --sheet asks about each row for it.
+  const toSign = [...changes, ...same];
+  const byAuthor = () => {
+    if (!toSign.some((c) => c.author)) return;
+    const groupsBy = new Map();
+    for (const c of toSign) {
+      const name = c.author || "(no author)";
+      if (!groupsBy.has(name)) groupsBy.set(name, []);
+      if (!groupsBy.get(name).includes(c.row)) groupsBy.get(name).push(c.row);
+    }
+    for (const rows of groupsBy.values()) rows.sort((a, b) => a - b);
+    log("by author (import writes it nowhere; sign-text --sheet asks about each row for its author, and records it with the signature):");
+    const names = [...groupsBy.keys()].filter((n) => n !== "(no author)");
+    for (const name of [...names, ...(groupsBy.has("(no author)") ? ["(no author)"] : [])]) log(`  ${name}: ${rowWord(groupsBy.get(name))}`);
+  };
+  const tail = `${unchanged} unchanged${same.length ? `, ${same.length} already there without a signature` : ""}`;
+  if (dryRun) {
+    log(`text-sheet: --dry-run: would write ${changes.length} text(s)${changes.length ? ` to ${[...edits.keys()].join(", ")}` : ""}, ${tail}; nothing written`);
+    for (const c of changes) log(showChange(c));
+    byAuthor();
+    return result;
+  }
+
+  if (changes.length) {
+    const writes = [...edits.entries()].map(([rel, list]) => {
+      const f = rel === "module.json" ? m.moduleFile : m.files.get(rel);
+      return { file: f.file, rel, before: f.buf, after: applyEdits(f, list) };
+    });
+    await writeAll(writes);
+    result.files = writes.map((w) => w.rel);
+  }
+  result.written = changes.length;
+  log(`text-sheet: wrote ${changes.length} text(s)${changes.length ? ` to ${result.files.join(", ")}` : ""}, ${tail}${rejects.length ? `, ${rejects.length} refused (left out with --partial)` : ""}; ${HUMAN_TEXT_FILE} untouched`);
+  for (const c of changes) log(showChange(c));
+  const resigned = changes.filter((c) => c.was === "signed").length;
+  if (resigned) log(`info: ${resigned} of them replace a signed text: its signature no longer matches`);
+  byAuthor();
+  const how = `(no pipe, no redirection): ${sheetSignCommand(hint, sheetPath)}`;
+  if (changes.length) {
+    log(`next: the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row ${how}`);
+  } else if (same.length) {
+    // Nothing written now, but a sheet imported before may still wait for its signatures.
+    log(`next: if a person wrote those ${same.length} text(s), the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row ${how}`);
+  }
+  return result;
+}
+
+/**
+ * What import makes of each cell of a sheet, before it writes anything: the
+ * notes, the refused cells and columns (each with its reason; a column has
+ * `column: true`), the accepted cells and, among those, the ones that clash
+ * (two different texts for one value: refused too). importSheet() writes from
+ * it; sign-text --sheet never asks about a cell it refuses (sheetRefusals()).
+ */
+function planCells(m, sheet) {
   const notes = [];
   const rejects = [];
-  const reject = (row, lang, key, reason) => rejects.push({ row, lang, key, reason });
+  const reject = (row, lang, key, reason, column = false) => rejects.push({ row, lang, key, reason, ...(column ? { column } : {}) });
+  const byLangCol = new Map(sheet.langCols.map((c) => [c.lang, c]));
 
   // A column import does not read loses whatever was typed in it: refused when it holds text.
   const ignored = [...sheet.notes];
@@ -1153,21 +1276,13 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
       `column ${colName(u.idx)}`,
       u.name ? JSON.stringify(u.name) : "(no header)",
       `has text in ${rowWord(rows)}, but import reads only "key", "${AUTHOR_COLUMN}" and the language columns (${m.langs.join(", ")}): if it holds texts, name it by their language code; a column for your own notes is named "${NOTE_COLUMNS[0]}"`,
+      true,
     );
   }
   ignored.sort((a, b) => a.idx - b.idx);
   if (ignored.length) notes.push(`column(s) ${ignored.map((c) => JSON.stringify(c.name)).join(", ")} ignored: only "key", "${AUTHOR_COLUMN}" and the language columns (${m.langs.join(", ")}) are read`);
   const missingCols = m.langs.filter((l) => !byLangCol.has(l));
   if (missingCols.length) notes.push(`no column for ${missingCols.join(", ")}: those texts stay as they are`);
-
-  // Nothing written in any language cell: most likely not the file the person saved.
-  if (!rejects.length && !sheet.records.some((r) => sheet.langCols.some((c) => (r.fields[c.idx] ?? "") !== ""))) {
-    throw new TextSheetError(
-      `no ${sheet.langCols.map((c) => c.lang).join(" or ")} cell of ${file} has text: is it the file you saved? ` +
-        'Google Sheets saves its download in Downloads (Descargas) as "<spreadsheet> - <tab>.csv": pass that path, in quotes, ' +
-        `as in ${tool} import "$HOME/Downloads/textos-hoja - textos-hoja.csv"; Excel writes the file only with Guardar como > "CSV UTF-8 (delimitado por comas)"`,
-    );
-  }
 
   /** @type {{ row: number, lang: string, key: string, value: string, target: object, author: string, warnings: string[] }[]} */
   const cells = [];
@@ -1235,101 +1350,26 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
   }
   rejects.sort((a, b) => a.row - b.row || a.lang.localeCompare(b.lang));
 
-  // What changes, file by file. A text equal to its current value changes
-  // nothing: unchanged when that value is signed (or there is no lock), and
-  // reported apart when it has no valid signature (the working text copied
-  // into the sheet, or a text imported before and not signed yet).
-  const claimed = new Set();
-  const edits = new Map();
-  const changes = [];
-  const same = [];
-  let unchanged = 0;
-  for (const c of cells) {
-    if (clash.has(c)) continue;
-    const fresh = idsOf(c).filter((id) => !claimed.has(id));
-    if (!fresh.length) continue;
-    for (const id of fresh) claimed.add(id);
-    const texts = textsFor(c).filter((t) => fresh.includes(`${t.file}\n${c.target.field ?? c.key}`));
-    if (texts.every((t) => t.value === c.value)) {
-      if (m.mode === "signed" && texts.some((t) => t.status !== "signed")) same.push({ ...c, rels: [...new Set(texts.map((t) => t.file))] });
-      else unchanged++;
-      continue;
-    }
-    const rels = [...new Set(texts.map((t) => t.file))];
-    for (const rel of rels) {
-      if (!edits.has(rel)) edits.set(rel, []);
-      edits.get(rel).push(c.target.field ? { field: c.target.field, value: c.value } : { key: c.key, value: c.value });
-    }
-    changes.push({ ...c, rels, was: texts.every((t) => t.status === "signed") ? "signed" : texts[0].label });
-  }
+  return { notes, rejects, cells, clash, textsFor, idsOf };
+}
 
-  for (const c of cells.filter((x) => x.warnings.length && !clash.has(x))) for (const w of c.warnings) log(`warn: row ${c.row}  ${c.lang}  ${c.key}: ${w}`);
-  for (const c of same) {
-    log(
-      `warn: row ${c.row}  ${c.lang}  ${c.key}: is already the value in ${c.rels.join(", ")}, which has no valid signature: nothing to write. ` +
-        `If a person wrote these words (in an earlier import, or the same words by chance), that person signs it with sign-text; if they were copied from ${c.rels.join(", ")}, they are the AI working text: write it again from scratch`,
-    );
-  }
-  for (const w of bomWarnings(m)) log(`warn: ${w}`);
-  for (const n of notes) log(`note: ${n}`);
-  const result = { code: rejects.length ? 1 : 0, written: 0, unchanged, unsignedSame: same.length, rejected: rejects.length, files: [] };
-  if (rejects.length) {
-    logError(`text-sheet: ${rejects.length} cell(s) refused:`);
-    for (const x of rejects) logError(`  row ${x.row}  ${x.lang}  ${x.key}: ${x.reason}`);
-    if (!partial) {
-      logError(`text-sheet: nothing written: fix those cells in the sheet and import it again, or pass --partial to write the ${changes.length} valid change(s) and leave these out`);
-      return result;
-    }
-  }
-
-  const showChange = (c) => {
-    // Through the leak guard: an old value shows only when it was signed.
-    const shown = shownValue(c.target.field ? [m.listing.get(c.target.field)] : m.byLang.get(c.lang).get(c.key));
-    const old = shown ? ` (replaces the signed text ${JSON.stringify(shown)})` : ` (was ${c.was})`;
-    return `  row ${c.row}  ${c.lang}  ${c.key} -> ${c.rels.join(", ")}: ${JSON.stringify(c.value)}${old}`;
-  };
-  // Who wrote what: the author column, written nowhere here; sign-text --sheet asks about each row for it.
-  const byAuthor = () => {
-    if (!changes.some((c) => c.author)) return;
-    const groupsBy = new Map();
-    for (const c of changes) {
-      const name = c.author || "(no author)";
-      if (!groupsBy.has(name)) groupsBy.set(name, []);
-      if (!groupsBy.get(name).includes(c.row)) groupsBy.get(name).push(c.row);
-    }
-    log("by author (import writes it nowhere; sign-text --sheet asks about each row for its author, and records it with the signature):");
-    const names = [...groupsBy.keys()].filter((n) => n !== "(no author)");
-    for (const name of [...names, ...(groupsBy.has("(no author)") ? ["(no author)"] : [])]) log(`  ${name}: ${rowWord(groupsBy.get(name))}`);
-  };
-  const tail = `${unchanged} unchanged${same.length ? `, ${same.length} already there without a signature` : ""}`;
-  if (dryRun) {
-    log(`text-sheet: --dry-run: would write ${changes.length} text(s)${changes.length ? ` to ${[...edits.keys()].join(", ")}` : ""}, ${tail}; nothing written`);
-    for (const c of changes) log(showChange(c));
-    byAuthor();
-    return result;
-  }
-
-  if (changes.length) {
-    const writes = [...edits.entries()].map(([rel, list]) => {
-      const f = rel === "module.json" ? m.moduleFile : m.files.get(rel);
-      return { file: f.file, rel, before: f.buf, after: applyEdits(f, list) };
-    });
-    await writeAll(writes);
-    result.files = writes.map((w) => w.rel);
-  }
-  result.written = changes.length;
-  log(`text-sheet: wrote ${changes.length} text(s)${changes.length ? ` to ${result.files.join(", ")}` : ""}, ${tail}${rejects.length ? `, ${rejects.length} refused (left out with --partial)` : ""}; ${HUMAN_TEXT_FILE} untouched`);
-  for (const c of changes) log(showChange(c));
-  const resigned = changes.filter((c) => c.was === "signed").length;
-  if (resigned) log(`info: ${resigned} of them replace a signed text: its signature no longer matches`);
-  byAuthor();
-  if (changes.length) {
-    log(
-      "next: the person who attests the texts (BaronHVC) signs them at a terminal before the next export, answering for the author of each row " +
-        `(no pipe, no redirection): ${sheetSignCommand(hint, sheetPath)}`,
-    );
-  }
-  return result;
+/**
+ * The cells of a saved sheet that text-sheet import refuses, read as import
+ * reads the module and the sheet: for sign-text --sheet, which never asks about
+ * one. `cells`: each refused language cell, once per reason; `columns`: each
+ * column import refuses for holding text it does not read (without --partial,
+ * import then writes nothing from the sheet).
+ * @param {string} root the module folder
+ * @param {Buffer|Uint8Array} buf the sheet as saved
+ * @returns {{ cells: { row: number, lang: string, key: string, reason: string }[], columns: { row: number, lang: string, key: string, reason: string }[] }}
+ * @throws {TextSheetError} when import could not read the module or the sheet
+ */
+export function sheetRefusals(root, buf) {
+  const m = loadModule(root);
+  const sheet = readSheet(buf, m.langs);
+  if (!sheet.header || sheet.keyIdx < 0) return { cells: [], columns: [] };
+  const { rejects } = planCells(m, sheet);
+  return { cells: rejects.filter((r) => !r.column), columns: rejects.filter((r) => r.column) };
 }
 
 /* ----------------------------------------------------------------------------

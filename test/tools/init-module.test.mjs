@@ -49,6 +49,11 @@ test("init-module writes humanText \"signed\" into the baron.json of every new m
     const baron = readJson(dir, "baron.json");
     assert.equal(baron.humanText, "signed", `${id}: ${JSON.stringify(baron)}`);
     assert.ok(out.includes("node ../pf2e-baron-core/tools/sign-text.mjs . --sign"), out);
+    // Decision 28: BaronHVC or IAR18 write the texts, and BaronHVC signs each one for its real author.
+    assert.ok(out.includes("node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet textos-hoja.csv"), out);
+    assert.ok(out.includes("--sign --author <nombre>"), out);
+    assert.ok(out.includes("BaronHVC o IAR18"), out);
+    assert.ok(!out.includes("los escribes tu"), out);
   }
 });
 

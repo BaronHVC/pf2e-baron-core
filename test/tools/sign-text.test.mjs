@@ -29,7 +29,10 @@ import { REPO, TOOLS, childEnv, materialize, readJson, readText, runNode, tempDi
 const oracle = (s) => createHash("sha256").update(Buffer.from(s, "utf8")).digest("hex");
 const SIGN_TEXT = path.join(TOOLS, "sign-text.mjs");
 const NL = String.fromCharCode(10);
-const NEXT = "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node ../pf2e-baron-core/tools/sign-text.mjs . --sign";
+// The next step names who signs (the person who attests) and how the author is named (decision 28).
+const nextLine = (command) =>
+  `next: once a person has written each of these from scratch, the person who attests them (BaronHVC) signs them at a terminal, naming who wrote them: ${command} --sign --sheet textos-hoja.csv (the author of each row) or ${command} --sign --author <name>`;
+const NEXT = nextLine("node ../pf2e-baron-core/tools/sign-text.mjs .");
 
 /** The valid fixture with baron.json "humanText": "signed" plus `spec` (see helpers.materialize). */
 const signedModule = (t, spec = {}) =>
@@ -283,7 +286,7 @@ test("without --sign it lists each unsigned or changed text with file, key and v
     "info: 1 signature(s) for keys that no longer exist; --sign removes them:",
     "stale     lang/en.json  baron-fixture.Gone",
     // The last line says what to do next.
-    "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node ../pf2e-baron-core/tools/sign-text.mjs . --sign",
+    NEXT,
   ]);
   assert.ok(res.lines[0].startsWith("sign-text: baron-fixture ("), res.lines[0]);
   // Listing never writes.
@@ -323,7 +326,9 @@ test("the listing ends with the command that signs, and says when check-module d
   assert.equal(off.lines.at(-1), `${NEXT} (check-module asks for them once baron.json says "humanText": "signed")`, off.out);
   // The CLI passes the command as the person typed it.
   const typed = await run(signedModule(t), { command: "node tools/sign-text.mjs mod" });
-  assert.equal(typed.lines.at(-1), "next: rewrite each of these yourself, from scratch, then sign them in your terminal: node tools/sign-text.mjs mod --sign", typed.out);
+  assert.equal(typed.lines.at(-1), nextLine("node tools/sign-text.mjs mod"), typed.out);
+  // Never the old hint that sent the person who signs to rewrite every text alone, and record no author.
+  assert.ok(!on.out.includes("rewrite each of these yourself"), on.out);
   // Nothing to sign: no next step.
   const dir = signedModule(t);
   writeSignatures(dir, hashesOf(fixtureTexts(dir)));
