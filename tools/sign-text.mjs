@@ -6,6 +6,8 @@
 //   node ../pf2e-baron-core/tools/sign-text.mjs [moduleDir=cwd] --sign   sign, one question per text
 //   node ../pf2e-baron-core/tools/sign-text.mjs [moduleDir=cwd] --sign --author <name>
 //                                                                        sign for <name>, who wrote them
+//   node ../pf2e-baron-core/tools/sign-text.mjs [moduleDir=cwd] --sign --sheet <file.csv>
+//                                                                        sign for the author of each row
 //
 // Foundry's AI policy (publisher handbook 4.1) wants UI labels and prepared
 // text written by a person. A signature records, per file and key, the sha256
@@ -37,6 +39,16 @@
 // is written with human-text.json, in the same step, and loses the entries of
 // the signatures --sign drops; check-module never reads it, and the listing
 // shows the author of each signed text that has one, and a count per author.
+//
+// --sheet <file.csv> reads a text sheet with text-sheet import's own reader
+// and asks only about its language cells with text (the module.json title and
+// description too, from the first language column), mapped to the module as
+// import maps them, whose value in the module is byte for byte the cell (line
+// breaks as import writes them) and needs a signature: "did <author> write
+// this text from scratch?", <author> being the row's "author" column, which
+// each signature records. A row without an author, a cell whose value in the
+// module differs (not imported yet, or changed since), a text already signed
+// and a text that rows with two authors give are reported, never asked about.
 
 import fs from "node:fs";
 import path from "node:path";
@@ -45,19 +57,23 @@ import { fileURLToPath } from "node:url";
 import {
   HUMAN_TEXT_AUTHORS_FILE,
   HUMAN_TEXT_FILE,
+  LISTING_FIELDS,
+  LISTING_PREFIX,
+  TextSheetError,
   authorNameProblem,
   authorsText,
   hashText,
   humanTexts,
   languageEntries,
   readAuthors,
+  readSheet,
   readSignatures,
   signatureStatus,
   signaturesText,
   staleSignatures,
 } from "./shared.mjs";
 
-const USAGE = "usage: node sign-text.mjs [moduleDir] [--sign [--author <name>]]";
+const USAGE = "usage: node sign-text.mjs [moduleDir] [--sign [--author <name> | --sheet <file.csv>]]";
 
 // The lines in Spanish, for the person who signs. Built from char codes so
 // this file stays ASCII: the inverted question mark and the accented u and o.
@@ -157,7 +173,8 @@ function readModuleJson(root, rel) {
 function load(root) {
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new SignTextError(`${root} is not a folder`);
   const module = readModuleJson(root, "module.json");
-  const rels = [...new Set(languageEntries(root, module).map((l) => l.rel))];
+  const entries = languageEntries(root, module);
+  const rels = [...new Set(entries.map((l) => l.rel))];
   const langFiles = rels.map((rel) => ({ rel, data: readModuleJson(root, rel) }));
   const read = readSignatures(root);
   if (read.error) {
@@ -178,6 +195,7 @@ function load(root) {
   const texts = signatureStatus(humanTexts(module, langFiles), read.signed);
   return {
     module,
+    entries,
     texts,
     signed: read.signed,
     missing: !!read.missing,
@@ -303,6 +321,106 @@ async function writeTogether(writes, signed) {
   }
 }
 
+// What --sheet reports instead of asking, in this order; "signed" only as a count.
+const SHEET_SKIPS = [
+  ["unmapped", "cell(s) that text-sheet import writes nowhere (no key, a key that is not in the files of that language, or a module.json row outside the first language column)"],
+  ["differs", "cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first; a cell that import refuses is never signed)"],
+  ["signed", "cell(s) already validly signed"],
+  ["blocked", "cell(s) whose text cannot be signed yet (still to write, a list, a key defined twice or a broken string)"],
+  ["noAuthor", 'cell(s) in rows without an author: write in "author" the name of the person who wrote each one, save the sheet and run this again'],
+  ["badAuthor", "cell(s) whose author is not a valid name (1 to 60 characters, no control character)"],
+  ["twoAuthors", "cell(s) that give one text with different authors: keep one row for it"],
+];
+
+/**
+ * What --sheet asks about: each language cell with text of the sheet (the
+ * module.json title and description from the first language column), mapped
+ * as text-sheet import maps it, whose value in the module is byte for byte the
+ * cell and needs a signature, once per text, with the author of its row. Every
+ * other cell goes to `skips`, by SHEET_SKIPS reason. Values are never kept for
+ * the report: a value that differs may be an AI working text.
+ * @returns {{ queue: { t: object, author: string, rows: number[] }[], skips: Record<string, object[]> }}
+ */
+function sheetPlan({ sheetPath, shown, entries, texts }) {
+  if (!fs.existsSync(sheetPath) || !fs.statSync(sheetPath).isFile()) throw new SignTextError(`${shown} does not exist`);
+  const langs = [...new Set(entries.map((e) => e.lang))];
+  let sheet;
+  try {
+    sheet = readSheet(fs.readFileSync(sheetPath), langs);
+  } catch (err) {
+    if (err instanceof TextSheetError) throw new SignTextError(`${shown}: ${err.message}`);
+    throw err;
+  }
+  if (!sheet.header || sheet.keyIdx < 0) throw new SignTextError(`${shown} has no header row with a "key" column: --sheet reads the sheet that text-sheet export wrote and import read`);
+  if (!sheet.langCols.length) throw new SignTextError(`${shown} has no language column: the module declares ${langs.join(", ")}`);
+  const twice = sheet.langCols.find((c, i) => sheet.langCols.findIndex((d) => d.lang === c.lang) !== i);
+  if (twice) throw new SignTextError(`${shown} has two "${twice.lang}" columns: keep one`);
+
+  const skips = Object.fromEntries(SHEET_SKIPS.map(([id]) => [id, []]));
+  const asked = new Map(); // text -> the cells that give it
+  for (const r of sheet.records) {
+    const key = (r.fields[sheet.keyIdx] ?? "").trim();
+    const author = sheet.authorIdx < 0 ? "" : (r.fields[sheet.authorIdx] ?? "").trim();
+    for (const c of sheet.langCols) {
+      const cell = r.fields[c.idx] ?? "";
+      if (cell === "") continue;
+      // What import writes: the cell with its line breaks as LF.
+      const value = cell.replace(/\r\n?/g, "\n");
+      const at = { row: r.row, lang: c.lang, key: key || "(no key)" };
+      let targets = [];
+      if (key.startsWith(LISTING_PREFIX)) {
+        const field = key.slice(LISTING_PREFIX.length);
+        if (LISTING_FIELDS.includes(field) && c.lang === langs[0]) targets = texts.filter((t) => t.file === "module.json" && t.key === field);
+      } else if (key) {
+        const rels = entries.filter((e) => e.lang === c.lang).map((e) => e.rel);
+        targets = texts.filter((t) => rels.includes(t.file) && t.key === key);
+      }
+      if (!targets.length) {
+        skips.unmapped.push(at);
+        continue;
+      }
+      if (targets.some((t) => t.value !== value)) {
+        skips.differs.push({ ...at, files: [...new Set(targets.map((t) => t.file))] });
+        continue;
+      }
+      for (const t of targets) {
+        const one = targets.length > 1 ? { ...at, files: [t.file] } : at;
+        if (t.status === "signed") skips.signed.push(one);
+        else if (!TO_SIGN.has(t.status)) skips.blocked.push(one);
+        else if (!author) skips.noAuthor.push(one);
+        else if (authorNameProblem(author)) skips.badAuthor.push({ ...one, author });
+        else {
+          if (!asked.has(t)) asked.set(t, []);
+          asked.get(t).push({ ...one, author });
+        }
+      }
+    }
+  }
+  const queue = [];
+  for (const [t, cells] of asked) {
+    if (new Set(cells.map((x) => x.author)).size > 1) skips.twoAuthors.push(...cells);
+    else queue.push({ t, author: cells[0].author, rows: [...new Set(cells.map((x) => x.row))] });
+  }
+  return { queue, skips };
+}
+
+/** What --sheet does not ask about, by reason: rows, columns and keys, never values. */
+function reportSheet(skips, log) {
+  for (const [id, what] of SHEET_SKIPS) {
+    const list = skips[id];
+    if (!list.length) continue;
+    if (id === "signed") {
+      log(`info: ${list.length} ${what}: not asked`);
+      continue;
+    }
+    log(`info: ${list.length} ${what}; not asked:`);
+    for (const x of list.slice(0, STALE_CAP)) {
+      log(`  row ${x.row}  ${x.lang}  ${x.key}${x.files ? ` -> ${x.files.join(", ")}` : ""}${x.author ? `  (${JSON.stringify(x.author)})` : ""}`);
+    }
+    if (list.length > STALE_CAP) log(`  and ${list.length - STALE_CAP} more`);
+  }
+}
+
 /**
  * Lists the texts that need a signature or, with `sign`, asks about each one
  * and writes human-text.json (and human-text-authors.json). The CLI wraps it;
@@ -311,6 +429,9 @@ async function writeTogether(writes, signed) {
  *   dir?: string,
  *   sign?: boolean,
  *   author?: string,                         with `sign`: who wrote the texts (--author); each signature records it
+ *   sheet?: string,                          with `sign`, not with `author`: the text sheet (--sheet), from `cwd`;
+ *                                            each row's "author" wrote its cells, and each signature records it
+ *   cwd?: string,                            the folder `sheet` is relative to (default: the current one)
  *   isTTY?: boolean | { stdin: boolean, stdout: boolean },  stdin and stdout are both a terminal
  *   ask?: (question: string) => Promise<string>,  one answer per call; a rejection (Ctrl+C) aborts without
  *                                                 writing, and gets `signedBeforeStop`, the answers it threw away
@@ -322,12 +443,15 @@ async function writeTogether(writes, signed) {
  *   code 2: the options do not go together, or the author name is not valid
  * @throws {SignTextError} when the module cannot be read, or human-text.json cannot be written
  */
-export async function signTexts({ dir = process.cwd(), sign = false, author, isTTY = false, ask, command = DEFAULT_COMMAND, log = console.log, logError = console.error } = {}) {
+export async function signTexts({ dir = process.cwd(), sign = false, author, sheet, cwd = process.cwd(), isTTY = false, ask, command = DEFAULT_COMMAND, log = console.log, logError = console.error } = {}) {
   const result = { code: 0, pending: 0, signed: 0, skipped: 0, stale: 0, wrote: false, wroteAuthors: false };
   const usage = (message) => {
     logError(`sign-text: ERROR: ${message}\n${USAGE}`);
     return { ...result, code: 2 };
   };
+  if (author !== undefined && sheet !== undefined) {
+    return usage("--author and --sheet do not go together: --author names the author of every text it asks about, --sheet takes the author of each row from the sheet");
+  }
   let name = null;
   if (author !== undefined) {
     if (!sign) return usage("--author goes with --sign");
@@ -335,14 +459,18 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, isT
     if (problem) return usage(`--author ${problem}`);
     name = author.trim();
   }
-  const flags = `--sign${name !== null ? ` --author ${quoteArg(name)}` : ""}`;
+  if (sheet !== undefined) {
+    if (!sign) return usage("--sheet goes with --sign");
+    if (typeof sheet !== "string" || !sheet.trim()) return usage("--sheet needs the sheet file, as in --sheet textos-hoja.csv");
+  }
+  const flags = `--sign${name !== null ? ` --author ${quoteArg(name)}` : ""}${sheet !== undefined ? ` --sheet ${quoteArg(sheet)}` : ""}`;
   if (sign && !bothTty(isTTY)) {
     logError(noTtyMessage({ ...(isTTY !== null && typeof isTTY === "object" ? isTTY : {}), command, flags }));
     return { ...result, code: 1 };
   }
   if (sign && typeof ask !== "function") throw new TypeError("signTexts: --sign needs an ask() function");
   const root = path.resolve(dir);
-  const { module, texts, signed, missing, stale, mode, authors, authorsMissing } = load(root);
+  const { module, entries, texts, signed, missing, stale, mode, authors, authorsMissing } = load(root);
   const pending = texts.filter((t) => TO_SIGN.has(t.status));
   const blocked = texts.filter((t) => !TO_SIGN.has(t.status) && t.status !== "signed");
   const done = texts.length - pending.length - blocked.length;
@@ -386,7 +514,17 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, isT
   }
 
   // What to ask about, and for whom: null is the person at the terminal.
-  const queue = pending.map((t) => ({ t, author: name }));
+  let queue = pending.map((t) => ({ t, author: name, rows: [] }));
+  if (sheet !== undefined) {
+    const sheetPath = path.resolve(cwd, sheet);
+    const shown = path.relative(cwd, sheetPath).split(path.sep).join("/") || sheet;
+    const plan = sheetPlan({ sheetPath, shown, entries, texts });
+    queue = plan.queue;
+    log(`sheet: ${shown}: ${queue.length} text(s) to ask about, each for the author of its row`);
+    reportSheet(plan.skips, log);
+    const elsewhere = pending.filter((t) => !queue.some((q) => q.t === t)).length;
+    if (elsewhere) log(`info: ${elsewhere} other text(s) need a signature and are not asked about from this sheet; sign-text without --sign lists them`);
+  }
   const next = copyByFile(signed);
   for (const { file, key } of stale) {
     delete next[file][key];
@@ -394,14 +532,15 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, isT
   }
   if (queue.length) {
     log("");
-    for (const line of name !== null ? AUTHOR_LEGEND : LEGEND) log(line);
+    for (const line of name !== null || sheet !== undefined ? AUTHOR_LEGEND : LEGEND) log(line);
   }
   // The signatures given in this run, and the author each one records (null: none).
   const given = [];
   let stopped = false;
-  for (const [i, { t, author: by }] of queue.entries()) {
+  for (const [i, { t, author: by, rows }] of queue.entries()) {
     log("");
-    log(`[${i + 1}/${queue.length}] ${t.file}  ${t.key}${t.status === "changed" ? "  (changed since it was signed)" : ""}`);
+    const where = rows.length ? `  (sheet row${rows.length > 1 ? "s" : ""} ${rows.join(", ")})` : "";
+    log(`[${i + 1}/${queue.length}] ${t.file}  ${t.key}${t.status === "changed" ? "  (changed since it was signed)" : ""}${where}`);
     log(`  ${JSON.stringify(t.value)}`);
     let answer;
     for (;;) {
@@ -524,25 +663,28 @@ function terminal() {
 async function main(argv) {
   let dir = null;
   let sign = false;
-  let author;
+  const valued = { "--author": undefined, "--sheet": undefined };
+  const needs = { "--author": "the name of the person who wrote the texts", "--sheet": "the sheet file, as in --sheet textos-hoja.csv" };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    const flag = Object.keys(valued).find((f) => a === f || a.startsWith(`${f}=`));
     if (a === "--sign") sign = true;
-    else if (a === "--author" || a.startsWith("--author=")) {
-      // A missing name is an invalid one: exit 2, as signTexts() answers for a bad name.
-      const value = a === "--author" ? argv[i + 1] : a.slice("--author=".length);
-      if (a === "--author") {
+    else if (flag) {
+      // A mistake in these options exits 2, as signTexts() does for a bad name.
+      let value = a.slice(flag.length + 1);
+      if (a === flag) {
+        value = argv[i + 1];
         if (value === undefined || value.startsWith("--")) {
-          console.error(`sign-text: ERROR: --author needs the name of the person who wrote the texts\n${USAGE}`);
+          console.error(`sign-text: ERROR: ${flag} needs ${needs[flag]}\n${USAGE}`);
           return 2;
         }
         i++;
       }
-      if (author !== undefined) {
-        console.error(`sign-text: ERROR: --author given twice: one run signs for one author\n${USAGE}`);
+      if (valued[flag] !== undefined) {
+        console.error(`sign-text: ERROR: ${flag} given twice\n${USAGE}`);
         return 2;
       }
-      author = value;
+      valued[flag] = value;
     } else if (a === "-h" || a === "--help") {
       console.log(USAGE);
       return 0;
@@ -560,7 +702,8 @@ async function main(argv) {
     const { code } = await signTexts({
       dir: dir ?? process.cwd(),
       sign,
-      author,
+      author: valued["--author"],
+      sheet: valued["--sheet"],
       isTTY: { stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true },
       ask: (question) => (term ??= terminal()).ask(question),
       command: commandLine(dir),

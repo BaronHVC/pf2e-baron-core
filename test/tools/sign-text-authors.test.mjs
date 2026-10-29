@@ -1,6 +1,6 @@
-// Who wrote each signed text: sign-text --sign --author <name>, the
-// human-text-authors.json file next to human-text.json, and what an older
-// core's check-module makes of a module that has one. The terminal is faked
+// Who wrote each signed text: sign-text --sign --author <name> and --sheet
+// <file.csv>, the human-text-authors.json file next to human-text.json, and
+// what an older core's check-module makes of a module that has one. The terminal is faked
 // as in sign-text.test.mjs: the TTY flag and the answers are injected.
 
 import assert from "node:assert/strict";
@@ -20,6 +20,7 @@ import {
   signaturesText,
 } from "../../tools/shared.mjs";
 import { AUTHOR_LEGEND, LEGEND, QUESTION, SignTextError, authorQuestion, signTexts } from "../../tools/sign-text.mjs";
+import { SHEET_FILE, csvParse, csvWrite, decodeSheet, exportSheet, importSheet } from "../../tools/text-sheet.mjs";
 import { REPO, TOOLS, childEnv, materialize, readJson, readText, runNode, tempDir } from "./helpers.mjs";
 
 const ch = (...codes) => String.fromCharCode(...codes);
@@ -504,4 +505,205 @@ test("the check-module of an older core (v1.5.0, v1.6.0) still passes a module w
     // This core's check-module is v1.6.0's, byte for byte in what it prints.
     if (tag === "v1.6.0") assert.equal(current.out, withFile.out);
   }
+});
+
+/* ----------------------------------------------------------------------------
+ * --sheet
+ * -------------------------------------------------------------------------- */
+
+const SHEET_HEADER = ["key", "en", "es", "author"];
+
+/** Writes `rows` (after SHEET_HEADER, unless `header` says otherwise) as a CSV the way text-sheet export writes it. */
+function writeSheet(dir, rows, { name = "hoja.csv", header = SHEET_HEADER } = {}) {
+  fs.writeFileSync(path.join(dir, name), csvWrite([header, ...rows]));
+  return name;
+}
+
+/** The module of the --sheet tests: five texts signed, the rest imported from a sheet and not signed yet. */
+function sheetModule(t) {
+  const dir = signedModule(t, { merge: { "lang/es.json": { "baron-fixture.Kind_a": `Tipo${NL}A` } } });
+  const texts = moduleTexts(dir);
+  writeSignatures(dir, {
+    "module.json": { title: oracle(texts["module.json"].title) },
+    "lang/en.json": { "baron-fixture.Title": oracle("Baron Fixture"), "baron-fixture.Kind_b": oracle("Kind B") },
+    "lang/es.json": { "baron-fixture.Title": oracle("Baron Fixture"), "baron-fixture.Kind_b": oracle("Tipo B") },
+  });
+  return { dir, description: texts["module.json"].description };
+}
+
+test("--sheet asks only about the cells whose value in the module is the sheet's, each for the author of its row", async (t) => {
+  const { dir, description } = sheetModule(t);
+  const CRLF = `${ch(13)}${NL}`;
+  const sheet = writeSheet(dir, [
+    /* 2 */ ["baron-fixture.Open", "Open", "Abrir", "IAR18"],
+    /* 3 */ ["baron-fixture.Notice", "Notice", "Aviso nuevo", "BaronHVC"],
+    /* 4 */ ["baron-fixture.Kind_a", "Kind A", "", ""],
+    /* 5 */ ["baron-fixture.Kind_b", "Kind B", "", "IAR18"],
+    /* 6 */ ["module.json:description", description, "", " IAR18 "],
+    /* 7 */ ["module.json:title", "", "Baron Fixture", "IAR18"],
+    /* 8 */ ["baron-fixture.Nope", "x", "", "IAR18"],
+    /* 9 */ ["baron-fixture.Unused", "Never referenced", "", "x".repeat(61)],
+    /* 10 */ ["baron-fixture.Unused", "", "Nunca referida", "IAR18"],
+    // A line break as Excel saves it: import writes it as LF, which is the module's value.
+    /* 11 */ ["baron-fixture.Kind_a", "", `Tipo${CRLF}A`, "BaronHVC"],
+    // The en Open of row 2 again, with another author: never asked.
+    /* 12 */ ["baron-fixture.Open", "Open", "", "BaronHVC"],
+  ]);
+  const before = readText(dir, "lang", "en.json") + readText(dir, "lang", "es.json") + readText(dir, "module.json");
+  const fake = fakeAsk("s", "s", "s", "n", "s");
+  const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
+  assert.equal(res.code, 0, res.out);
+  assert.deepEqual(fake.asked, [authorQuestion("IAR18"), authorQuestion("BaronHVC"), authorQuestion("IAR18"), authorQuestion("IAR18"), authorQuestion("BaronHVC")]);
+  assert.ok(res.lines[0].endsWith(" --sign --sheet hoja.csv"), res.lines[0]);
+  for (const line of [
+    "sheet: hoja.csv: 5 text(s) to ask about, each for the author of its row",
+    "info: 2 cell(s) that text-sheet import writes nowhere (no key, a key that is not in the files of that language, or a module.json row outside the first language column); not asked:",
+    "  row 7  es  module.json:title",
+    "  row 8  en  baron-fixture.Nope",
+    "info: 1 cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first; a cell that import refuses is never signed); not asked:",
+    "  row 3  es  baron-fixture.Notice -> lang/es.json",
+    "info: 1 cell(s) already validly signed: not asked",
+    'info: 1 cell(s) in rows without an author: write in "author" the name of the person who wrote each one, save the sheet and run this again; not asked:',
+    "  row 4  en  baron-fixture.Kind_a",
+    "info: 1 cell(s) whose author is not a valid name (1 to 60 characters, no control character); not asked:",
+    `  row 9  en  baron-fixture.Unused  (${JSON.stringify("x".repeat(61))})`,
+    "info: 2 cell(s) that give one text with different authors: keep one row for it; not asked:",
+    '  row 2  en  baron-fixture.Open  ("IAR18")',
+    '  row 12  en  baron-fixture.Open  ("BaronHVC")',
+    "info: 4 other text(s) need a signature and are not asked about from this sheet; sign-text without --sign lists them",
+    "[1/5] lang/es.json  baron-fixture.Open  (sheet row 2)",
+    "[2/5] lang/en.json  baron-fixture.Notice  (sheet row 3)",
+    "[3/5] module.json  description  (sheet row 6)",
+    "[4/5] lang/es.json  baron-fixture.Unused  (sheet row 10)",
+    "[5/5] lang/es.json  baron-fixture.Kind_a  (sheet row 11)",
+    "sign-text: 4 signed, 1 skipped; wrote human-text.json and human-text-authors.json",
+    'sign-text: authors recorded with the signatures of this run: "BaronHVC" 2, "IAR18" 2',
+  ]) {
+    assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
+  }
+  // The legend of --author, before the first question.
+  assert.ok(res.lines.indexOf(AUTHOR_LEGEND[0]) < res.lines.indexOf("[1/5] lang/es.json  baron-fixture.Open  (sheet row 2)"), res.out);
+  // A value that differs is never printed: it may be an AI working text.
+  assert.ok(!res.out.includes('"Aviso"'), res.out);
+  assert.deepEqual(readAuthorMap(dir), {
+    "lang/en.json": { "baron-fixture.Notice": "BaronHVC" },
+    "lang/es.json": { "baron-fixture.Kind_a": "BaronHVC", "baron-fixture.Open": "IAR18" },
+    "module.json": { description: "IAR18" },
+  });
+  const signed = readSigned(dir);
+  assert.equal(signed["lang/es.json"]["baron-fixture.Open"], oracle("Abrir"));
+  assert.equal(signed["lang/es.json"]["baron-fixture.Kind_a"], oracle(`Tipo${NL}A`));
+  assert.equal(signed["module.json"].description, oracle(description));
+  assert.ok(!Object.hasOwn(signed["lang/es.json"], "baron-fixture.Unused"));
+  assert.ok(!Object.hasOwn(signed["lang/en.json"], "baron-fixture.Open"));
+  // It only signs: the module's texts are untouched.
+  assert.equal(readText(dir, "lang", "en.json") + readText(dir, "lang", "es.json") + readText(dir, "module.json"), before);
+
+  // Run again: what it signed is now reported as signed, and only the skipped text is asked about.
+  const again = fakeAsk("s");
+  const second = await run(dir, { sign: true, sheet: path.join(dir, sheet), isTTY: true, ask: again.ask });
+  assert.deepEqual(again.asked, [authorQuestion("IAR18")]);
+  assert.ok(second.lines.includes("info: 5 cell(s) already validly signed: not asked"), second.out);
+  assert.equal(readAuthorMap(dir)["lang/es.json"]["baron-fixture.Unused"], "IAR18");
+});
+
+test("--sheet asks once about a text that several rows give with one author, and reads only the language columns", async (t) => {
+  const { dir } = sheetModule(t);
+  const sheet = writeSheet(
+    dir,
+    [
+      ["", "baron-fixture.Open", "Open", "", "Open", "IAR18"],
+      ["", "baron-fixture.Open", "Open", "", "", "IAR18"],
+      // current_en is never read, whatever it holds.
+      ["", "baron-fixture.Unused", "", "", "Never referenced", "IAR18"],
+    ],
+    { header: ["notas", "key", "en", "es", "current_en", "author"] },
+  );
+  const fake = fakeAsk("s");
+  const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
+  assert.equal(fake.asked.length, 1, res.out);
+  assert.ok(res.lines.includes("[1/1] lang/en.json  baron-fixture.Open  (sheet rows 2, 3)"), res.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "IAR18" } });
+});
+
+test("--sheet follows text-sheet's export and import: before the import nothing matches, after it every imported cell does", async (t) => {
+  const dir = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Notice": "TODO-HUMANO: a notice" }, "lang/es.json": { "baron-fixture.Notice": "TODO-HUMANO: un aviso" } } });
+  writeSignatures(dir, hashesOf({ "module.json": moduleTexts(dir)["module.json"] }));
+  const quiet = { log: () => {}, logError: () => {}, cwd: dir, dir };
+  await exportSheet(quiet);
+  const { records } = csvParse(decodeSheet(fs.readFileSync(path.join(dir, SHEET_FILE))));
+  const [header, ...rows] = records.map((r) => r.fields);
+  const col = (name) => header.indexOf(name);
+  const row = (key) => rows.find((r) => r[col("key")] === key);
+  row("baron-fixture.Notice")[col("en")] = "A notice";
+  row("baron-fixture.Notice")[col("es")] = "Un aviso";
+  row("baron-fixture.Notice")[col("author")] = "IAR18";
+  row("baron-fixture.Kind_a")[col("es")] = "Tipo A, escrito de nuevo";
+  row("baron-fixture.Kind_a")[col("author")] = "BaronHVC";
+  fs.writeFileSync(path.join(dir, SHEET_FILE), csvWrite([header, ...rows]));
+
+  // Not imported yet: nothing to ask, each cell reported.
+  const early = await run(dir, { sign: true, sheet: SHEET_FILE, cwd: dir, isTTY: true, ask: fakeAsk().ask });
+  assert.equal(early.signed, 0);
+  assert.ok(early.lines.includes("info: 3 cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first; a cell that import refuses is never signed); not asked:"), early.out);
+  assert.ok(!exists(dir, HUMAN_TEXT_AUTHORS_FILE));
+
+  assert.equal((await importSheet({ file: SHEET_FILE, ...quiet })).code, 0);
+  const fake = fakeAsk("s", "s", "s");
+  const res = await run(dir, { sign: true, sheet: SHEET_FILE, cwd: dir, isTTY: true, ask: fake.ask });
+  assert.equal(res.signed, 3, res.out);
+  assert.deepEqual(fake.asked, [authorQuestion("IAR18"), authorQuestion("IAR18"), authorQuestion("BaronHVC")]);
+  assert.deepEqual(readAuthorMap(dir), {
+    "lang/en.json": { "baron-fixture.Notice": "IAR18" },
+    "lang/es.json": { "baron-fixture.Kind_a": "BaronHVC", "baron-fixture.Notice": "IAR18" },
+  });
+  // Every text the sheet held is signed, so a new export may take its place.
+  await exportSheet(quiet);
+});
+
+test("--sheet: its mistakes exit 2, and a sheet it cannot read stops it before any question", async (t) => {
+  const { dir } = sheetModule(t);
+  const sheet = writeSheet(dir, [["baron-fixture.Open", "Open", "", "IAR18"]]);
+  for (const [opts, why] of [
+    [{ sign: true, sheet, author: "IAR18" }, /--author and --sheet do not go together/],
+    [{ sheet }, /--sheet goes with --sign/],
+    [{ sign: true, sheet: "" }, /--sheet needs the sheet file/],
+  ]) {
+    const fake = fakeAsk("s");
+    const res = await run(dir, { cwd: dir, isTTY: true, ask: fake.ask, ...opts });
+    assert.equal(res.code, 2, JSON.stringify(opts));
+    assert.match(res.errors[0], why);
+    assert.deepEqual(fake.asked, []);
+  }
+  fs.writeFileSync(path.join(dir, "nokey.csv"), "clave,en\r\nbaron-fixture.Open,Open\r\n");
+  fs.writeFileSync(path.join(dir, "ansi.csv"), Buffer.from([0x6b, 0x65, 0x79, 0x2c, 0x65, 0x6e, 0x0d, 0x0a, 0x61, 0x2c, 0xe9, 0x0d, 0x0a]));
+  fs.writeFileSync(path.join(dir, "twice.csv"), "key,en,EN,author\r\nbaron-fixture.Open,Open,,IAR18\r\n");
+  for (const [file, why] of [
+    ["missing.csv", /^missing\.csv does not exist$/],
+    ["nokey.csv", /^nokey\.csv has no header row with a "key" column/],
+    ["ansi.csv", /^ansi\.csv: the sheet is not UTF-8 text/],
+    ["twice.csv", /^twice\.csv has two "en" columns: keep one$/],
+  ]) {
+    const fake = fakeAsk("s");
+    await assert.rejects(run(dir, { sign: true, sheet: file, cwd: dir, isTTY: true, ask: fake.ask }), (err) => err instanceof SignTextError && why.test(err.message), file);
+    assert.deepEqual(fake.asked, []);
+  }
+  assert.ok(!exists(dir, HUMAN_TEXT_AUTHORS_FILE));
+
+  // The CLI.
+  for (const args of [
+    [".", "--sign", "--sheet"],
+    [".", "--sign", "--sheet", "--author", "IAR18"],
+    [".", "--sign", "--sheet", sheet, "--author", "IAR18"],
+    [".", "--sign", "--sheet", sheet, "--sheet", sheet],
+    [".", "--sheet", sheet],
+  ]) {
+    const res = runNode(SIGN_TEXT, args, { cwd: dir });
+    assert.equal(res.status, 2, `${JSON.stringify(args)}${NL}${res.out}`);
+    assert.match(res.stderr, /sign-text: ERROR: --(sheet|author)/);
+  }
+  const piped = runNode(SIGN_TEXT, [".", "--sign", "--sheet", "mi hoja.csv"], { cwd: dir });
+  assert.equal(piped.status, 1, piped.out);
+  assert.ok(piped.stderr.includes(' . --sign --sheet "mi hoja.csv"'), piped.out);
+  assert.ok(piped.stderr.includes("each signature says that its author wrote that text from scratch, as you attest"), piped.out);
 });
