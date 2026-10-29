@@ -8,6 +8,65 @@ tengan que resincronizar.
 
 ## [Unreleased]
 
+### Added
+
+- `tools/sign-text.mjs --sign --author <nombre>`: quien da fe de los textos
+  ante Foundry (BaronHVC) firma por el autor que los escribió sin terminal
+  (IAR18). Es el mismo `--sign`, pero pregunta «¿<nombre> escribió este texto
+  desde cero? [s/N/q]» y cada `s` guarda `<nombre>` como autor de esa firma.
+  El nombre se recorta y debe quedar de 1 a 60 caracteres sin caracteres de
+  control; si no, sale con 2 sin preguntar.
+- `sign-text --sign --sheet <archivo.csv>`: lee la hoja con el mismo lector de
+  `text-sheet import` y solo pregunta por las celdas de idioma con texto (más
+  `module.json:title` y `module.json:description` en la columna del primer
+  idioma), con la clave y el idioma con que `import` las escribe, cuyo valor
+  en el módulo es el de la celda byte por byte y que necesitan firma; la
+  pregunta nombra al `author` de la fila y la firma lo guarda. Lista sin
+  preguntar, con renglón, idioma y clave y nunca el valor: las filas sin
+  autor o con un nombre que no vale, las celdas sin importar o cambiadas
+  después, los textos ya firmados, las celdas que `import` no escribe y un
+  texto que dos filas dan con autores distintos. Con `--author`, sin `--sign`
+  o sin archivo sale con 2.
+- `human-text-authors.json`, junto a `human-text.json`: `{ "version": 1,
+  "authors": { "<archivo>": { "<clave>": "<nombre>" } } }`, con el formato de
+  `human-text.json` (claves ordenadas, dos espacios, LF y salto final). Lo
+  escribe solo `sign-text`, en el mismo paso que `human-text.json` y solo
+  cuando este cambia (los dos por temporal y renombrado; si un renombrado
+  falla, el ya reemplazado vuelve a como estaba y lo nuevo queda en los
+  temporales); nunca lo crea vacío. Las firmas de claves que ya no existen se
+  llevan a su autor, y una entrada sin firma se quita. Un `--sign` sin
+  `--author` ni `--sheet` pregunta como siempre, no guarda autor y quita el
+  que tenía una firma anterior de ese texto. Va al repo y nunca al ZIP.
+- Sin `--sign`, `sign-text` lista cada texto firmado que tiene autor (`signed
+  … by "IAR18"`), cuántos lleva cada autor y las entradas sin firma; sin
+  autores guardados, lista exactamente lo mismo que antes.
+- `tools/shared.mjs`: `HUMAN_TEXT_AUTHORS_FILE`,
+  `HUMAN_TEXT_AUTHORS_VERSION`, `AUTHOR_NAME_MAX`, `authorNameProblem`,
+  `authorsProblem`, `readAuthors` y `authorsText`; y el lector de la hoja,
+  que sale de `text-sheet.mjs` sin cambios: `decodeSheet`, `csvParse`,
+  `readSheet`, `TextSheetError` y los nombres de columna (`FIXED_COLUMNS`,
+  `CURRENT_PREFIX`, `AUTHOR_COLUMN`, `AUTHOR_HEADERS`, `SECTION_COLUMN`,
+  `NOTE_COLUMNS`, `LISTING_PREFIX`). `text-sheet.mjs` los sigue exportando.
+- `sign-text.mjs` exporta además `authorQuestion` y `AUTHOR_LEGEND`, y
+  `signTexts` acepta `author`, `sheet` y `cwd`.
+
+### Changed
+
+- `text-sheet import` termina, si escribió algo, con el comando exacto
+  `node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet <la hoja>` (con
+  las rutas tal como se corrió) y dice que lo corre quien da fe de los textos,
+  BaronHVC, contestando por el autor de cada fila. La lista por autor y el
+  rechazo de `export` a una hoja con textos importados sin firma nombran el
+  mismo comando.
+- La CI del core trae las etiquetas en el trabajo `tools`: una prueba corre el
+  `check-module` de v1.5.0 y de v1.6.0 sobre un módulo con
+  `human-text-authors.json` y comprueba que pasa igual que sin él.
+
+`human-text.json` conserva su formato y `check-module` no cambia en nada: no
+lee `human-text-authors.json`, así que los módulos cuya CI fija v1.5.0 o
+v1.6.0 pasan igual con el archivo. Sigue sin haber forma de firmar sin una
+persona en una terminal. Las funciones de `baron-core.js` no cambian.
+
 ## [1.6.0] - 2026-10-28
 
 ### Added

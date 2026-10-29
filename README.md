@@ -42,6 +42,7 @@ mi-modulo/
   baron.json              configuración de la familia (ver abajo)
   baron-core.lock.json    { version, commit, sha256 }: qué copia del core lleva
   human-text.json         con "humanText": "signed", la firma del autor en cada texto; no va en el ZIP
+  human-text-authors.json quién escribió cada texto firmado con --author o --sheet; no va en el ZIP
   scripts/
     main.js               import { createI18n, isSoleExecutor } from "./baron-core.js";
     baron-core.js         copia exacta del core; nunca se edita a mano
@@ -99,6 +100,9 @@ node ../pf2e-baron-core/tools/check-module.mjs --online --release   # lo mismo q
 # Textos humanos (con "humanText": "signed"): qué falta firmar, y firmarlo en tu terminal
 node ../pf2e-baron-core/tools/sign-text.mjs .
 node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+# Quien da fe ante Foundry firma por el autor real: el de cada fila de la hoja, o uno nombrado
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet textos-hoja.csv
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign --author IAR18
 
 # Los mismos textos en una hoja: exportar lo que falta escribir, llenarlo en
 # Excel o Google Sheets e importarlo (ver "Escribir los textos en la hoja")
@@ -254,11 +258,13 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
   antivirus) tiene abierto `human-text.json`, reintenta el renombrado unos 2
   segundos; si no puede, deja las firmas en el archivo temporal y dice dónde
   está.
-- **La firma la da el autor, a mano.** Contestar `s` dice «este texto lo escribí
-  yo desde cero»: revisar o retocar un texto de IA no basta. Por eso `--sign`
-  exige que stdin y stdout sean una terminal (TTY) y no hay `--yes` ni otra
-  forma de firmar sin preguntar. Una sesión de Claude nunca corre `--sign` ni
-  edita `human-text.json`. Una traducción hecha con IA cuenta solo cuando la
+- **La firma la da una persona, a mano.** Contestar `s` dice «este texto lo
+  escribí yo desde cero» (con `--author` o `--sheet`, «este autor lo escribió
+  desde cero», y quien firma da fe de ello; ver abajo): revisar o retocar un
+  texto de IA no basta. Por eso `--sign` exige que stdin y stdout sean una
+  terminal (TTY) y no hay `--yes` ni otra forma de firmar sin preguntar. Una
+  sesión de Claude nunca corre `--sign` ni edita `human-text.json` ni
+  `human-text-authors.json`. Una traducción hecha con IA cuenta solo cuando la
   revisa, línea por línea contra su original humano, una persona que domina el
   idioma, y es esa persona quien la firma: en una traducción, su `s` dice
   «domino este idioma y revisé esta traducción», y así lo explica `--sign`
@@ -284,6 +290,75 @@ el siguiente `--sign` las quita. Sin `humanText` (o con `"markers"`) nada de
 esto corre y `human-text.json` se ignora: los módulos que no lo piden se
 revisan como antes.
 
+### Firmar por el autor: `--author` y `--sheet`
+
+Los textos los escriben BaronHVC o IAR18. IAR18 escribe en la hoja, en el
+navegador, y no tiene terminal ni el repo; por eso firma quien da fe de los
+textos ante Foundry al subir el paquete, BaronHVC, y contesta por cada texto
+si su autor lo escribió desde cero. Cada firma guarda quién lo escribió:
+
+```sh
+# Lo que import ya escribió de la hoja: una pregunta por texto, por el autor de su fila
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet textos-hoja.csv
+
+# Todos los textos pendientes, de un solo autor
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign --author IAR18
+```
+
+- **`--author <nombre>`** es el mismo `--sign`, pero pregunta «¿<nombre>
+  escribió este texto desde cero? [s/N/q]» y cada `s` guarda `<nombre>` como
+  autor de esa firma. El nombre se recorta y debe quedar de 1 a 60
+  caracteres, sin caracteres de control (un tabulador, un salto de línea);
+  si no, sale con 2 sin preguntar nada.
+- **`--sheet <archivo.csv>`** lee la hoja con el mismo lector de `text-sheet
+  import` (la ruta, desde la carpeta donde se corre) y solo pregunta por las
+  celdas de idioma con texto, más `module.json:title` y
+  `module.json:description` en la columna del primer idioma, con la clave y
+  el idioma con que `import` las escribe, cuyo valor en el módulo es el de la
+  celda byte por byte (con los saltos de línea como los escribe `import`) y
+  que necesitan firma. La pregunta nombra al `author` de su fila, y la firma
+  lo guarda. Lista sin preguntar, con renglón, idioma y clave (nunca el
+  valor, que podría ser un texto de IA): las filas sin `author` o con un
+  nombre que no vale, las celdas cuyo valor en el módulo es otro (sin
+  importar todavía, o cambiadas después), los textos ya firmados (solo los
+  cuenta), las celdas que `import` no escribe en ningún lado y un texto que
+  dos filas dan con autores distintos. Un texto que varias filas dan con el
+  mismo autor se pregunta una vez. También cuenta los textos pendientes que
+  la hoja no trae, que se firman aparte.
+- `--author` y `--sheet` juntos, o sin `--sign`, salen con 2. Como `--sign`,
+  exigen una terminal y no hay forma de contestar sin una persona.
+- Sin `--author` ni `--sheet`, `--sign` pregunta como siempre («¿Escribiste tú
+  este texto desde cero?»), no guarda autor y, si el texto tenía uno de una
+  firma anterior, lo quita.
+
+Los autores viven en `human-text-authors.json`, junto a `human-text.json`, y
+van al repo como él (la plantilla no lo ignora); el ZIP del release nunca lo
+lleva. Lo escribe solo `sign-text`, con el mismo formato: claves ordenadas,
+sangría de dos espacios, LF y salto de línea final.
+
+```json
+{
+  "authors": {
+    "lang/es.json": { "<clave>": "IAR18" },
+    "module.json": { "description": "BaronHVC" }
+  },
+  "version": 1
+}
+```
+
+Se escribe solo cuando cambia `human-text.json` y en el mismo paso: los dos
+por archivo temporal y renombrado, primero el de autores; si un renombrado
+falla, el archivo ya reemplazado vuelve a como estaba y lo nuevo de los dos
+queda en sus temporales, y el mensaje dice dónde. Nunca se crea vacío. Las
+firmas de claves que ya no existen se llevan a su autor, y una entrada que no
+tiene firma se quita. `check-module` no lo lee: con este núcleo o con uno
+anterior (v1.5.0, v1.6.0), su resultado es el mismo con el archivo o sin él,
+y `human-text.json` conserva su formato. Uno mal formado detiene a
+`sign-text`, también al listar: se restaura desde git (borrarlo olvida
+quién escribió cada texto). Sin `--sign`, `sign-text` lista cada texto
+firmado que tiene autor (`signed    lang/es.json  <clave>  by "IAR18"`) y
+cuántos lleva cada autor; sin autores guardados, lista lo mismo que antes.
+
 ## Escribir los textos en la hoja
 
 Un módulo puede tener cientos de textos por escribir (los de trabajo de la IA
@@ -291,8 +366,9 @@ y los `TODO-HUMANO:`), y escribirlos en una terminal es lento. `text-sheet`
 los pone en una hoja de cálculo: una fila por texto, con dónde aparece, qué
 debe comunicar y qué marcadores debe llevar, y una columna vacía por idioma.
 Las personas que escriben los textos (BaronHVC e IAR18) la llenan en Excel o
-en Google Sheets, `text-sheet import` los pasa a los archivos de idioma y cada
-autor firma en seguida los suyos con `sign-text --sign`. El flujo:
+en Google Sheets, `text-sheet import` los pasa a los archivos de idioma y en
+seguida quien da fe de ellos, BaronHVC, los firma con `sign-text --sign
+--sheet`, contestando por el autor de cada fila. El flujo:
 
 ```sh
 # 1. Desde la carpeta del módulo: escribe textos-hoja.csv con lo que falta escribir
@@ -305,9 +381,9 @@ node ../pf2e-baron-core/tools/text-sheet.mjs export
 node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv --dry-run
 node ../pf2e-baron-core/tools/text-sheet.mjs import textos-hoja.csv
 
-# 4. En seguida, antes del siguiente export: cada autor firma los textos que
-#    escribió (las filas que import lista con su nombre), en su terminal
-node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+# 4. En seguida, antes del siguiente export: BaronHVC, que da fe de los textos,
+#    los firma en su terminal; cada pregunta nombra al "author" de su fila
+node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet textos-hoja.csv
 ```
 
 Firma antes de exportar otra vez. Una hoja nueva lista como «por escribir»
@@ -317,9 +393,11 @@ una hoja que trae un texto importado y todavía sin firma, y lo dice con su
 renglón, su clave y su idioma. Con dos autores, cada uno pone su nombre en la
 columna `author` de lo que escribió (una sola hoja para los dos) o usa su
 propia hoja (`export --out textos-hoja-IAR18.csv`); al final, `import` lista
-las filas de cada nombre, para que cada quien firme solo las suyas.
-`sign-text` pregunta «¿Escribiste tú este texto desde cero?»: nadie firma un
-texto que escribió el otro.
+las filas de cada nombre. `sign-text --sheet` pregunta por cada texto
+«¿<author> escribió este texto desde cero?», con el nombre de su fila, y lo
+guarda con la firma en `human-text-authors.json` (ver [Firmar por el autor](#firmar-por-el-autor---author-y---sheet)):
+quien firma contesta por ese autor, y salta lo que no sabe. Una fila sin
+`author` no se pregunta: se le pone el nombre y se corre otra vez.
 
 **La hoja nunca muestra un texto de IA.** Retocar el texto de la IA no cumple
 la política de IA de Foundry (§4.1): el texto se escribe desde la intención,
@@ -378,7 +456,7 @@ secciones, pantalla por pantalla); al final van las que no tienen fila ahí.
 | `status`           | `unsigned`, `changed`, `to write`, `signed`, `conflict`, `list`, `broken`; sin el candado, `to write` (con `TODO-HUMANO:`), `no marker` (sin marcador: la herramienta no sabe quién lo escribió), `empty`, `conflict`, `list` o `broken`; por idioma cuando difieren (`en: signed; es: changed`), y `missing` si un idioma no tiene la clave |
 | `en`, `es`, …      | vacías: aquí se escribe, una columna por idioma de `module.json` |
 | `current_en`, …    | el valor firmado de cada idioma, y nada si no tiene firma válida |
-| `author`           | vacía: quien escribe pone aquí su nombre; `import` solo lo repite al final, no lo escribe en ningún lado |
+| `author`           | vacía: quien escribe pone aquí su nombre; `import` solo lo repite al final, no lo escribe en ningún lado; `sign-text --sheet` lo nombra en cada pregunta y lo guarda con la firma |
 | `section`          | el encabezado de `docs/textos-borrador.md` arriba de la fila (la pantalla), para ordenar y filtrar |
 
 El título y la descripción de `module.json` son un solo texto para todos los
@@ -540,11 +618,12 @@ sigue escapando) quedan igual. Una clave escrita anidada y con puntos cambia
 en los dos lugares. Escribe con archivos temporales y renombrados: o se
 escriben todos los archivos, o ninguno. Nunca toca `human-text.json` ni
 firma: un texto nuevo queda sin firma (o cambiado, si reemplaza uno firmado), y
-el último renglón dice el paso siguiente, firmarlo en tu terminal con
-`sign-text --sign`, con la ruta de `sign-text` y la carpeta del módulo tal como
-se corrió `text-sheet` (también las demás sugerencias de las dos órdenes).
-Cada autor firma lo que escribió: la pregunta de `--sign` es «¿Escribiste tú
-este texto desde cero?». Un archivo de idioma o un `module.json` con BOM
+el último renglón dice el paso siguiente: que quien da fe de los textos
+(BaronHVC) los firme en su terminal, contestando por el autor de cada fila,
+con el comando exacto, `node ../pf2e-baron-core/tools/sign-text.mjs . --sign
+--sheet <la hoja>` (con la ruta de `sign-text`, la carpeta del módulo y la de
+la hoja tal como se corrió `text-sheet`; igual las demás sugerencias de las
+dos órdenes). Un archivo de idioma o un `module.json` con BOM
 conserva su BOM, pero `import` avisa que `sign-text` lo rechaza.
 
 ## Workflows reutilizables

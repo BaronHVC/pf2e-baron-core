@@ -1288,7 +1288,7 @@ export async function importSheet({ file, dir = process.cwd(), dryRun = false, p
     const old = shown ? ` (replaces the signed text ${JSON.stringify(shown)})` : ` (was ${c.was})`;
     return `  row ${c.row}  ${c.lang}  ${c.key} -> ${c.rels.join(", ")}: ${JSON.stringify(c.value)}${old}`;
   };
-  // Who wrote what: the author column, written nowhere, so each author knows what to sign.
+  // Who wrote what: the author column, written nowhere here; sign-text --sheet asks about each row for it.
   const byAuthor = () => {
     if (!changes.some((c) => c.author)) return;
     const groupsBy = new Map();
