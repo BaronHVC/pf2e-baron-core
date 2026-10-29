@@ -33,6 +33,8 @@ const NL = String.fromCharCode(10);
 const nextLine = (command) =>
   `next: once a person has written each of these from scratch, the person who attests them (BaronHVC) signs them at a terminal, naming who wrote them: ${command} --sign --sheet textos-hoja.csv (the author of each row) or ${command} --sign --author <name>`;
 const NEXT = nextLine("node ../pf2e-baron-core/tools/sign-text.mjs .");
+// Texts still to write: a person writes them (decision 28), never "yourself" to whoever reads the listing.
+const toWrite = (n) => `info: ${n} text(s) still to write (empty or TODO-HUMANO:): BaronHVC or IAR18 writes each one from scratch (in the sheet), then BaronHVC signs it naming its author`;
 
 /** The valid fixture with baron.json "humanText": "signed" plus `spec` (see helpers.materialize). */
 const signedModule = (t, spec = {}) =>
@@ -301,7 +303,8 @@ test("the listing shows empty and TODO-HUMANO values as still to write, and work
   assert.ok(res.out.includes('to write  lang/en.json  baron-fixture.Open\n          ""'), res.out);
   assert.ok(res.out.includes('to write  lang/en.json  baron-fixture.Notice\n          "TODO-HUMANO: notice"'), res.out);
   assert.ok(res.lines.includes("sign-text: 12 text(s) need a signature (12 unsigned, 0 changed since signed); 0 of 14 signed"), res.out);
-  assert.ok(res.lines.includes("info: 2 text(s) still to write (empty or TODO-HUMANO:): write them yourself, then sign them"), res.out);
+  assert.ok(res.lines.includes(toWrite(2)), res.out);
+  assert.ok(!res.out.includes("write them yourself"), res.out);
   assert.ok(!fs.existsSync(path.join(dir, HUMAN_TEXT_FILE)));
 });
 
@@ -580,7 +583,7 @@ test("--sign never asks about an empty or TODO-HUMANO value and lists it as stil
   assert.ok(!Object.hasOwn(signed["lang/es.json"], "baron-fixture.Open"));
   assert.ok(!res.out.includes('[1/11] lang/en.json  baron-fixture.Open'), res.out);
   assert.ok(res.out.includes('to write  lang/en.json  baron-fixture.Notice\n          "  TODO-HUMANO: notice"'), res.out);
-  assert.ok(res.lines.includes("info: 3 text(s) still to write (empty or TODO-HUMANO:): write them yourself, then sign them"), res.out);
+  assert.ok(res.lines.includes(toWrite(3)), res.out);
 });
 
 test("--sign asks again about a text changed since it was signed and replaces its signature", async (t) => {

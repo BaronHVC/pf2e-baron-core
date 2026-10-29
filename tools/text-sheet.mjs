@@ -69,7 +69,9 @@ import {
 } from "./shared.mjs";
 
 // The sheet's columns and its CSV reader live in shared.mjs, where sign-text
-// --sheet reads the same sheet; they are still this tool's exports.
+// --sheet reads the same sheet. This tool still exports what it exported in
+// v1.6.0; readSheet and AUTHOR_HEADERS (v1.6.0's private readSheet and
+// AUTHOR_NAMES) are exported only by shared.mjs.
 export { AUTHOR_COLUMN, CURRENT_PREFIX, FIXED_COLUMNS, LISTING_PREFIX, NOTE_COLUMNS, SECTION_COLUMN, TextSheetError, csvParse, decodeSheet };
 
 const USAGE = [

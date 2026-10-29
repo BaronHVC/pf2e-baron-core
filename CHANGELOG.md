@@ -17,10 +17,12 @@ tengan que resincronizar.
   El nombre se recorta y se guarda en Unicode NFC, y debe quedar de 1 a 60
   caracteres, sin caracteres de control ni caracteres que no se ven (formato,
   como un espacio de ancho cero o una marca de dirección; separadores de
-  línea y de párrafo; uso privado; no caracteres), que harían pasar un nombre
-  por otro; si no, sale con 2 sin preguntar, y el mensaje muestra el carácter
-  escondido como escape. Avisa antes de preguntar si el nombre solo difiere
-  en mayúsculas de uno ya guardado.
+  línea y de párrafo; los ignorables por omisión de Unicode, como un selector
+  de variante, el CGJ o un relleno hangul; uso privado; no caracteres), que
+  harían pasar un nombre por otro; si no, sale con 2 sin preguntar, y el
+  mensaje muestra el carácter escondido como escape (uno fuera del plano
+  básico, con las dos mitades de su par). Avisa antes de preguntar si el
+  nombre solo difiere en mayúsculas de uno ya guardado.
 - `sign-text --sign --sheet <archivo.csv>`: lee la hoja con el mismo lector de
   `text-sheet import` y solo pregunta por las celdas de idioma con texto (más
   `module.json:title` y `module.json:description` en la columna del primer
@@ -31,14 +33,20 @@ tengan que resincronizar.
   nombres que solo difieren en mayúsculas. Lista sin preguntar, con renglón,
   idioma y clave y nunca el valor: las celdas que `import` rechaza (con su
   motivo) y las columnas que rechaza, las filas sin autor o con un nombre que
-  no vale, las celdas sin importar o cambiadas después, los textos ya
-  firmados (y aparte, con los dos nombres, los que tienen guardado otro autor
-  que el de su fila, o ninguno; el registro no cambia), las celdas que
-  `import` no escribe y un texto que dos filas dan con autores distintos.
-  Los textos del módulo que faltan escribir solo los cuenta. Si la hoja no
-  está donde dice la ruta, el mensaje dice dónde buscó y, si la carpeta del
-  módulo tiene una con ese nombre, cómo pasarla. Con `--author`, sin `--sign`
-  o sin archivo sale con 2.
+  no vale, las celdas sin importar, cambiadas después o reemplazadas por el
+  `import` de otra hoja (nombra la hoja y el renglón de `textos-hoja*.csv`
+  que dio el valor del módulo), y aparte las que reemplazarían un texto
+  firmado (con su autor guardado: no dice «importa la hoja primero»), los
+  textos ya firmados (y aparte, con los dos nombres, los que tienen guardado
+  otro autor que el de su fila; y los que no tienen autor guardado: el
+  registro no cambia), las celdas que `import` no escribe, un texto que dos
+  filas dan con autores distintos y uno que otra fila da sin autor o con uno
+  que no vale (no pregunta hasta que todas nombran al mismo). Los textos del
+  módulo que faltan escribir solo los cuenta. Si la hoja no está donde dice
+  la ruta, el mensaje dice dónde buscó y, si la carpeta del módulo tiene una
+  con ese nombre, cómo pasarla; si no, nombra las `textos-hoja*.csv` que hay
+  ahí y en la carpeta del módulo. Con `--author`, sin `--sign` o sin archivo
+  sale con 2.
 - `human-text-authors.json`, junto a `human-text.json`: `{ "version": 1,
   "authors": { "<archivo>": { "<clave>": "<nombre>" } } }`, con el formato de
   `human-text.json` (claves ordenadas, dos espacios, LF y salto final). Lo
@@ -47,11 +55,21 @@ tengan que resincronizar.
   sin las entradas que la corrida quita o reemplaza, `human-text.json`, y el
   de autores con las entradas nuevas; una corrida cortada entre dos
   renombrados deja, a lo más, una firma sin autor, nunca con el de otra. Si
-  un renombrado falla, lo ya reemplazado vuelve a como estaba y lo nuevo queda
-  en los temporales, y el listado avisa de los que queden. Nunca lo crea vacío. Las firmas de claves que ya no existen se
-  llevan a su autor, y una entrada sin firma se quita. Un `--sign` sin
-  `--author` ni `--sheet` pregunta como siempre, no guarda autor y quita el
-  que tenía una firma anterior de ese texto. Va al repo y nunca al ZIP.
+  un renombrado falla, lo ya reemplazado vuelve a como estaba, del último al
+  primero, y lo nuevo queda en los temporales; si `human-text.json` no puede
+  volver, el de autores tampoco vuelve (se queda sin las entradas que la
+  corrida quita o reemplaza) y el mensaje dice que se renombre su temporal,
+  no que se firme otra vez. Una corrida cortada entre los dos últimos
+  renombrados deja las firmas guardadas y sus autores en el temporal: el
+  listado lo reconoce (solo agrega autores a firmas válidas que no tienen) y
+  dice que se renombre, y `--sign` no corre hasta que se renombre o se
+  borre. De los demás temporales el listado, y también `--sign`, dicen que
+  sus firmas nunca se guardaron si la corrida no dejó mensaje. Nunca lo crea
+  vacío. Las firmas de claves que ya no existen se llevan a su autor, y una
+  entrada sin firma se quita, también en un `--sign` que deja igual
+  `human-text.json` (salvo si no existe: podría estar perdido). Un `--sign`
+  sin `--author` ni `--sheet` pregunta como siempre, no guarda autor y quita
+  el que tenía una firma anterior de ese texto. Va al repo y nunca al ZIP.
 - Sin `--sign`, `sign-text` lista cada texto firmado que tiene autor (`signed
   … by "IAR18"`), cuántos lleva cada autor y las entradas sin firma.
 - `sign-text --sign` recuerda cada 50 preguntas cuántas firmas de la corrida
@@ -63,7 +81,10 @@ tengan que resincronizar.
   que sale de `text-sheet.mjs` sin cambios: `decodeSheet`, `csvParse`,
   `readSheet`, `TextSheetError` y los nombres de columna (`FIXED_COLUMNS`,
   `CURRENT_PREFIX`, `AUTHOR_COLUMN`, `AUTHOR_HEADERS`, `SECTION_COLUMN`,
-  `NOTE_COLUMNS`, `LISTING_PREFIX`). `text-sheet.mjs` los sigue exportando.
+  `NOTE_COLUMNS`, `LISTING_PREFIX`). `text-sheet.mjs` sigue exportando los
+  que ya exportaba en v1.6.0; `readSheet` y `AUTHOR_HEADERS` solo los exporta
+  `shared.mjs` (en v1.6.0 eran `readSheet` y `AUTHOR_NAMES`, privados de
+  `text-sheet.mjs`).
   También `authorName` (recorta y pasa a NFC), `showName` (un nombre con sus
   caracteres invisibles como escapes) y `SIGN_TEXT_COMMAND`, el comando que
   `text-sheet` nombra sin importar `sign-text`.
@@ -88,8 +109,12 @@ tengan que resincronizar.
   comando, condicionado a que una persona los haya escrito.
 - El renglón `next:` del listado de `sign-text` ya no dice «reescríbelos tú y
   fírmalos»: dice que, una vez que una persona escribió cada texto desde cero,
-  quien da fe (BaronHVC) los firma nombrando al autor, con `--sheet
-  textos-hoja.csv` o `--author <nombre>`.
+  quien da fe (BaronHVC) los firma nombrando al autor, con `--sheet` y las
+  hojas `textos-hoja*.csv` que hay en la carpeta (una por autor, como
+  `textos-hoja-IAR18.csv`; `textos-hoja.csv` si no hay ninguna) o con
+  `--author <nombre>`. El renglón de los textos por escribir tampoco dice
+  «escríbelos tú»: dice que BaronHVC o IAR18 escribe cada uno desde cero (en
+  la hoja) y que BaronHVC lo firma nombrando a su autor.
 - La CI del core trae las etiquetas en el trabajo `tools`: una prueba corre el
   `check-module` de v1.5.0 y de v1.6.0 sobre un módulo con
   `human-text-authors.json` y comprueba que pasa igual que sin él.

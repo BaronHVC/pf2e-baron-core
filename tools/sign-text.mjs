@@ -40,9 +40,13 @@
 // the one an earlier signature of that text had. That file is written with
 // human-text.json, in the same step and in an order where a stop between two
 // renames can leave a signature without its author, never with another one's
-// (writeSteps), and loses the entries of the signatures --sign drops;
-// check-module never reads it, and the listing shows the author of each signed
-// text that has one, and a count per author.
+// (writeSteps), and loses the entries of the signatures --sign drops; a --sign
+// that leaves human-text.json as it was still drops the entries that have no
+// signature. A run stopped between its last two renames leaves the authors of
+// the signatures it saved in a temporary file: the listing says to rename it,
+// and --sign stops until it is renamed or deleted. check-module never reads
+// it, and the listing shows the author of each signed text that has one, and
+// a count per author.
 //
 // --sheet <file.csv> reads a text sheet with text-sheet import's own reader
 // and asks only about its language cells with text (the module.json title and
@@ -52,9 +56,12 @@
 // them) and needs a signature: "did <author> write this text from scratch?",
 // <author> being the row's "author" column, which each signature records. A
 // cell import refuses, a row without an author, a cell whose value in the
-// module differs (not imported yet, or changed since), a text already signed
-// (with the row's author and the recorded one when they differ) and a text
-// that rows with two authors give are reported, never asked about. Names that
+// module differs (not imported yet, changed since, or replaced by another
+// sheet's import, which it names; apart when the module's text is validly
+// signed, since importing would replace that signature), a text already signed
+// (with the row's author and the recorded one when they differ, or none is
+// recorded) and a text that rows with two authors, or with an author and
+// without a valid one, give are reported, never asked about. Names that
 // differ only in case are warned about before the first question.
 //
 // A long run says every 50 questions how many signatures Ctrl+C would throw
@@ -73,6 +80,7 @@ import {
   TextSheetError,
   authorName,
   authorNameProblem,
+  authorsProblem,
   authorsText,
   hashText,
   humanTexts,
@@ -164,6 +172,10 @@ const STALE_CAP = 10;
 const UNSAVED_EVERY = 50;
 // The temporary files of a --sign that could not finish: <file>.<pid>[.part].tmp.
 const LEFTOVER_RE = /^\.human-text(?:-authors)?\.json\.\d+(?:\.part)?\.tmp$/;
+// The last content of the authors file a run wrote, by the pid of that run.
+const FINAL_AUTHORS_RE = /^\.human-text-authors\.json\.(\d+)\.tmp$/;
+// The text sheets of a folder: textos-hoja.csv (SHEET_FILE) and one per author, such as textos-hoja-IAR18.csv.
+const SHEET_RE = /^textos-hoja.*[.]csv$/i;
 // On Windows an editor, a sync client or an antivirus scan may hold
 // human-text.json open for a moment; the rename is tried again before giving up.
 const RENAME_RETRY = new Set(["EPERM", "EACCES", "EBUSY"]);
@@ -244,6 +256,97 @@ function authorCounts(names) {
 // As commandLine() quotes the folder: forward slashes work in PowerShell and in Git Bash.
 const quoteArg = (s) => (/[\s"'&|<>()^;$`\\]/.test(s) ? `"${s}"` : s);
 
+/** A path as the person types it from `cwd`: relative, with forward slashes. */
+const shownPath = (cwd, file) => path.relative(cwd, file).split(path.sep).join("/") || path.basename(file);
+
+/** Whether two paths name one file, whatever case or form Windows gives them in. */
+function samePath(a, b) {
+  try {
+    return fs.realpathSync.native(a) === fs.realpathSync.native(b);
+  } catch {
+    return path.resolve(a) === path.resolve(b);
+  }
+}
+
+/** The text sheets (SHEET_RE) in `dirs`, each file once, by name within its folder. */
+function sheetsIn(dirs) {
+  const found = [];
+  for (const dir of dirs) {
+    let names = [];
+    try {
+      names = fs
+        .readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isFile() && SHEET_RE.test(e.name))
+        .map((e) => e.name)
+        .sort();
+    } catch {
+      // a folder that cannot be read has no sheet to name
+    }
+    for (const name of names) {
+      const file = path.join(dir, name);
+      if (!found.some((f) => samePath(f, file))) found.push(file);
+    }
+  }
+  return found;
+}
+
+/** One key for a file and a key of the module. */
+const idOf = (file, key) => JSON.stringify([file, key]);
+
+/**
+ * The temporary files a --sign that did not finish left in the module folder
+ * (LEFTOVER_RE), and among them the last authors file of a run stopped between
+ * its last two renames (writeSteps): it keeps every entry the authors file has
+ * and only adds authors to signatures that are valid and have none, so renaming
+ * it over the authors file finishes that run.
+ * @returns {{ files: string[], finish: { name: string, adds: number }[] }}
+ */
+function leftovers(root, texts, authors) {
+  const files = fs
+    .readdirSync(root)
+    .filter((f) => LEFTOVER_RE.test(f))
+    .sort();
+  const byId = new Map(texts.map((t) => [idOf(t.file, t.key), t]));
+  const finish = [];
+  for (const name of files) {
+    const pid = FINAL_AUTHORS_RE.exec(name)?.[1];
+    // With its human-text.json still beside it, that run saved no signature.
+    if (pid === undefined || files.includes(`.${HUMAN_TEXT_FILE}.${pid}.tmp`)) continue;
+    let data;
+    try {
+      data = JSON.parse(fs.readFileSync(path.join(root, name), "utf8"));
+    } catch {
+      continue;
+    }
+    if (authorsProblem(data)) continue;
+    const keeps = Object.entries(authors).every(([file, keys]) => Object.entries(keys).every(([key, who]) => authorOf(data.authors, file, key) === who));
+    const adds = Object.entries(data.authors).flatMap(([file, keys]) =>
+      Object.keys(keys)
+        .filter((key) => authorOf(authors, file, key) === null)
+        .map((key) => byId.get(idOf(file, key))),
+    );
+    if (keeps && adds.length && adds.every((t) => t?.status === "signed")) finish.push({ name, adds: adds.length });
+  }
+  return { files, finish };
+}
+
+/** What a leftover that finishes a run holds, and what to do with it. */
+const finishLine = ({ name, adds }) =>
+  `${name} holds the authors of ${adds} valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; ` +
+  `rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`;
+
+/** The leftovers of `leftovers()`, as information. */
+function reportLeftovers({ files, finish }, log) {
+  for (const x of finish) log(`info: ${finishLine(x)}`);
+  const rest = files.filter((f) => !finish.some((x) => x.name === f));
+  if (rest.length) {
+    log(
+      `info: ${rest.length} temporary file(s) left by a --sign that did not finish (${rest.join(", ")}): if that run printed a message, do what it said; ` +
+        "if not (a closed window), the signatures in them were never saved: delete them, and sign those texts again",
+    );
+  }
+}
+
 const show = (t, log) => {
   log(`${LABELS[t.status].padEnd(9)} ${t.file}  ${t.key}`);
   log(`          ${JSON.stringify(t.value)}`);
@@ -288,8 +391,11 @@ const removeQuietly = (file) => {
  * without the entries this run removes or replaces, last with the ones it
  * adds, so that a stop between two renames (a closed window) can leave a
  * signature without its author but never with another one's. When a rename
- * fails, every file already replaced is put back as it was, and the last new
- * content of each file stays in its temporary file, so no answer is lost.
+ * fails, every file already replaced is put back as it was, the last one
+ * first, and the last new content of each file stays in its temporary file,
+ * so no answer is lost; when human-text.json cannot be put back, the authors
+ * file stays without the entries the run removes or replaces, and the message
+ * says to rename the authors' temporary file.
  * @param {{ file: string, rel: string, text: string, before: Buffer|null }[]} steps
  *   `before`: the file as the run found it (null: there was none)
  * @param {number} signed the signatures given in this run, for the messages
@@ -312,15 +418,21 @@ async function writeSteps(steps, signed) {
       throw new SignTextError(`could not write ${tmp} (${err.code ?? err.message}): ${names} ${are} unchanged, and the ${signed} signature(s) given in this run were not saved`);
     }
   }
-  const done = new Set();
+  const done = [];
   for (const s of staged) {
     try {
       await replaceFile(s.tmp, s.file);
-      done.add(s.rel);
+      done.push(s.rel);
     } catch (err) {
-      // Put back what was replaced, and keep the last new content of each file next to it.
+      // Put back what was replaced, the last one first, and keep the last new
+      // content of each file next to it. human-text.json goes back before the
+      // authors file, and the authors file goes back only once the signatures
+      // did: next to the new signatures it stays without the entries this run
+      // removes or replaces, so no signature is ever left with another one's author.
       const lost = [];
-      for (const rel of done) {
+      let signaturesBack = true;
+      for (const rel of [...new Set(done)].reverse()) {
+        if (rel === HUMAN_TEXT_AUTHORS_FILE && !signaturesBack) continue;
         const { file, before } = steps.find((x) => x.rel === rel);
         const fin = staged.find((x) => x.rel === rel && x.final);
         try {
@@ -329,21 +441,57 @@ async function writeSteps(steps, signed) {
           else fs.writeFileSync(file, before);
         } catch {
           lost.push(rel);
+          if (rel === HUMAN_TEXT_FILE) signaturesBack = false;
         }
       }
       for (const x of staged) if (!x.final) removeQuietly(x.tmp);
       const tmpOf = (rel) => staged.find((x) => x.rel === rel && x.final)?.tmp;
+      const held = `could not replace ${s.file} (${err.code ?? err.message}: another program may have it open, such as an editor, a sync client or an antivirus scan). `;
+      if (!signaturesBack) {
+        // The signatures stay saved: only their authors are missing, and a new --sign would not ask about them.
+        const tmpH = tmpOf(HUMAN_TEXT_FILE);
+        let whole = false;
+        try {
+          whole = fs.readFileSync(path.join(path.dirname(tmpH), HUMAN_TEXT_FILE)).equals(Buffer.from(last.get(HUMAN_TEXT_FILE).text, "utf8"));
+        } catch {
+          // unreadable: keep the copy
+        }
+        if (whole) removeQuietly(tmpH);
+        throw new SignTextError(
+          held +
+            `${HUMAN_TEXT_FILE} could not be put back as it was, so it keeps the ${signed} signature(s) given in this run; their authors are in ${tmpOf(HUMAN_TEXT_AUTHORS_FILE)}: ` +
+            `close that program and ${whole ? "" : `rename ${tmpH} over ${HUMAN_TEXT_FILE}, then `}rename that file over ${HUMAN_TEXT_AUTHORS_FILE} ` +
+            "(running --sign again would not ask about those signatures, so it would not record their authors)",
+        );
+      }
       const where =
         last.size > 1
           ? `${lost.length ? "The" : "Nothing was changed: the"} ${signed} signature(s) given in this run are in ${tmpOf(HUMAN_TEXT_FILE)}, and their authors in ${tmpOf(HUMAN_TEXT_AUTHORS_FILE)}`
           : `The ${signed} signature(s) given in this run are in ${tmpOf(HUMAN_TEXT_FILE)}`;
       const rename = last.size > 1 ? `rename each of those files over its target (${names})` : `rename that file over ${HUMAN_TEXT_FILE}`;
       throw new SignTextError(
-        `could not replace ${s.file} (${err.code ?? err.message}: another program may have it open, such as an editor, a sync client or an antivirus scan). ` +
-          `${where}: close that program and ${rename}, or run --sign again` +
-          (lost.length ? `. ${lost.join(", ")} could not be put back as it was: restore it from git` : ""),
+        `${held}${where}: close that program and ${rename}, or run --sign again` + (lost.length ? `. ${lost.join(", ")} could not be put back as it was: restore it from git` : ""),
       );
     }
+  }
+}
+
+/**
+ * Writes the authors file alone, when human-text.json stays as it was: only
+ * to drop entries that have no signature. Failing to is not worth stopping
+ * for: nothing the person answered is lost, and the next --sign tries again.
+ * @returns {boolean} whether it was written
+ */
+async function dropAuthorEntries(file, text, count, log) {
+  const tmp = path.join(path.dirname(file), `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
+  try {
+    fs.writeFileSync(tmp, text);
+    await replaceFile(tmp, file);
+    return true;
+  } catch (err) {
+    removeQuietly(tmp);
+    log(`warn: could not remove the ${count} author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE} (${err.code ?? err.message}): the next --sign tries again`);
+    return false;
   }
 }
 
@@ -351,21 +499,75 @@ async function writeSteps(steps, signed) {
 const SHEET_SKIPS = [
   ["unmapped", "cell(s) that text-sheet import writes nowhere (no key, a key that is not in the files of that language, or a module.json row outside the first language column)"],
   ["refused", "cell(s) that text-sheet import refuses, so it never wrote them from this sheet: fix them in the sheet and import it again"],
-  ["differs", "cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first)"],
+  [
+    "replaces",
+    "cell(s) whose key holds another text, validly signed: importing this sheet would replace that signed text; keep one of the two texts (drop this row, or import the sheet and sign it)",
+  ],
+  [
+    "differs",
+    "cell(s) not imported yet, changed since, or replaced by another sheet's import: the value in the module is not the sheet's text (import the sheet first, if its text is the one to keep)",
+  ],
   ["signed", "cell(s) already validly signed"],
   ["otherAuthor", "cell(s) already validly signed whose recorded author is not their row's: the record keeps its author (sign-text never changes the author of a valid signature)"],
+  ["unattributed", "cell(s) already validly signed with no author recorded (a plain --sign records none): sign-text never gives a valid signature an author afterwards"],
   ["blocked", "cell(s) whose text cannot be signed yet (still to write, a list, a key defined twice or a broken string)"],
   ["noAuthor", 'cell(s) in rows without an author: write in "author" the name of the person who wrote each one, save the sheet and run this again'],
   ["badAuthor", "cell(s) whose author is not a valid name (1 to 60 characters, none of them a control character or one that prints nothing)"],
   ["twoAuthors", "cell(s) that give one text with different authors: keep one row for it"],
+  ["mixedAuthor", "cell(s) whose text another row gives without a valid author: write the same author in every row that gives it"],
 ];
 
-/** The sheet file of --sheet: where it was looked for, and the module's own when that one exists. */
+/** The sheet file of --sheet: where it was looked for, and the module's own, or the text sheets found, when there are. */
 function missingSheet({ sheetPath, shown, cwd, root, sheet }) {
   const inModule = path.resolve(root, sheet);
   const there = inModule !== sheetPath && fs.existsSync(inModule) && fs.statSync(inModule).isFile();
-  const rel = path.relative(cwd, inModule).split(path.sep).join("/") || sheet;
-  return new SignTextError(`${shown} does not exist in ${cwd}, the folder this runs in (--sheet is read from there)${there ? `; the module folder has one: --sheet ${quoteArg(rel)}` : ""}`);
+  let hint = "";
+  if (there) hint = `; the module folder has one: --sheet ${quoteArg(shownPath(cwd, inModule))}`;
+  else {
+    // A sheet per author (textos-hoja-IAR18.csv) is not the default name export gives.
+    const found = sheetsIn([cwd, root]).map((f) => `--sheet ${quoteArg(shownPath(cwd, f))}`);
+    if (found.length) hint = `; text sheets found: ${found.join(" or ")}`;
+  }
+  return new SignTextError(`${shown} does not exist in ${cwd}, the folder this runs in (--sheet is read from there)${hint}`);
+}
+
+/**
+ * The other text sheets next to the sheet and in the module folder, read with
+ * the same reader: for each text of the module, the sheet rows that give its
+ * value now ("textos-hoja-BaronHVC.csv row 2"), so a cell whose key holds
+ * another sheet's text can name that sheet. Never their values. A sheet that
+ * cannot be read is left out.
+ * @returns {Map<string, string[]>} by idOf(file, key)
+ */
+function otherSheets({ sheetPath, cwd, root, langs, targetsOf }) {
+  const from = new Map();
+  for (const file of sheetsIn([path.dirname(sheetPath), root])) {
+    if (samePath(file, sheetPath)) continue;
+    let other;
+    try {
+      other = readSheet(fs.readFileSync(file), langs);
+    } catch {
+      continue;
+    }
+    if (!other.header || other.keyIdx < 0) continue;
+    const name = shownPath(cwd, file);
+    for (const r of other.records) {
+      const key = (r.fields[other.keyIdx] ?? "").trim();
+      for (const c of other.langCols) {
+        const cell = r.fields[c.idx] ?? "";
+        if (cell === "") continue;
+        const value = cell.replace(/\r\n?/g, "\n");
+        for (const t of targetsOf(key, c.lang)) {
+          if (t.value !== value) continue;
+          const id = idOf(t.file, t.key);
+          if (!from.has(id)) from.set(id, []);
+          const where = `${name} row ${r.row}`;
+          if (!from.get(id).includes(where)) from.get(id).push(where);
+        }
+      }
+    }
+  }
+  return from;
 }
 
 /**
@@ -404,8 +606,21 @@ function sheetPlan({ sheetPath, shown, cwd, root, sheet: given, entries, texts, 
     if (!refused.get(id).includes(x.reason)) refused.get(id).push(x.reason);
   }
 
+  // The module's texts a cell of `lang` under `key` goes to, as import maps it.
+  const targetsOf = (key, lang) => {
+    if (key.startsWith(LISTING_PREFIX)) {
+      const field = key.slice(LISTING_PREFIX.length);
+      return LISTING_FIELDS.includes(field) && lang === langs[0] ? texts.filter((t) => t.file === "module.json" && t.key === field) : [];
+    }
+    if (!key) return [];
+    const rels = entries.filter((e) => e.lang === lang).map((e) => e.rel);
+    return texts.filter((t) => rels.includes(t.file) && t.key === key);
+  };
+  const elsewhere = otherSheets({ sheetPath, cwd, root, langs, targetsOf });
+
   const skips = Object.fromEntries(SHEET_SKIPS.map(([id]) => [id, []]));
-  const asked = new Map(); // text -> the cells that give it
+  const asked = new Map(); // text -> the cells that give it, with their author
+  let seq = 0; // the order of the cells, for the report
   for (const r of sheet.records) {
     const key = (r.fields[sheet.keyIdx] ?? "").trim();
     const raw = sheet.authorIdx < 0 ? "" : (r.fields[sheet.authorIdx] ?? "").trim();
@@ -416,15 +631,8 @@ function sheetPlan({ sheetPath, shown, cwd, root, sheet: given, entries, texts, 
       if (cell === "") continue;
       // What import writes: the cell with its line breaks as LF.
       const value = cell.replace(/\r\n?/g, "\n");
-      const at = { row: r.row, lang: c.lang, key: key || "(no key)" };
-      let targets = [];
-      if (key.startsWith(LISTING_PREFIX)) {
-        const field = key.slice(LISTING_PREFIX.length);
-        if (LISTING_FIELDS.includes(field) && c.lang === langs[0]) targets = texts.filter((t) => t.file === "module.json" && t.key === field);
-      } else if (key) {
-        const rels = entries.filter((e) => e.lang === c.lang).map((e) => e.rel);
-        targets = texts.filter((t) => rels.includes(t.file) && t.key === key);
-      }
+      const at = { row: r.row, lang: c.lang, key: key || "(no key)", seq: seq++ };
+      const targets = targetsOf(key, c.lang);
       if (!targets.length) {
         skips.unmapped.push(at);
         continue;
@@ -434,8 +642,16 @@ function sheetPlan({ sheetPath, shown, cwd, root, sheet: given, entries, texts, 
         skips.refused.push({ ...at, why: why.join("; ") });
         continue;
       }
-      if (targets.some((t) => t.value !== value)) {
-        skips.differs.push({ ...at, files: [...new Set(targets.map((t) => t.file))] });
+      const off = targets.filter((t) => t.value !== value);
+      if (off.length) {
+        // Which other sheet gave the module its value, when one did: never the value itself.
+        const from = [...new Set(off.flatMap((t) => elsewhere.get(idOf(t.file, t.key)) ?? []))];
+        const files = [...new Set(targets.map((t) => t.file))];
+        if (off.every((t) => t.status === "signed")) {
+          // "Import the sheet first" would replace a valid signature: said apart, with whose it is.
+          const recorded = [...new Set(off.map((t) => authorOf(authors, t.file, t.key)))].map((n) => (n === null ? "no author recorded" : `recorded ${showName(n)}`));
+          skips.replaces.push({ ...at, files, detail: [...recorded, ...from.map((w) => `the text of ${w}`)].join("; ") });
+        } else skips.differs.push({ ...at, files, ...(from.length ? { detail: `the module holds the text of ${from.join(", ")}` } : {}) });
         continue;
       }
       for (const t of targets) {
@@ -443,23 +659,31 @@ function sheetPlan({ sheetPath, shown, cwd, root, sheet: given, entries, texts, 
         if (t.status === "signed") {
           // A row's author that the record does not name is reported: the record may be wrong.
           const recorded = authorOf(authors, t.file, t.key);
-          if (valid && recorded !== author) skips.otherAuthor.push({ ...one, detail: `sheet ${showName(author)}, ${recorded === null ? "none recorded" : `recorded ${showName(recorded)}`}` });
-          else skips.signed.push(one);
+          if (!valid || recorded === author) skips.signed.push(one);
+          else if (recorded === null) skips.unattributed.push({ ...one, detail: `sheet ${showName(author)}` });
+          else skips.otherAuthor.push({ ...one, detail: `sheet ${showName(author)}, recorded ${showName(recorded)}` });
         } else if (!TO_SIGN.has(t.status)) skips.blocked.push(one);
-        else if (!author) skips.noAuthor.push(one);
-        else if (!valid) skips.badAuthor.push({ ...one, author });
         else {
           if (!asked.has(t)) asked.set(t, []);
-          asked.get(t).push({ ...one, author });
+          asked.get(t).push({ ...one, author, valid });
         }
       }
     }
   }
+  // A text is asked about only when every row that gives it names the same valid author.
   const queue = [];
   for (const [t, cells] of asked) {
-    if (new Set(cells.map((x) => x.author)).size > 1) skips.twoAuthors.push(...cells);
-    else queue.push({ t, author: cells[0].author, rows: [...new Set(cells.map((x) => x.row))] });
+    const named = cells.filter((x) => x.valid);
+    const authorsOfText = new Set(named.map((x) => x.author));
+    if (authorsOfText.size === 1 && named.length === cells.length) {
+      queue.push({ t, author: named[0].author, rows: [...new Set(cells.map((x) => x.row))] });
+      continue;
+    }
+    for (const x of cells) if (!x.valid) (x.author ? skips.badAuthor : skips.noAuthor).push(x);
+    if (authorsOfText.size > 1) skips.twoAuthors.push(...named);
+    else skips.mixedAuthor.push(...named);
   }
+  for (const list of Object.values(skips)) list.sort((a, b) => a.seq - b.seq);
   // The authors it will ask about, and their rows.
   const names = new Map();
   for (const q of queue) {
@@ -592,6 +816,11 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
     log(`note: baron.json "humanText" is ${JSON.stringify(mode)}, which check-module rejects (rule [c]); its lock still asks for these signatures`);
   }
   if (missing) log(`note: there is no ${HUMAN_TEXT_FILE} yet: every text counts as unsigned`);
+  const left = leftovers(root, texts, authors);
+  if (sign && left.finish.length) {
+    // A new run would write the authors file, and that leftover could no longer simply be renamed over it.
+    throw new SignTextError(`${left.finish.map(finishLine).join("; ")}; or delete it to leave them without an author. Then run this again`);
+  }
 
   if (!sign) {
     // Who wrote each signed text, when a signature recorded it.
@@ -612,24 +841,25 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
       if (stale.length > STALE_CAP) log(`and ${stale.length - STALE_CAP} more`);
     }
     const orphans = unsignedAuthors(authors, signed).length;
-    if (orphans) log(`info: ${orphans} author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; --sign removes them`);
-    const leftovers = fs.readdirSync(root).filter((f) => LEFTOVER_RE.test(f));
-    if (leftovers.length) {
-      log(
-        `info: ${leftovers.length} temporary file(s) left by a --sign that did not finish (${leftovers.join(", ")}): they hold answers that were never saved; ` +
-          "rename each over its target only as that run's message said, otherwise delete them and sign again",
-      );
+    if (orphans) {
+      const removes = missing ? `the first --sign that saves a signature removes them (restore ${HUMAN_TEXT_FILE} from git if it was lost)` : "--sign removes them";
+      log(`info: ${orphans} author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; ${removes}`);
     }
+    reportLeftovers(left, log);
     if (pending.length) {
       // Decision 28: a person writes each text from scratch, and the person who attests signs naming that author.
+      // The sheets are named as they are, one per author (textos-hoja-IAR18.csv); export's name when there is none.
+      const sheets = sheetsIn([cwd, root]).map((f) => quoteArg(shownPath(cwd, f)));
+      const sheetArg = sheets.length ? `${sheets[0]} (the author of each row${sheets.length > 1 ? `; the same for ${sheets.slice(1).join(", ")}` : ""})` : `${SHEET_FILE} (the author of each row)`;
       log(
         "next: once a person has written each of these from scratch, the person who attests them (BaronHVC) signs them at a terminal, naming who wrote them: " +
-          `${command} --sign --sheet ${SHEET_FILE} (the author of each row) or ${command} --sign --author <name>` +
+          `${command} --sign --sheet ${sheetArg} or ${command} --sign --author <name>` +
           `${off ? ' (check-module asks for them once baron.json says "humanText": "signed")' : ""}`,
       );
     }
     return result;
   }
+  reportLeftovers(left, log);
 
   // What to ask about, and for whom: null is the person at the terminal.
   let queue = pending.map((t) => ({ t, author: name, rows: [] }));
@@ -710,9 +940,10 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
   const file = path.join(root, HUMAN_TEXT_FILE);
   const text = signaturesText(next);
   const before = missing ? null : fs.readFileSync(file);
+  const authorsFile = path.join(root, HUMAN_TEXT_AUTHORS_FILE);
+  let dropped = 0;
   if (before === null ? Object.keys(next).length > 0 : !before.equals(Buffer.from(text, "utf8"))) {
-    // The authors change only with the signatures, in the same step; never created empty.
-    const authorsFile = path.join(root, HUMAN_TEXT_AUTHORS_FILE);
+    // The authors change with the signatures, in the same step; never created empty.
     const authorsBefore = authorsMissing ? null : fs.readFileSync(authorsFile);
     const differs = (now, map) => (now === null ? Object.keys(map).length > 0 : !Buffer.from(now).equals(Buffer.from(authorsText(map), "utf8")));
     const steps = [];
@@ -726,12 +957,19 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
     await writeSteps(steps, result.signed);
     result.wrote = true;
     result.wroteAuthors = steps.some((s) => s.rel === HUMAN_TEXT_AUTHORS_FILE);
+  } else if (!missing && authorsText(kept) !== authorsText(authors)) {
+    // human-text.json stays as it was, so this run gave no signature: only the
+    // author entries without one go. Not without human-text.json, which may be lost.
+    dropped = unsignedAuthors(authors, next).length;
+    result.wroteAuthors = await dropAuthorEntries(authorsFile, authorsText(kept), dropped, log);
   }
   log("");
   log(
     `sign-text: ${result.signed} signed, ${result.skipped} skipped${stopped ? `, stopped with ${queue.length - result.signed - result.skipped} left` : ""}` +
       `${stale.length ? `, ${stale.length} stale signature(s) removed` : ""}; ` +
-      (result.wrote ? `wrote ${result.wroteAuthors ? `${HUMAN_TEXT_FILE} and ${HUMAN_TEXT_AUTHORS_FILE}` : HUMAN_TEXT_FILE}` : `${HUMAN_TEXT_FILE} unchanged`),
+      (result.wrote
+        ? `wrote ${result.wroteAuthors ? `${HUMAN_TEXT_FILE} and ${HUMAN_TEXT_AUTHORS_FILE}` : HUMAN_TEXT_FILE}`
+        : `${HUMAN_TEXT_FILE} unchanged${result.wroteAuthors ? `; removed ${dropped} author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE}` : ""}`),
   );
   const recorded = given.filter((g) => g.author !== null).map((g) => g.author);
   if (recorded.length) log(`sign-text: authors recorded with the signatures of this run: ${authorCounts(recorded)}`);
@@ -745,7 +983,10 @@ export async function signTexts({ dir = process.cwd(), sign = false, author, she
 /** Texts no answer can sign yet, as information after the count. */
 function reportBlocked(blocked, log) {
   const count = (status) => blocked.filter((t) => t.status === status).length;
-  if (count("unwritten")) log(`info: ${count("unwritten")} text(s) still to write (empty or TODO-HUMANO:): write them yourself, then sign them`);
+  // Decision 28: a person writes them, never an agent; the person who attests signs them for that author.
+  if (count("unwritten")) {
+    log(`info: ${count("unwritten")} text(s) still to write (empty or TODO-HUMANO:): BaronHVC or IAR18 writes each one from scratch (in the sheet), then BaronHVC signs it naming its author`);
+  }
   if (count("conflict")) log(`info: ${count("conflict")} value(s) of keys defined twice with different values (nested and dotted): keep one, then sign it`);
   if (count("list")) log(`info: ${count("list")} list value(s): only a string value can be signed`);
   if (count("illformed")) {

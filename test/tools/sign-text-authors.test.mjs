@@ -259,12 +259,44 @@ test("--sign drops the author entries of the stale signatures it drops, even wit
   assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "IAR18" } });
   assert.ok(res.lines.includes("sign-text: 0 signed, 0 skipped, 2 stale signature(s) removed; wrote human-text.json and human-text-authors.json"), res.out);
 
-  // Nothing to sign and nothing stale: neither file is touched, an orphan entry included.
+  // Nothing to sign and nothing stale: human-text.json is not touched, and the
+  // entry without a signature still goes, as the listing says --sign does.
   writeAuthors(dir, { "lang/en.json": { "baron-fixture.Open": "IAR18" }, "lang/es.json": { "baron-fixture.Never": "IAR18" } });
-  const before = [readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)];
+  const listed = await run(dir);
+  assert.ok(listed.lines.includes(`info: 1 author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; --sign removes them`), listed.out);
+  const signatures = readText(dir, HUMAN_TEXT_FILE);
   const idle = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
-  assert.deepEqual({ wrote: idle.wrote, wroteAuthors: idle.wroteAuthors }, { wrote: false, wroteAuthors: false });
-  assert.deepEqual([readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)], before);
+  assert.deepEqual({ wrote: idle.wrote, wroteAuthors: idle.wroteAuthors }, { wrote: false, wroteAuthors: true });
+  assert.equal(readText(dir, HUMAN_TEXT_FILE), signatures);
+  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), authorsText({ "lang/en.json": { "baron-fixture.Open": "IAR18" } }));
+  assert.ok(idle.lines.includes(`sign-text: 0 signed, 0 skipped; human-text.json unchanged; removed 1 author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE}`), idle.out);
+  assert.deepEqual(tmps(dir), []);
+  const after = await run(dir);
+  assert.ok(!after.out.includes("have no signature"), after.out);
+  // With nothing left to drop, neither file is touched.
+  const both = [readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)];
+  const again = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
+  assert.deepEqual({ wrote: again.wrote, wroteAuthors: again.wroteAuthors }, { wrote: false, wroteAuthors: false });
+  assert.deepEqual([readText(dir, HUMAN_TEXT_FILE), readText(dir, HUMAN_TEXT_AUTHORS_FILE)], both);
+  // Held by another program: a warning, nothing else changes, no temporary file left.
+  writeAuthors(dir, { "lang/en.json": { "baron-fixture.Open": "IAR18" }, "lang/es.json": { "baron-fixture.Never": "IAR18" } });
+  const held = readText(dir, HUMAN_TEXT_AUTHORS_FILE);
+  const busy = t.mock.method(fs, "renameSync", () => {
+    throw Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
+  });
+  const blocked = await run(dir, { sign: true, isTTY: true, ask: fakeAsk().ask });
+  busy.mock.restore();
+  assert.equal(blocked.wroteAuthors, false);
+  assert.ok(blocked.lines.includes(`warn: could not remove the 1 author record(s) without a signature from ${HUMAN_TEXT_AUTHORS_FILE} (EBUSY): the next --sign tries again`), blocked.out);
+  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), held);
+  assert.deepEqual(tmps(dir), []);
+
+  // Without human-text.json (it may be lost) an idle --sign drops nothing, and the listing says when they go.
+  fs.rmSync(path.join(dir, HUMAN_TEXT_FILE));
+  const noFile = await run(dir);
+  assert.ok(noFile.lines.includes(`info: 2 author record(s) in ${HUMAN_TEXT_AUTHORS_FILE} have no signature in ${HUMAN_TEXT_FILE}; the first --sign that saves a signature removes them (restore ${HUMAN_TEXT_FILE} from git if it was lost)`), noFile.out);
+  await run(dir, { sign: true, isTTY: true, ask: fakeAsk("q").ask });
+  assert.equal(readText(dir, HUMAN_TEXT_AUTHORS_FILE), held);
 });
 
 test("--sign never creates the authors file when no signature records an author", async (t) => {
@@ -548,6 +580,15 @@ test("the check-module of an older core (v1.5.0, v1.6.0) still passes a module w
  * -------------------------------------------------------------------------- */
 
 const SHEET_HEADER = ["key", "en", "es", "author"];
+// How --sheet heads the cells it does not ask about, by reason (n cells).
+const DIFFERS = (n) =>
+  `info: ${n} cell(s) not imported yet, changed since, or replaced by another sheet's import: the value in the module is not the sheet's text (import the sheet first, if its text is the one to keep); not asked:`;
+const REPLACES = (n) =>
+  `info: ${n} cell(s) whose key holds another text, validly signed: importing this sheet would replace that signed text; keep one of the two texts (drop this row, or import the sheet and sign it); not asked:`;
+const OTHER_AUTHOR = (n) =>
+  `info: ${n} cell(s) already validly signed whose recorded author is not their row's: the record keeps its author (sign-text never changes the author of a valid signature); not asked:`;
+const UNATTRIBUTED = (n) =>
+  `info: ${n} cell(s) already validly signed with no author recorded (a plain --sign records none): sign-text never gives a valid signature an author afterwards; not asked:`;
 
 /** Writes `rows` (after SHEET_HEADER, unless `header` says otherwise) as a CSV the way text-sheet export writes it. */
 function writeSheet(dir, rows, { name = "hoja.csv", header = SHEET_HEADER } = {}) {
@@ -596,11 +637,11 @@ test("--sheet asks only about the cells whose value in the module is the sheet's
     "info: 2 cell(s) that text-sheet import writes nowhere (no key, a key that is not in the files of that language, or a module.json row outside the first language column); not asked:",
     "  row 7  es  module.json:title",
     "  row 8  en  baron-fixture.Nope",
-    "info: 1 cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first); not asked:",
+    DIFFERS(1),
     "  row 3  es  baron-fixture.Notice -> lang/es.json",
     // Signed before by plain --sign: the record names nobody, the row names IAR18.
-    "info: 1 cell(s) already validly signed whose recorded author is not their row's: the record keeps its author (sign-text never changes the author of a valid signature); not asked:",
-    '  row 5  en  baron-fixture.Kind_b  (sheet "IAR18", none recorded)',
+    UNATTRIBUTED(1),
+    '  row 5  en  baron-fixture.Kind_b  (sheet "IAR18")',
     'info: 1 cell(s) in rows without an author: write in "author" the name of the person who wrote each one, save the sheet and run this again; not asked:',
     "  row 4  en  baron-fixture.Kind_a",
     "info: 1 cell(s) whose author is not a valid name (1 to 60 characters, none of them a control character or one that prints nothing); not asked:",
@@ -642,7 +683,8 @@ test("--sheet asks only about the cells whose value in the module is the sheet's
   const second = await run(dir, { sign: true, sheet: path.join(dir, sheet), isTTY: true, ask: again.ask });
   assert.deepEqual(again.asked, [authorQuestion("IAR18")]);
   assert.ok(second.lines.includes("info: 4 cell(s) already validly signed: not asked"), second.out);
-  assert.ok(second.lines.includes('  row 5  en  baron-fixture.Kind_b  (sheet "IAR18", none recorded)'), second.out);
+  assert.ok(second.lines.includes('  row 5  en  baron-fixture.Kind_b  (sheet "IAR18")'), second.out);
+  assert.ok(!second.out.includes("recorded author is not"), second.out);
   assert.equal(readAuthorMap(dir)["lang/es.json"]["baron-fixture.Unused"], "IAR18");
 });
 
@@ -684,7 +726,7 @@ test("--sheet follows text-sheet's export and import: before the import nothing 
   // Not imported yet: nothing to ask, each cell reported.
   const early = await run(dir, { sign: true, sheet: SHEET_FILE, cwd: dir, isTTY: true, ask: fakeAsk().ask });
   assert.equal(early.signed, 0);
-  assert.ok(early.lines.includes("info: 3 cell(s) not imported yet or changed since: the value in the module is not the sheet's text (import the sheet first); not asked:"), early.out);
+  assert.ok(early.lines.includes(DIFFERS(3)), early.out);
   assert.ok(!exists(dir, HUMAN_TEXT_AUTHORS_FILE));
 
   assert.equal((await importSheet({ file: SHEET_FILE, ...quiet })).code, 0);
@@ -835,14 +877,12 @@ test("--sheet reports a signed text whose recorded author is not its row's, with
   const fake = fakeAsk();
   const res = await run(dir, { sign: true, sheet: other, cwd: dir, isTTY: true, ask: fake.ask });
   assert.deepEqual(fake.asked, []);
-  for (const line of [
-    "info: 2 cell(s) already validly signed whose recorded author is not their row's: the record keeps its author (sign-text never changes the author of a valid signature); not asked:",
-    '  row 2  es  baron-fixture.Open  (sheet "BaronHVC", recorded "IAR18")',
-    '  row 3  es  baron-fixture.Notice  (sheet "BaronHVC", none recorded)',
-  ]) {
+  // A record that names someone else keeps its author; one that names nobody is said apart: there is no author to keep.
+  for (const line of [OTHER_AUTHOR(1), '  row 2  es  baron-fixture.Open  (sheet "BaronHVC", recorded "IAR18")', UNATTRIBUTED(1), '  row 3  es  baron-fixture.Notice  (sheet "BaronHVC")']) {
     assert.ok(res.lines.includes(line), `${line}${NL}${res.out}`);
   }
-  assert.ok(!res.lines.some((l) => l.startsWith("info: 2 cell(s) already validly signed: not asked")), res.out);
+  assert.ok(!res.out.includes("none recorded"), res.out);
+  assert.ok(!res.lines.some((l) => l.startsWith("info: 2 cell(s) already validly signed")), res.out);
   assert.deepEqual(readAuthorMap(dir), { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
   // The row that names the recorded author is only counted.
   const same = writeSheet(dir, [["baron-fixture.Open", "", "Abrir", "IAR18"]], { name: "misma.csv" });
@@ -909,7 +949,9 @@ test("a long run says how many answers Ctrl+C would lose, q says how to continue
   const sheet = writeSheet(todo, [["baron-fixture.Open", "Open", "", "IAR18"]]);
   const s = await run(todo, { sign: true, sheet, cwd: todo, isTTY: true, ask: fakeAsk("q").ask });
   assert.ok(!s.out.includes("TODO-HUMANO: a notice"), s.out);
-  assert.ok(s.lines.includes("info: 1 text(s) still to write (empty or TODO-HUMANO:): write them yourself, then sign them"), s.out);
+  // Decision 28: a person writes them, and the person who attests signs them for their author.
+  assert.ok(s.lines.includes("info: 1 text(s) still to write (empty or TODO-HUMANO:): BaronHVC or IAR18 writes each one from scratch (in the sheet), then BaronHVC signs it naming its author"), s.out);
+  assert.ok(!s.out.includes("write them yourself"), s.out);
   assert.ok(s.lines.includes("to continue: node ../pf2e-baron-core/tools/sign-text.mjs . --sign --sheet hoja.csv (a text signed now is not asked again; a skipped one is)"), s.out);
   // Plain --sign still shows them, as it always did.
   assert.ok((await run(todo, { sign: true, isTTY: true, ask: fakeAsk("q").ask })).out.includes('"TODO-HUMANO: a notice"'));
@@ -950,4 +992,292 @@ test("--sheet: a sheet that is not where its path points says where it looked, a
   // Given that way, it reads it.
   const res = await run(dir, { sign: true, sheet: "baron-fixture/textos-hoja-IAR18.csv", cwd: parent, isTTY: true, ask: fakeAsk("s").ask });
   assert.equal(res.signed, 1, res.out);
+});
+
+/* ----------------------------------------------------------------------------
+ * The second review: the real flow of one sheet per author, the write order
+ * when a rename fails, a stop between the last two renames, rows without a
+ * valid author, names that only look alike, and the docs
+ * -------------------------------------------------------------------------- */
+
+/** A sheet as the web page exports it for one person (textos-hoja-<name>.csv): header key,author,en,es, every cell quoted, CRLF, a UTF-8 BOM. */
+function pageSheet(dir, name, cells) {
+  const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const lines = [["key", "author", "en", "es"].join(",")];
+  for (const [k, c] of Object.entries(cells)) lines.push([q(k), q(name), q(c.en ?? ""), q(c.es ?? "")].join(","));
+  const file = `textos-hoja-${name}.csv`;
+  fs.writeFileSync(path.join(dir, file), ch(0xfeff) + lines.join(ch(13, 10)) + ch(13, 10));
+  return file;
+}
+
+test("the listing and a --sheet that is not there name the sheets of the folder, one per author", async (t) => {
+  const dir = signedModule(t);
+  const COMMAND = "node ../pf2e-baron-core/tools/sign-text.mjs .";
+  const nextOf = (res) => res.lines.find((l) => l.startsWith("next: ")) ?? "";
+  // No sheet yet: the name export gives.
+  assert.ok(nextOf(await run(dir, { cwd: dir })).includes(`: ${COMMAND} --sign --sheet textos-hoja.csv (the author of each row) or ${COMMAND} --sign --author <name>`));
+  pageSheet(dir, "IAR18", { "baron-fixture.Open": { en: "Open", es: "Abrir" } });
+  pageSheet(dir, "BaronHVC", { "baron-fixture.Notice": { en: "Notice" } });
+  // Excel's lock file and other CSVs are not text sheets.
+  fs.writeFileSync(path.join(dir, `~$textos-hoja-IAR18.csv`), "");
+  fs.writeFileSync(path.join(dir, "otra.csv"), "key,en\r\n");
+  const next = nextOf(await run(dir, { cwd: dir }));
+  assert.ok(next.includes(`: ${COMMAND} --sign --sheet textos-hoja-BaronHVC.csv (the author of each row; the same for textos-hoja-IAR18.csv) or ${COMMAND} --sign --author <name>`), next);
+  assert.ok(!next.includes("textos-hoja.csv"), next);
+  // From the parent folder, as typed from there.
+  const parent = path.dirname(dir);
+  assert.ok(nextOf(await run(dir, { cwd: parent })).includes("--sheet baron-fixture/textos-hoja-BaronHVC.csv (the author of each row; the same for baron-fixture/textos-hoja-IAR18.csv)"));
+  // The command it names reads the sheet.
+  const signed = await run(dir, { sign: true, sheet: "textos-hoja-IAR18.csv", cwd: dir, isTTY: true, ask: fakeAsk("s", "s").ask });
+  assert.equal(signed.signed, 2, signed.out);
+  // The default name, missing: the error names the sheets that are there.
+  await assert.rejects(
+    run(dir, { sign: true, sheet: "textos-hoja.csv", cwd: dir, isTTY: true, ask: fakeAsk().ask }),
+    (err) =>
+      err instanceof SignTextError &&
+      err.message === `textos-hoja.csv does not exist in ${dir}, the folder this runs in (--sheet is read from there); text sheets found: --sheet textos-hoja-BaronHVC.csv or --sheet textos-hoja-IAR18.csv`,
+  );
+  await assert.rejects(
+    run(dir, { sign: true, sheet: "textos-hoja.csv", cwd: parent, isTTY: true, ask: fakeAsk().ask }),
+    (err) => err instanceof SignTextError && err.message.endsWith("; text sheets found: --sheet baron-fixture/textos-hoja-BaronHVC.csv or --sheet baron-fixture/textos-hoja-IAR18.csv"),
+  );
+});
+
+test("two sheets that give one key two texts: --sheet names the other sheet, and never says to import over a valid signature", async (t) => {
+  const dir = signedModule(t);
+  const quiet = { dir, cwd: dir, log: () => {}, logError: () => {} };
+  const iar = pageSheet(dir, "IAR18", { "baron-fixture.Open": { en: "Open the panel", es: "Abrir el panel" } });
+  const baron = pageSheet(dir, "BaronHVC", { "baron-fixture.Open": { en: "Open it" } });
+  // IAR18's sheet is imported first, BaronHVC's last: the module holds BaronHVC's en text.
+  assert.equal((await importSheet({ file: iar, ...quiet })).code, 0);
+  assert.equal((await importSheet({ file: baron, ...quiet })).code, 0);
+  assert.equal(readJson(dir, "lang", "en.json")["baron-fixture.Open"], "Open it");
+
+  const first = fakeAsk("s");
+  const one = await run(dir, { sign: true, sheet: iar, cwd: dir, isTTY: true, ask: first.ask });
+  assert.deepEqual(first.asked, [authorQuestion("IAR18")], one.out);
+  for (const line of [DIFFERS(1), "  row 2  en  baron-fixture.Open -> lang/en.json  (the module holds the text of textos-hoja-BaronHVC.csv row 2)"]) {
+    assert.ok(one.lines.includes(line), `${line}${NL}${one.out}`);
+  }
+  // BaronHVC signs his own text.
+  const two = await run(dir, { sign: true, sheet: baron, cwd: dir, isTTY: true, ask: fakeAsk("s").ask });
+  assert.equal(two.signed, 1, two.out);
+  // Now the module's text is BaronHVC's, validly signed: importing IAR18's sheet would replace that signature.
+  const three = await run(dir, { sign: true, sheet: iar, cwd: dir, isTTY: true, ask: fakeAsk().ask });
+  for (const line of [REPLACES(1), '  row 2  en  baron-fixture.Open -> lang/en.json  (recorded "BaronHVC"; the text of textos-hoja-BaronHVC.csv row 2)', "info: 1 cell(s) already validly signed: not asked"]) {
+    assert.ok(three.lines.includes(line), `${line}${NL}${three.out}`);
+  }
+  assert.ok(!three.out.includes("import the sheet first"), three.out);
+  // Never a value of the other sheet's row.
+  assert.ok(!three.out.includes("Open the panel") && !one.out.includes("Open the panel"), three.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "BaronHVC" }, "lang/es.json": { "baron-fixture.Open": "IAR18" } });
+
+  // A signature with no author recorded is said as such.
+  writeAuthors(dir, { "lang/es.json": { "baron-fixture.Open": "IAR18" } });
+  const four = await run(dir, { sign: true, sheet: iar, cwd: dir, isTTY: true, ask: fakeAsk().ask });
+  assert.ok(four.lines.includes('  row 2  en  baron-fixture.Open -> lang/en.json  (no author recorded; the text of textos-hoja-BaronHVC.csv row 2)'), four.out);
+});
+
+test("--sheet never asks about a text that another row gives without a valid author", async (t) => {
+  const MIXED = (n) => `info: ${n} cell(s) whose text another row gives without a valid author: write the same author in every row that gives it; not asked:`;
+  const dir = signedModule(t);
+  for (const other of ["", "x".repeat(61), `IAR18${ch(0x200b)}`]) {
+    const sheet = writeSheet(dir, [["baron-fixture.Open", "Open", "", other], ["baron-fixture.Open", "Open", "", "BaronHVC"]]);
+    const fake = fakeAsk("s");
+    const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
+    assert.deepEqual(fake.asked, [], `${JSON.stringify(other)}${NL}${res.out}`);
+    assert.ok(res.lines.includes(MIXED(1)), res.out);
+    assert.ok(res.lines.includes('  row 3  en  baron-fixture.Open  ("BaronHVC")'), res.out);
+    assert.ok(res.lines.some((l) => l.startsWith("  row 2  en  baron-fixture.Open")), res.out);
+    assert.ok(!exists(dir, HUMAN_TEXT_FILE), res.out);
+  }
+  // Another author in that row: two authors, still not asked; the same author: asked once.
+  writeSheet(dir, [["baron-fixture.Open", "Open", "", "IAR18"], ["baron-fixture.Open", "Open", "", "BaronHVC"]]);
+  assert.ok((await run(dir, { sign: true, sheet: "hoja.csv", cwd: dir, isTTY: true, ask: fakeAsk().ask })).out.includes("info: 2 cell(s) that give one text with different authors"));
+  writeSheet(dir, [["baron-fixture.Open", "Open", "", "BaronHVC"], ["baron-fixture.Open", "Open", "", "BaronHVC"]]);
+  const fake = fakeAsk("s");
+  const res = await run(dir, { sign: true, sheet: "hoja.csv", cwd: dir, isTTY: true, ask: fake.ask });
+  assert.deepEqual(fake.asked, [authorQuestion("BaronHVC")], res.out);
+  assert.ok(res.lines.includes("[1/1] lang/en.json  baron-fixture.Open  (sheet rows 2, 3)"), res.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "BaronHVC" } });
+});
+
+test("a name with a default-ignorable character is refused, and an astral character shows as its whole escape", async (t) => {
+  const BS = ch(92);
+  const esc = (unit) => `${BS}u${unit.toString(16).padStart(4, "0")}`;
+  // Variation selectors, the combining grapheme joiner, the Hangul fillers, the Khmer inherent vowels, Mongolian selectors.
+  for (const cp of [0x34f, 0xfe00, 0xfe0f, 0xe0100, 0xe01ef, 0x17b4, 0x17b5, 0x115f, 0x1160, 0x3164, 0xffa0, 0x180b]) {
+    const name = `IAR18${String.fromCodePoint(cp)}`;
+    assert.match(String(authorNameProblem(name)), /holds a character that prints nothing/, cp.toString(16));
+    const shown = shared.showName(name);
+    assert.ok(/^[ -~]*$/.test(shown), `${cp.toString(16)}: ${shown}`);
+    assert.equal(JSON.parse(shown), name, cp.toString(16));
+  }
+  // Two astral characters never show alike, and the escape is the whole pair.
+  const a = `IAR18${String.fromCodePoint(0xe0041)}`;
+  const b = `IAR18${String.fromCodePoint(0xe0049)}`;
+  assert.equal(shared.showName(a), `"IAR18${esc(0xdb40)}${esc(0xdc41)}"`);
+  assert.notEqual(shared.showName(a), shared.showName(b));
+  for (const name of [a, b, `IAR${String.fromCodePoint(0xf0000)}18`, `IAR${String.fromCodePoint(0x1fffe)}18`, `IAR${String.fromCodePoint(0x10ffff)}18`]) {
+    assert.equal(JSON.parse(shared.showName(name)), name);
+  }
+  // A name that prints, astral or accented, is still a name, and shows as it is.
+  for (const ok of [`Jos${ch(0xe9)}`, ch(0xd83d, 0xde00), `${ch(0x5d0)}${ch(0x5d1)}`]) {
+    assert.equal(authorNameProblem(ok), null, ok);
+    assert.equal(shared.showName(ok), JSON.stringify(ok));
+  }
+
+  // --sheet: such a row is reported with the escape and never asked; --author exits 2.
+  const dir = signedModule(t);
+  const sheet = writeSheet(dir, [["baron-fixture.Open", "Open", "", "IAR18"], ["baron-fixture.Notice", "Notice", "", `IAR18${ch(0x34f)}`]]);
+  const fake = fakeAsk("s");
+  const res = await run(dir, { sign: true, sheet, cwd: dir, isTTY: true, ask: fake.ask });
+  assert.deepEqual(fake.asked, [authorQuestion("IAR18")], res.out);
+  assert.ok(res.lines.includes(`  row 3  en  baron-fixture.Notice  ("IAR18${esc(0x34f)}")`), res.out);
+  assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Open": "IAR18" } });
+  const bad = await run(dir, { sign: true, author: `IAR18${ch(0xfe0f)}`, isTTY: true, ask: fakeAsk("s").ask });
+  assert.equal(bad.code, 2, bad.out);
+  assert.ok(bad.errors[0].includes(`"IAR18${esc(0xfe0f)}"`), bad.errors[0]);
+});
+
+test("a rename that fails after human-text.json landed never leaves the new signature with the old author, even when human-text.json cannot be put back", async (t) => {
+  // Every text signed and recorded as BaronHVC's; en Open changed since, and IAR18 signs it now: three steps.
+  const dir = signedModule(t, { merge: { "lang/en.json": { "baron-fixture.Open": "Open now" } } });
+  const old = moduleTexts(materialize(t));
+  writeSignatures(dir, hashesOf(old));
+  writeAuthors(dir, Object.fromEntries(Object.entries(old).map(([f, keys]) => [f, Object.fromEntries(Object.keys(keys).map((k) => [k, "BaronHVC"]))])));
+  const authorsTmp = path.join(dir, `.${HUMAN_TEXT_AUTHORS_FILE}.${process.pid}.tmp`);
+  const humanFile = path.join(dir, HUMAN_TEXT_FILE);
+  const realRename = fs.renameSync;
+  const realWrite = fs.writeFileSync;
+  const busy = () => {
+    throw Object.assign(new Error("EBUSY: held"), { code: "EBUSY" });
+  };
+  // The authors file is held for its last rename, and human-text.json cannot be written back.
+  const rename = t.mock.method(fs, "renameSync", (from, to) => (from === authorsTmp ? busy() : realRename(from, to)));
+  const write = t.mock.method(fs, "writeFileSync", (file, ...rest) => (file === humanFile ? busy() : realWrite(file, ...rest)));
+  let message = "";
+  await assert.rejects(run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fakeAsk("s").ask }), (err) => {
+    message = err.message;
+    return err instanceof SignTextError;
+  });
+  rename.mock.restore();
+  write.mock.restore();
+  // The new signature is saved, without an author yet, and never with BaronHVC's.
+  assert.equal(readSigned(dir)["lang/en.json"]["baron-fixture.Open"], oracle("Open now"));
+  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Open"], undefined);
+  assert.equal(readAuthorMap(dir)["lang/en.json"]["baron-fixture.Title"], "BaronHVC");
+  const listing = await run(dir);
+  assert.ok(!listing.out.includes("lang/en.json  baron-fixture.Open  by "), listing.out);
+  // The message says how to finish; not to sign again, which would ask nothing about a valid signature.
+  for (const words of [
+    `could not replace ${path.join(dir, HUMAN_TEXT_AUTHORS_FILE)} (EBUSY: another program may have it open`,
+    `${HUMAN_TEXT_FILE} could not be put back as it was, so it keeps the 1 signature(s) given in this run; their authors are in ${authorsTmp}: close that program and rename that file over ${HUMAN_TEXT_AUTHORS_FILE}`,
+    "running --sign again would not ask about those signatures",
+  ]) {
+    assert.ok(message.includes(words), `${words}${NL}${message}`);
+  }
+  assert.ok(!message.includes("or run --sign again"), message);
+  // Only the authors' temporary file is left, and the listing says that it finishes the run.
+  assert.deepEqual(tmps(dir), [path.basename(authorsTmp)]);
+  const FINISH = `info: ${path.basename(authorsTmp)} holds the authors of 1 valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`;
+  assert.ok(listing.lines.includes(FINISH), listing.out);
+  fs.renameSync(authorsTmp, path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
+  const after = await run(dir);
+  assert.ok(after.lines.includes('signed    lang/en.json  baron-fixture.Open  by "IAR18"'), after.out);
+  assert.ok(!after.out.includes(".tmp"), after.out);
+});
+
+test("a run stopped between its last two renames: the listing names the file that finishes it, and --sign waits for it", async (t) => {
+  // The run is cut, as by a closed window, right before its n-th rename: process.exit, no rollback.
+  const script = path.join(tempDir(t, "stop-last"), "stop.mjs");
+  fs.writeFileSync(
+    script,
+    [
+      'import fs from "node:fs";',
+      `import { signTexts } from ${JSON.stringify(pathToFileURL(SIGN_TEXT).href)};`,
+      "const [dir, flag, value, stopAt, ...answers] = process.argv.slice(2);",
+      "const rename = fs.renameSync;",
+      "let n = 0;",
+      "fs.renameSync = (from, to) => (++n === Number(stopAt) ? process.exit(137) : rename(from, to));",
+      'await signTexts({ dir, cwd: dir, sign: true, [flag]: value, isTTY: true, ask: async () => answers.shift() ?? "q", log: () => {} });',
+      "",
+    ].join(NL),
+  );
+  const OPEN = "baron-fixture.Open";
+  const setup = () => {
+    // en Open was signed as "Open", by BaronHVC; it now reads "Open now", and IAR18 signs it: three renames.
+    const dir = signedModule(t, { merge: { "lang/en.json": { [OPEN]: "Open now" } } });
+    writeSignatures(dir, hashesOf(moduleTexts(materialize(t))));
+    writeAuthors(dir, { "lang/en.json": { [OPEN]: "BaronHVC", "baron-fixture.Title": "IAR18" } });
+    pageSheet(dir, "IAR18", { [OPEN]: { en: "Open now" } });
+    return dir;
+  };
+  for (const [flag, value] of [
+    ["author", "IAR18"],
+    ["sheet", "textos-hoja-IAR18.csv"],
+  ]) {
+    const dir = setup();
+    const res = runNode(script, [dir, flag, value, "3", "s"]);
+    assert.equal(res.status, 137, res.out);
+    // The signature is saved, its author not yet: the authors file lost BaronHVC's entry and has not got IAR18's.
+    assert.equal(readSigned(dir)["lang/en.json"][OPEN], oracle("Open now"));
+    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { "baron-fixture.Title": "IAR18" } });
+    const [left] = tmps(dir);
+    assert.deepEqual(tmps(dir), [left]);
+    const listing = await run(dir);
+    assert.ok(
+      listing.lines.includes(
+        `info: ${left} holds the authors of 1 valid signature(s) that have none recorded: a --sign stopped after saving those signatures and before saving their authors; rename it over ${HUMAN_TEXT_AUTHORS_FILE} to record them (it changes no other entry)`,
+      ),
+      listing.out,
+    );
+    assert.ok(!listing.out.includes("never saved"), listing.out);
+    // Signing again would ask nothing about that signature, and would write the authors file: it stops first.
+    for (const opts of [{ author: "IAR18" }, { sheet: "textos-hoja-IAR18.csv", cwd: dir }, {}]) {
+      const fake = fakeAsk("s");
+      await assert.rejects(
+        run(dir, { sign: true, isTTY: true, ask: fake.ask, ...opts }),
+        (err) => err instanceof SignTextError && err.message.startsWith(`${left} holds the authors of 1 valid signature(s)`) && err.message.endsWith("or delete it to leave them without an author. Then run this again"),
+      );
+      assert.deepEqual(fake.asked, []);
+    }
+    fs.renameSync(path.join(dir, left), path.join(dir, HUMAN_TEXT_AUTHORS_FILE));
+    const after = await run(dir);
+    assert.ok(after.lines.includes(`signed    lang/en.json  ${OPEN}  by "IAR18"`), after.out);
+    assert.deepEqual(readAuthorMap(dir), { "lang/en.json": { [OPEN]: "IAR18", "baron-fixture.Title": "IAR18" } });
+    assert.equal((await run(dir, { sign: true, isTTY: true, ask: fakeAsk("q").ask })).code, 0);
+  }
+
+  // Stopped before human-text.json landed: nothing to finish; the files hold signatures never saved, and --sign asks again.
+  const dir = setup();
+  assert.equal(runNode(script, [dir, "author", "IAR18", "2", "s"]).status, 137);
+  assert.equal(readSigned(dir)["lang/en.json"][OPEN], oracle("Open"));
+  const GENERIC = /^info: 2 temporary file\(s\) left by a --sign that did not finish \(.+\): if that run printed a message, do what it said; if not \(a closed window\), the signatures in them were never saved: delete them, and sign those texts again$/;
+  assert.ok((await run(dir)).lines.some((l) => GENERIC.test(l)));
+  const fake = fakeAsk("s");
+  const again = await run(dir, { sign: true, author: "IAR18", isTTY: true, ask: fake.ask });
+  assert.ok(again.lines.some((l) => GENERIC.test(l)), again.out);
+  assert.equal(fake.asked.length, 1, again.out);
+  assert.equal(readAuthorMap(dir)["lang/en.json"][OPEN], "IAR18");
+});
+
+test("text-sheet.mjs still exports what v1.6.0 exported, and the docs say which module exports the sheet reader", async (t) => {
+  const TS = await import(pathToFileURL(path.join(TOOLS, "text-sheet.mjs")).href);
+  // readSheet and AUTHOR_HEADERS are v1.6.0's private readSheet and AUTHOR_NAMES, exported only by shared.mjs.
+  assert.equal("readSheet" in TS, false);
+  assert.equal("AUTHOR_HEADERS" in TS, false);
+  assert.equal(typeof shared.readSheet, "function");
+  assert.deepEqual(shared.AUTHOR_HEADERS, ["author", "autor"]);
+  const core = oldCore(t, "v1.6.0");
+  if (core) {
+    const old = await import(pathToFileURL(path.join(core, "tools", "text-sheet.mjs")).href);
+    for (const name of Object.keys(old)) assert.ok(Object.hasOwn(TS, name), name);
+  } else t.diagnostic("v1.6.0 is not in this clone (a shallow checkout): its exports not compared");
+  const changelog = readText(REPO, "CHANGELOG.md");
+  // Its paragraphs as one line each: the wording is checked, not where it wraps.
+  const unreleased = changelog.slice(changelog.indexOf("## [Unreleased]"), changelog.indexOf("## [1.6.0]")).replace(/\s+/g, " ");
+  assert.ok(!unreleased.includes("`text-sheet.mjs` los sigue exportando."), unreleased);
+  assert.ok(unreleased.includes("`readSheet` y `AUTHOR_HEADERS` solo los exporta `shared.mjs`"), unreleased);
+  assert.ok(!readText(TOOLS, "text-sheet.mjs").includes("they are still this tool's exports"));
 });

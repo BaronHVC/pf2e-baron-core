@@ -489,9 +489,11 @@ export const AUTHOR_NAME_MAX = 60;
 
 // What a name cannot hold besides a control character: a character that prints
 // nothing (format characters such as a zero-width space, a soft hyphen or a
-// direction mark; the line and paragraph separators) or nothing defined (private
-// use), so "IAR18" plus one of them would look like IAR18 and be another author.
-const INVISIBLE_RE = /[\p{Cf}\p{Co}\p{Zl}\p{Zp}]/u;
+// direction mark; the line and paragraph separators; every default-ignorable
+// one, such as a variation selector, the combining grapheme joiner or a Hangul
+// filler) or nothing defined (private use), so "IAR18" plus one of them would
+// look like IAR18 and be another author.
+const INVISIBLE_RE = /[\p{Cf}\p{Co}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/u;
 // Noncharacters: U+FDD0 to U+FDEF and the last two code points of every plane.
 const isNonCharacter = (cp) => (cp >= 0xfdd0 && cp <= 0xfdef) || (cp & 0xfffe) === 0xfffe;
 const BACKSLASH = String.fromCharCode(92);
@@ -512,7 +514,8 @@ export const authorName = (name) => name.trim().normalize("NFC");
  * @returns {string}
  */
 export function showName(name) {
-  const escape = (c) => [...c].map((_, i) => `${BACKSLASH}u${c.charCodeAt(i).toString(16).padStart(4, "0")}`).join("");
+  // Every UTF-16 unit of the character: an astral one is its surrogate pair, as JSON writes it.
+  const escape = (c) => Array.from({ length: c.length }, (_, i) => `${BACKSLASH}u${c.charCodeAt(i).toString(16).padStart(4, "0")}`).join("");
   return [...JSON.stringify(String(name))].map((c) => (/\p{Cc}/u.test(c) || INVISIBLE_RE.test(c) || isNonCharacter(c.codePointAt(0)) ? escape(c) : c)).join("");
 }
 
@@ -530,7 +533,7 @@ export function authorNameProblem(name) {
   if (!s) return "is empty: give the name of the person who wrote the texts";
   if (/\p{Cc}/u.test(s)) return `${showName(s)} holds a control character (a tab, a line break or another invisible one)`;
   if (INVISIBLE_RE.test(s) || [...s].some((c) => isNonCharacter(c.codePointAt(0)))) {
-    return `${showName(s)} holds a character that prints nothing (a zero-width space, a soft hyphen, a direction mark, a line or paragraph separator, a private-use character or a noncharacter): it would look like another name`;
+    return `${showName(s)} holds a character that prints nothing (a zero-width space, a soft hyphen, a direction mark, a variation selector, a filler, a line or paragraph separator, a private-use character or a noncharacter): it would look like another name`;
   }
   const length = [...s].length;
   if (length > AUTHOR_NAME_MAX) return `is ${length} characters long: an author name has ${AUTHOR_NAME_MAX} at most`;

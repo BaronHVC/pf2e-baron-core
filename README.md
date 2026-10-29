@@ -245,9 +245,12 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
   las firmas de claves que ya no existen (una por renglón, las primeras 10).
   Si algo falta firmar, el último renglón (`next:`) dice que, una vez que una
   persona escribió cada texto desde cero, quien da fe (BaronHVC) los firma
-  nombrando al autor, con los comandos de `--sheet textos-hoja.csv` y de
-  `--author <nombre>`. También avisa de los temporales que dejó un `--sign`
-  que no terminó (ver abajo).
+  nombrando al autor, con los comandos de `--sheet` y de `--author <nombre>`;
+  `--sheet` nombra las hojas `textos-hoja*.csv` que hay en la carpeta (una
+  por autor, como `textos-hoja-IAR18.csv`), o `textos-hoja.csv` si no hay
+  ninguna. Los textos por escribir los escribe desde cero BaronHVC o IAR18
+  (en la hoja), y BaronHVC los firma nombrando a su autor. También avisa de
+  los temporales que dejó un `--sign` que no terminó (ver abajo).
 - **Con `--sign`** explica antes de la primera pregunta qué hace cada
   respuesta. Luego muestra archivo, clave y valor completo de cada texto
   pendiente y pregunta «¿Escribiste tú este texto desde cero? [s/N/q]»: `s` lo
@@ -272,9 +275,12 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign
   sesión de Claude nunca corre `--sign` ni edita `human-text.json` ni
   `human-text-authors.json`. Una traducción hecha con IA cuenta solo cuando la
   revisa, línea por línea contra su original humano, una persona que domina el
-  idioma, y es esa persona quien la firma: en una traducción, su `s` dice
-  «domino este idioma y revisé esta traducción», y así lo explica `--sign`
-  antes de la primera pregunta.
+  idioma, y esa persona va como autor de la firma: en una traducción, la `s`
+  dice que ese autor domina el idioma y revisó la traducción línea por línea,
+  no que la escribió desde cero. Con `--author` o `--sheet` contesta por él
+  quien da fe (BaronHVC por IAR18, que no tiene terminal); sin ellos, el que
+  contesta es el propio revisor («domino este idioma y revisé esta
+  traducción»). Así lo explica `--sign` antes de la primera pregunta.
 - **Es un compromiso, no una prueba.** El sha256 no lleva llave: un programa
   puede escribir `human-text.json`, y quitar `humanText` de `baron.json` apaga
   el candado. Lo que lo sostiene es revisar quién hace commit de esos dos
@@ -317,16 +323,20 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign --author IAR18
   acento escrito de dos maneras es un solo nombre), y debe quedar de 1 a 60
   caracteres, sin caracteres de control (un tabulador, un salto de línea) ni
   caracteres que no se ven (un espacio de ancho cero, un guion suave, una
-  marca de dirección, un separador de línea o de párrafo, uno de uso privado
-  o un no carácter), que harían pasar un nombre por otro; si no, sale con 2
-  sin preguntar nada, y el mensaje muestra el carácter escondido como
+  marca de dirección, un separador de línea o de párrafo, cualquier ignorable
+  por omisión de Unicode, como un selector de variante, el CGJ o un relleno
+  hangul, uno de uso privado o un no carácter), que harían pasar un nombre
+  por otro; si no, sale con 2 sin preguntar nada, y el mensaje muestra el
+  carácter escondido como escape (uno fuera del plano básico, con las dos
+  mitades de su par), como
   `\u200b`. Si el nombre solo difiere en mayúsculas de uno ya guardado
   (`iar18` e `IAR18`), lo avisa antes de la primera pregunta: serían dos
   autores.
 - **`--sheet <archivo.csv>`** lee la hoja con el mismo lector de `text-sheet
   import` (la ruta, desde la carpeta donde se corre; si no está ahí, el
   mensaje dice dónde buscó y, si la carpeta del módulo tiene una con ese
-  nombre, cómo pasarla) y solo pregunta por las celdas de idioma con texto,
+  nombre, cómo pasarla; si no, nombra las `textos-hoja*.csv` que hay ahí y
+  en la carpeta del módulo) y solo pregunta por las celdas de idioma con texto,
   más `module.json:title` y `module.json:description` en la columna del
   primer idioma, con la clave y el idioma con que `import` las escribe, que
   `import` acepta (las revisa igual que él), cuyo valor en el módulo es el de
@@ -338,15 +348,24 @@ node ../pf2e-baron-core/tools/sign-text.mjs . --sign --author IAR18
   IA): las celdas que `import` no escribe en ningún lado, las que rechaza
   (con su motivo: un `{marcador}` que falta, dos filas con textos distintos
   para una clave…) y las columnas que rechaza, las celdas cuyo valor en el
-  módulo es otro (sin importar todavía, o cambiadas después), los textos ya
-  firmados (solo los cuenta, salvo los que tienen guardado otro autor que el
-  de su fila, o ninguno: esos los lista con los dos nombres, y el registro
-  no cambia, porque `sign-text` nunca cambia el autor de una firma válida),
-  las filas sin `author` o con un nombre que no vale y un texto que dos filas
-  dan con autores distintos. Un texto que varias filas dan con el mismo autor
-  se pregunta una vez. También cuenta los textos pendientes que la hoja no
-  trae, que se firman aparte, y los del módulo que faltan escribir, sin
-  mostrarlos.
+  módulo es otro (sin importar todavía, cambiadas después o reemplazadas por
+  el `import` de otra hoja: si otra `textos-hoja*.csv` de la carpeta da el
+  valor del módulo, nombra esa hoja y su renglón), y aparte las que
+  reemplazarían un texto ya firmado (con el autor guardado de esa firma):
+  ahí no dice «importa la hoja primero», porque eso cambiaría un texto
+  firmado; se queda uno de los dos textos y se quita la fila del otro, o se
+  importa la hoja y se firma de nuevo. Los textos ya firmados solo los
+  cuenta, salvo los que tienen guardado otro autor que el de su fila (los
+  lista con los dos nombres, y el registro no cambia, porque `sign-text`
+  nunca cambia el autor de una firma válida) y los que no tienen autor
+  guardado (los lista aparte: `sign-text` nunca le pone autor después a una
+  firma válida). También lista las filas sin `author` o con un nombre que no
+  vale, un texto que dos filas dan con autores distintos y uno que otra fila
+  da sin autor o con uno que no vale: no lo pregunta hasta que todas las
+  filas que lo dan nombran al mismo autor. Un texto que varias filas dan con
+  el mismo autor se pregunta una vez. También cuenta los textos pendientes
+  que la hoja no trae, que se firman aparte, y los del módulo que faltan
+  escribir, sin mostrarlos.
 - `--author` y `--sheet` juntos, o sin `--sign`, salen con 2. Como `--sign`,
   exigen una terminal y no hay forma de contestar sin una persona.
 - Sin `--author` ni `--sheet`, `--sign` pregunta como siempre («¿Escribiste tú
@@ -370,25 +389,44 @@ sangría de dos espacios, LF y salto de línea final.
 }
 ```
 
-Se escribe solo cuando cambia `human-text.json` y en el mismo paso: los dos
+Se escribe cuando cambia `human-text.json` y en el mismo paso: los dos
 por archivo temporal y renombrado, en este orden: el de autores sin las
 entradas que la corrida quita o reemplaza, luego `human-text.json`, y al
 final el de autores con las entradas nuevas. Así, si la corrida se corta
 entre dos renombrados (se cierra la ventana), una firma puede quedar sin
-autor, pero nunca con el de otra firma. Si un renombrado falla, todo lo ya
-reemplazado vuelve a como estaba y lo nuevo de los dos queda en sus
-temporales, y el mensaje dice dónde; el listado avisa de los temporales que
-queden (`.human-text.json.<pid>.tmp`, `.human-text-authors.json.<pid>.tmp`).
-Nunca se crea vacío. Las
-firmas de claves que ya no existen se llevan a su autor, y una entrada que no
-tiene firma se quita. `check-module` no lo lee: con este núcleo o con uno
+autor, pero nunca con el de otra firma. Si un renombrado falla, lo ya
+reemplazado vuelve a como estaba, del último al primero, y lo nuevo de los
+dos queda en sus temporales, y el mensaje dice dónde. Si `human-text.json` no
+puede volver, el de autores tampoco vuelve (sin las entradas que la corrida
+quita o reemplaza, ninguna firma nueva queda con el autor de la anterior), y
+el mensaje dice que se renombre el temporal de autores: firmar otra vez no
+preguntaría por esas firmas, que ya valen.
+
+Si la corrida se corta entre los dos últimos renombrados, las firmas ya están
+en `human-text.json` y sus autores solo en `.human-text-authors.json.<pid>.tmp`.
+El listado lo reconoce (ese temporal conserva cada entrada del archivo y solo
+agrega autores a firmas válidas que no tienen) y dice que se renombre sobre
+`human-text-authors.json`; mientras siga ahí, `--sign` no corre: pide
+renombrarlo, o borrarlo para dejar esas firmas sin autor. De cualquier otro
+temporal que quede (`.human-text.json.<pid>.tmp`,
+`.human-text-authors.json.<pid>[.part].tmp`), el listado y `--sign` dicen que
+se haga lo que dijo el mensaje de esa corrida; si no dejó mensaje, sus firmas
+nunca se guardaron: se borran y esos textos se firman otra vez.
+
+Nunca se crea vacío. Las firmas de claves que ya no existen se llevan a su
+autor, y una entrada que no tiene firma se quita, también en un `--sign` que
+deja `human-text.json` como estaba (salvo que no exista: podría haberse
+perdido, y se restaura desde git).
+
+`check-module` no lo lee: con este núcleo o con uno
 anterior (v1.5.0, v1.6.0), su resultado es el mismo con el archivo o sin él,
 y `human-text.json` conserva su formato. Uno mal formado detiene a
 `sign-text`, también al listar: se restaura desde git (borrarlo olvida
 quién escribió cada texto). Sin `--sign`, `sign-text` lista cada texto
 firmado que tiene autor (`signed    lang/es.json  <clave>  by "IAR18"`) y
 cuántos lleva cada autor; sin autores guardados, lista lo mismo que v1.6.0
-salvo el renglón `next:`, que ahora nombra `--sheet` y `--author`.
+salvo el renglón `next:`, que ahora nombra `--sheet` y `--author`, y el de
+los textos por escribir, que dice quién los escribe y quién los firma.
 
 ## Escribir los textos en la hoja
 
